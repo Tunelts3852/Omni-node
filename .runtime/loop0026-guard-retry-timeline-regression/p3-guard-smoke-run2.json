@@ -1,0 +1,149 @@
+{
+  "ok": true,
+  "stage": "P3",
+  "generatedAtUtc": "2026-03-05T03:10:39.177Z",
+  "key_source_policy": "keychain|secure_file_600",
+  "wsPort": "61738",
+  "runtimeDir": "/tmp/omninode-p3-guard-smoke-1772680239172",
+  "build": null,
+  "auth": {
+    "sessionId": "f9fdf395f8854fa9a14a620f341a04b4",
+    "otpMasked": "2***8"
+  },
+  "guardRetryTimelineStatePath": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+  "guardRetryTimelineSamples": {
+    "before": {
+      "path": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+      "exists": true,
+      "totalEntries": 109,
+      "nonSeedEntries": 105,
+      "seedEntries": 4,
+      "byChannel": {
+        "chat": 21,
+        "coding": 21,
+        "telegram": 63
+      }
+    },
+    "after": {
+      "path": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+      "exists": true,
+      "totalEntries": 114,
+      "nonSeedEntries": 110,
+      "seedEntries": 4,
+      "byChannel": {
+        "chat": 22,
+        "coding": 22,
+        "telegram": 66
+      }
+    },
+    "delta": {
+      "totalEntries": 5,
+      "nonSeedEntries": 5,
+      "seedEntries": 0,
+      "byChannel": {
+        "chat": 1,
+        "coding": 1,
+        "telegram": 3
+      }
+    }
+  },
+  "checks": {
+    "checks": {
+      "chatEmptyError": {
+        "ok": true,
+        "guardCategory": "-",
+        "guardReason": "-",
+        "guardDetail": "-",
+        "retryRequired": false,
+        "retryAction": "-",
+        "retryScope": "-",
+        "retryReason": "-"
+      },
+      "codingEmptyError": {
+        "ok": true,
+        "guardCategory": "-",
+        "guardReason": "-",
+        "guardDetail": "-",
+        "retryRequired": false,
+        "retryAction": "-",
+        "retryScope": "-",
+        "retryReason": "-"
+      },
+      "telegramEmptyError": {
+        "ok": true,
+        "guardCategory": "-",
+        "guardReason": "-",
+        "guardDetail": "-",
+        "retryRequired": false,
+        "retryAction": "-",
+        "retryScope": "-",
+        "retryReason": "-"
+      },
+      "chatGuardBlocked": {
+        "ok": true,
+        "guardCategory": "coverage",
+        "guardReason": "insufficient_document_count",
+        "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+        "retryRequired": true,
+        "retryAction": "retry_with_recollect_loop",
+        "retryScope": "gemini_grounding_search",
+        "retryReason": "insufficient_document_count"
+      },
+      "codingGuardBlocked": {
+        "ok": true,
+        "guardCategory": "coverage",
+        "guardReason": "insufficient_document_count",
+        "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+        "retryRequired": true,
+        "retryAction": "retry_with_recollect_loop",
+        "retryScope": "gemini_grounding_search",
+        "retryReason": "insufficient_document_count"
+      },
+      "telegramRouteResult": {
+        "ok": true,
+        "status": "ok",
+        "guardCategory": "-",
+        "guardReason": "-",
+        "guardDetail": "-",
+        "retryRequired": false,
+        "retryAction": "-",
+        "retryScope": "-",
+        "retryReason": "-"
+      },
+      "telegramGuardAuditBlocked": {
+        "ok": true,
+        "action": "telegram_guard_meta",
+        "status": "blocked",
+        "message": "route=telegram-single:copilot:gpt-5-mini:unsupported guardCategory=coverage guardReason=insufficient_document_count guardDetail=target=3, collected=0, termination=count_lock_unsatisfied_after_retries"
+      }
+    },
+    "traces": [
+      {
+        "step": "chat_guard_probe",
+        "attempt": 1,
+        "guardCategory": "coverage",
+        "guardReason": "insufficient_document_count",
+        "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+        "retryRequired": true,
+        "retryAction": "retry_with_recollect_loop",
+        "retryScope": "gemini_grounding_search",
+        "retryReason": "insufficient_document_count"
+      },
+      {
+        "step": "coding_guard_probe",
+        "attempt": 1,
+        "guardCategory": "coverage",
+        "guardReason": "insufficient_document_count",
+        "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+        "retryRequired": true,
+        "retryAction": "retry_with_recollect_loop",
+        "retryScope": "gemini_grounding_search",
+        "retryReason": "insufficient_document_count"
+      }
+    ]
+  },
+  "logs": {
+    "stdoutTail": "[memory-index] ready db=/tmp/omninode-p3-guard-smoke-1772680239172/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61738, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61738/ ws=ws://127.0.0.1:61738/ws/\n[otp] local fallback otp=227758 session=f9fdf395f8854fa9a14a620f341a04b4\n[web] ready probe satisfied: websocket ping/pong round-trip observed",
+    "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused"
+  }
+}

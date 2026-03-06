@@ -1,0 +1,1474 @@
+using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace OmniNode.Middleware;
+
+public enum RouterIntent
+{
+    OsControl,
+    QuerySystem,
+    DynamicCode,
+    Unknown
+}
+
+public sealed class LlmRouter : IDisposable
+{
+    private const int ChatContinuationRounds = 4;
+    private const string CerebrasFallbackModel = "gpt-oss-120b";
+    private static readonly Regex GroqMaxTokensLimitRegex = new(
+        @"max_tokens`?\s*must be less than or equal to `?(?<limit>\d+)`?|maximum value for `max_tokens` is(?: less than the `context_window` for this model)?\s*`?(?<limit2>\d+)`?",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private readonly AppConfig _config;
+    private readonly RuntimeSettings _runtimeSettings;
+    private readonly HttpClient _httpClient;
+    private readonly object _groqLock = new();
+    private readonly object _geminiLock = new();
+    private readonly Dictionary<string, GroqUsage> _groqUsageByModel = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, GroqRateLimit> _groqRateByModel = new(StringComparer.OrdinalIgnoreCase);
+    private GeminiUsage _geminiUsage = new();
+    private readonly string _usageStatePath;
+    private string _selectedGroqModel;
+
+    public LlmRouter(AppConfig config, RuntimeSettings runtimeSettings)
+    {
+        _config = config;
+        _runtimeSettings = runtimeSettings;
+        _selectedGroqModel = _config.GroqModel;
+        _usageStatePath = _config.LlmUsageStatePath;
+        _httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(Math.Max(5, _config.LlmTimeoutSec))
+        };
+
+        LoadUsageState();
+    }
+
+    public string GetSelectedGroqModel()
+    {
+        lock (_groqLock)
+        {
+            return _selectedGroqModel;
+        }
+    }
+
+    public bool TrySetSelectedGroqModel(string modelId)
+    {
+        if (string.IsNullOrWhiteSpace(modelId))
+        {
+            return false;
+        }
+
+        var trimmed = modelId.Trim();
+        foreach (var ch in trimmed)
+        {
+            if (char.IsLetterOrDigit(ch) || ch == '-' || ch == '_' || ch == '/' || ch == '.')
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        lock (_groqLock)
+        {
+            _selectedGroqModel = trimmed;
+            if (!_groqUsageByModel.ContainsKey(trimmed))
+            {
+                _groqUsageByModel[trimmed] = new GroqUsage();
+            }
+        }
+
+        return true;
+    }
+
+    public IReadOnlyDictionary<string, GroqUsage> GetGroqUsageSnapshot()
+    {
+        lock (_groqLock)
+        {
+            return _groqUsageByModel.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+    }
+
+    public IReadOnlyDictionary<string, GroqRateLimit> GetGroqRateLimitSnapshot()
+    {
+        lock (_groqLock)
+        {
+            return _groqRateByModel.ToDictionary(
+                entry => entry.Key,
+                entry => entry.Value.Clone(),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+    }
+
+    public GeminiUsage GetGeminiUsageSnapshot()
+    {
+        lock (_geminiLock)
+        {
+            return _geminiUsage.Clone();
+        }
+    }
+
+    public bool HasGroqApiKey()
+    {
+        return !string.IsNullOrWhiteSpace(_runtimeSettings.GetGroqApiKey());
+    }
+
+    public bool HasGeminiApiKey()
+    {
+        return !string.IsNullOrWhiteSpace(_runtimeSettings.GetGeminiApiKey());
+    }
+
+    public bool HasCerebrasApiKey()
+    {
+        return !string.IsNullOrWhiteSpace(_runtimeSettings.GetCerebrasApiKey());
+    }
+
+    public async Task<RouterIntent> ClassifyIntentAsync(string input, CancellationToken cancellationToken)
+    {
+        var fallback = ClassifyIntentFallback(input);
+        var groqApiKey = _runtimeSettings.GetGroqApiKey();
+        if (string.IsNullOrWhiteSpace(groqApiKey))
+        {
+            return fallback;
+        }
+
+        var model = GetSelectedGroqModel();
+        var endpoint = $"{_config.GroqBaseUrl.TrimEnd('/')}/chat/completions";
+        var systemPrompt = "Classify intent into exactly one token: OS_CONTROL, QUERY_SYSTEM, DYNAMIC_CODE, UNKNOWN.";
+        var userPrompt = $"Input: {input}";
+
+        var body = "{"
+            + $"\"model\":\"{EscapeJson(model)}\","
+            + "\"temperature\":0,"
+            + "\"max_tokens\":12,"
+            + "\"messages\":["
+            + $"{{\"role\":\"system\",\"content\":\"{EscapeJson(systemPrompt)}\"}},"
+            + $"{{\"role\":\"user\",\"content\":\"{EscapeJson(userPrompt)}\"}}"
+            + "]"
+            + "}";
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", groqApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            CaptureGroqRateLimitHeaders(model, response.Headers);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine($"[groq] classify failed ({(int)response.StatusCode}): {responseBody}");
+                return fallback;
+            }
+
+            CaptureGroqUsage(model, responseBody);
+            var content = ExtractGroqContent(responseBody);
+            var mapped = MapIntent(content);
+            return mapped == RouterIntent.Unknown ? fallback : mapped;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[groq] classify error: {ex.Message}");
+            return fallback;
+        }
+    }
+
+    public async Task<string> BuildExecutionPlanAsync(string userInput, string systemContext, CancellationToken cancellationToken)
+    {
+        var fallback = BuildFallbackPlan(userInput, systemContext);
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return fallback;
+        }
+
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{_config.GeminiModel}:generateContent";
+
+        var prompt = "Generate a concise step-by-step execution plan for a local automation agent."
+            + " Output only executable pseudo-steps without markdown fences.\n\n"
+            + $"UserInput:\n{userInput}\n\n"
+            + $"SystemContext:\n{systemContext}\n";
+
+        var body = "{"
+            + "\"contents\":[{"
+            + "\"role\":\"user\","
+            + "\"parts\":["
+            + $"{{\"text\":\"{EscapeJson(prompt)}\"}}"
+            + "]"
+            + "}],"
+            + "\"generationConfig\":{\"temperature\":0.2,\"maxOutputTokens\":512}"
+            + "}";
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Add("x-goog-api-key", geminiApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine($"[gemini] plan failed ({(int)response.StatusCode}): {responseBody}");
+                return fallback;
+            }
+
+            CaptureGeminiUsage(responseBody);
+            var plan = ExtractGeminiText(responseBody);
+            if (string.IsNullOrWhiteSpace(plan))
+            {
+                var blockReason = ExtractGeminiBlockReason(responseBody);
+                if (!string.IsNullOrWhiteSpace(blockReason))
+                {
+                    Console.Error.WriteLine($"[gemini] blocked: {blockReason}");
+                }
+                return fallback;
+            }
+
+            return plan.Trim();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] plan error: {ex.Message}");
+            return fallback;
+        }
+    }
+
+    public Task<string> GenerateGroqChatAsync(
+        string userInput,
+        string? modelOverride,
+        CancellationToken cancellationToken
+    )
+    {
+        return GenerateGroqChatAsync(userInput, modelOverride, _config.ChatMaxOutputTokens, cancellationToken);
+    }
+
+    public async Task<string> GenerateGroqChatAsync(
+        string userInput,
+        string? modelOverride,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        var groqApiKey = _runtimeSettings.GetGroqApiKey();
+        if (string.IsNullOrWhiteSpace(groqApiKey))
+        {
+            return "Groq API 키가 설정되지 않았습니다.";
+        }
+
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? GetSelectedGroqModel() : modelOverride.Trim();
+        var endpoint = $"{_config.GroqBaseUrl.TrimEnd('/')}/chat/completions";
+        var systemPrompt = "You are Omni-node assistant. Respond in Korean with concise and practical answers.";
+        var requestedMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, _config.ChatMaxOutputTokens);
+        var effectiveMaxOutputTokens = ClampGroqMaxOutputTokensForModel(model, requestedMaxOutputTokens);
+        var promptBudgetChars = ResolveGroqPromptBudgetChars(model);
+        var promptForTurn = TruncatePromptForGroq(userInput, promptBudgetChars);
+        var mergedBuilder = new StringBuilder();
+        var rateLimitRetries = 0;
+        var requestTooLargeRetries = 0;
+        var tokenLimitRetries = 0;
+
+        try
+        {
+            for (var turn = 0; turn < ChatContinuationRounds; turn++)
+            {
+                var promptForRequest = TruncatePromptForGroq(promptForTurn, promptBudgetChars);
+                var body = "{"
+                    + $"\"model\":\"{EscapeJson(model)}\","
+                    + "\"temperature\":0.3,"
+                    + $"\"max_tokens\":{effectiveMaxOutputTokens},"
+                    + "\"messages\":["
+                    + $"{{\"role\":\"system\",\"content\":\"{EscapeJson(systemPrompt)}\"}},"
+                    + $"{{\"role\":\"user\",\"content\":\"{EscapeJson(promptForRequest)}\"}}"
+                    + "]"
+                    + "}";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", groqApiKey);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                CaptureGroqRateLimitHeaders(model, response.Headers);
+                if (!response.IsSuccessStatusCode)
+                {
+                    if ((int)response.StatusCode == 429 && rateLimitRetries < 2)
+                    {
+                        rateLimitRetries += 1;
+                        await Task.Delay(GetGroqRetryDelayMs(response.Headers, rateLimitRetries == 1 ? 900 : 1800), cancellationToken);
+                        turn -= 1;
+                        continue;
+                    }
+
+                    if (TryExtractGroqMaxTokensLimit(responseBody, out var limit)
+                        && limit >= 128
+                        && effectiveMaxOutputTokens > limit
+                        && tokenLimitRetries < 2)
+                    {
+                        tokenLimitRetries += 1;
+                        effectiveMaxOutputTokens = ClampGroqMaxOutputTokensForModel(model, limit);
+                        turn -= 1;
+                        continue;
+                    }
+
+                    if (IsGroqRequestTooLarge(response.StatusCode, responseBody) && requestTooLargeRetries < 3)
+                    {
+                        requestTooLargeRetries += 1;
+                        promptBudgetChars = Math.Max(1200, promptBudgetChars / 2);
+                        promptForTurn = TruncatePromptForGroq(promptForTurn, promptBudgetChars);
+                        effectiveMaxOutputTokens = Math.Max(256, effectiveMaxOutputTokens / 2);
+                        turn -= 1;
+                        continue;
+                    }
+
+                    Console.Error.WriteLine($"[groq] chat failed ({(int)response.StatusCode}): {responseBody}");
+                    return $"Groq 요청 실패: {(int)response.StatusCode}";
+                }
+
+                rateLimitRetries = 0;
+                requestTooLargeRetries = 0;
+                CaptureGroqUsage(model, responseBody);
+                var chunk = ExtractGroqChatChunk(responseBody);
+                var chunkText = chunk.Content.Trim();
+                if (!string.IsNullOrWhiteSpace(chunkText))
+                {
+                    if (mergedBuilder.Length > 0)
+                    {
+                        mergedBuilder.AppendLine();
+                    }
+                    mergedBuilder.Append(chunkText);
+                }
+
+                if (!IsGroqTruncated(chunk.FinishReason) || string.IsNullOrWhiteSpace(chunkText))
+                {
+                    break;
+                }
+
+                promptForTurn = TruncatePromptForGroq(BuildContinuationPrompt(userInput, mergedBuilder.ToString()), promptBudgetChars);
+            }
+
+            var content = mergedBuilder.ToString().Trim();
+            return string.IsNullOrWhiteSpace(content) ? "Groq 응답이 비어 있습니다." : content;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[groq] chat error: {ex.Message}");
+            return $"Groq 호출 오류: {ex.Message}";
+        }
+    }
+
+    public async Task<string> GenerateGroqMultimodalChatAsync(
+        string userInput,
+        string? modelOverride,
+        IReadOnlyList<InputAttachment> attachments,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        var groqApiKey = _runtimeSettings.GetGroqApiKey();
+        if (string.IsNullOrWhiteSpace(groqApiKey))
+        {
+            return "Groq API 키가 설정되지 않았습니다.";
+        }
+
+        var model = string.IsNullOrWhiteSpace(modelOverride) ? GetSelectedGroqModel() : modelOverride.Trim();
+        var imageAttachments = (attachments ?? Array.Empty<InputAttachment>())
+            .Where(IsImageAttachment)
+            .Take(4)
+            .ToArray();
+        if (imageAttachments.Length == 0)
+        {
+            return await GenerateGroqChatAsync(userInput, model, maxOutputTokens, cancellationToken);
+        }
+
+        var endpoint = $"{_config.GroqBaseUrl.TrimEnd('/')}/chat/completions";
+        var systemPrompt = "You are Omni-node assistant. Analyze attached images and answer in Korean concisely.";
+        var effectiveMaxOutputTokens = ClampGroqMaxOutputTokensForModel(model, NormalizeMaxOutputTokens(maxOutputTokens, _config.ChatMaxOutputTokens));
+
+        try
+        {
+            var bodyBuilder = new StringBuilder();
+            bodyBuilder.Append('{');
+            bodyBuilder.Append($"\"model\":\"{EscapeJson(model)}\",");
+            bodyBuilder.Append("\"temperature\":0.2,");
+            bodyBuilder.Append($"\"max_tokens\":{effectiveMaxOutputTokens},");
+            bodyBuilder.Append("\"messages\":[");
+            bodyBuilder.Append($"{{\"role\":\"system\",\"content\":\"{EscapeJson(systemPrompt)}\"}},");
+            bodyBuilder.Append("{\"role\":\"user\",\"content\":[");
+            bodyBuilder.Append($"{{\"type\":\"text\",\"text\":\"{EscapeJson(userInput)}\"}}");
+            foreach (var attachment in imageAttachments)
+            {
+                var mimeType = string.IsNullOrWhiteSpace(attachment.MimeType) ? "image/jpeg" : attachment.MimeType.Trim();
+                var dataUrl = $"data:{mimeType};base64,{attachment.DataBase64}";
+                bodyBuilder.Append(",");
+                bodyBuilder.Append("{\"type\":\"image_url\",\"image_url\":{");
+                bodyBuilder.Append($"\"url\":\"{EscapeJson(dataUrl)}\"");
+                bodyBuilder.Append("}}");
+            }
+
+            bodyBuilder.Append("]}");
+            bodyBuilder.Append("]}");
+            var body = bodyBuilder.ToString();
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", groqApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            CaptureGroqRateLimitHeaders(model, response.Headers);
+            if (!response.IsSuccessStatusCode)
+            {
+                if ((int)response.StatusCode == 429)
+                {
+                    await Task.Delay(GetGroqRetryDelayMs(response.Headers, 1200), cancellationToken);
+                    using var retryRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                    retryRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", groqApiKey);
+                    retryRequest.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                    using var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
+                    var retryBody = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
+                    CaptureGroqRateLimitHeaders(model, retryResponse.Headers);
+                    if (!retryResponse.IsSuccessStatusCode)
+                    {
+                        Console.Error.WriteLine($"[groq] multimodal chat failed ({(int)retryResponse.StatusCode}): {retryBody}");
+                        return $"Groq 요청 실패: {(int)retryResponse.StatusCode}";
+                    }
+
+                    responseBody = retryBody;
+                }
+                else
+                {
+                    if (IsGroqRequestTooLarge(response.StatusCode, responseBody))
+                    {
+                        var fallbackPrompt = "[이미지 첨부는 크기 제한으로 제외됨]\n" + userInput;
+                        return await GenerateGroqChatAsync(fallbackPrompt, model, Math.Min(effectiveMaxOutputTokens, 1024), cancellationToken);
+                    }
+
+                    Console.Error.WriteLine($"[groq] multimodal chat failed ({(int)response.StatusCode}): {responseBody}");
+                    return $"Groq 요청 실패: {(int)response.StatusCode}";
+                }
+            }
+
+            CaptureGroqUsage(model, responseBody);
+            var content = ExtractGroqContent(responseBody).Trim();
+            return string.IsNullOrWhiteSpace(content) ? "Groq 응답이 비어 있습니다." : content;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[groq] multimodal chat error: {ex.Message}");
+            return $"Groq 호출 오류: {ex.Message}";
+        }
+    }
+
+    public Task<string> GenerateGeminiChatAsync(string userInput, CancellationToken cancellationToken)
+    {
+        return GenerateGeminiChatAsync(userInput, _config.GeminiModel, _config.ChatMaxOutputTokens, cancellationToken);
+    }
+
+    public Task<string> GenerateGeminiChatAsync(
+        string userInput,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        return GenerateGeminiChatAsync(userInput, _config.GeminiModel, maxOutputTokens, cancellationToken);
+    }
+
+    public async Task<string> GenerateGeminiChatAsync(
+        string userInput,
+        string? modelOverride,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return "Gemini API 키가 설정되지 않았습니다.";
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(modelOverride) ? _config.GeminiModel : modelOverride.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, _config.ChatMaxOutputTokens);
+        var promptForTurn = "한국어로 실무적으로 답변하세요.\n\n사용자 입력:\n" + userInput;
+        var mergedBuilder = new StringBuilder();
+
+        try
+        {
+            for (var turn = 0; turn < ChatContinuationRounds; turn++)
+            {
+                var body = "{"
+                    + "\"contents\":[{"
+                    + "\"role\":\"user\","
+                    + "\"parts\":["
+                    + $"{{\"text\":\"{EscapeJson(promptForTurn)}\"}}"
+                    + "]"
+                    + "}],"
+                    + $"\"generationConfig\":{{\"temperature\":0.3,\"maxOutputTokens\":{effectiveMaxOutputTokens}}}"
+                    + "}";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                request.Headers.Add("x-goog-api-key", geminiApiKey);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.Error.WriteLine($"[gemini] chat failed ({(int)response.StatusCode}): {responseBody}");
+                    return $"Gemini 요청 실패: {(int)response.StatusCode}";
+                }
+
+                CaptureGeminiUsage(responseBody);
+                var chunk = ExtractGeminiChatChunk(responseBody);
+                var chunkText = chunk.Content.Trim();
+                if (!string.IsNullOrWhiteSpace(chunkText))
+                {
+                    if (mergedBuilder.Length > 0)
+                    {
+                        mergedBuilder.AppendLine();
+                    }
+                    mergedBuilder.Append(chunkText);
+                }
+
+                if (!IsGeminiTruncated(chunk.FinishReason) || string.IsNullOrWhiteSpace(chunkText))
+                {
+                    break;
+                }
+
+                promptForTurn = BuildContinuationPrompt(userInput, mergedBuilder.ToString());
+            }
+
+            var text = mergedBuilder.ToString().Trim();
+            return string.IsNullOrWhiteSpace(text) ? "Gemini 응답이 비어 있습니다." : text;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] chat error: {ex.Message}");
+            return $"Gemini 호출 오류: {ex.Message}";
+        }
+    }
+
+    public async Task<string> GenerateGeminiGroundedChatAsync(
+        string prompt,
+        string model,
+        int maxOutputTokens,
+        int timeoutMs,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return "Gemini API 키가 설정되지 않았습니다.";
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite-preview" : model.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveTimeoutMs = Math.Clamp(timeoutMs, 1000, 20000);
+        var body = "{"
+            + "\"contents\":[{"
+            + "\"role\":\"user\","
+            + "\"parts\":["
+            + $"{{\"text\":\"{EscapeJson(prompt)}\"}}"
+            + "]"
+            + "}],"
+            + "\"tools\":[{\"google_search\":{}}],"
+            + "\"generationConfig\":{"
+            + "\"temperature\":0.1,"
+            + $"\"maxOutputTokens\":{effectiveMaxOutputTokens}"
+            + "}"
+            + "}";
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Add("x-goog-api-key", geminiApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, timeoutCts.Token);
+            var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine($"[gemini] grounded chat failed ({(int)response.StatusCode}): {responseBody}");
+                return $"Gemini 웹검색 요청 실패: {(int)response.StatusCode}";
+            }
+
+            CaptureGeminiUsage(responseBody);
+            var content = ExtractGeminiText(responseBody).Trim();
+            return string.IsNullOrWhiteSpace(content) ? "Gemini 웹검색 응답이 비어 있습니다." : content;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return "Gemini 웹검색 응답 시간이 초과되었습니다.";
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] grounded chat error: {ex.Message}");
+            return $"Gemini 웹검색 호출 오류: {ex.Message}";
+        }
+    }
+
+    public async Task<string> GenerateGeminiMultimodalChatAsync(
+        string userInput,
+        string? modelOverride,
+        IReadOnlyList<InputAttachment> attachments,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return "Gemini API 키가 설정되지 않았습니다.";
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(modelOverride) ? _config.GeminiModel : modelOverride.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, _config.ChatMaxOutputTokens);
+        var binaryAttachments = (attachments ?? Array.Empty<InputAttachment>())
+            .Where(item => !string.IsNullOrWhiteSpace(item.DataBase64))
+            .Take(6)
+            .ToArray();
+        if (binaryAttachments.Length == 0)
+        {
+            return await GenerateGeminiChatAsync(userInput, selectedModel, maxOutputTokens, cancellationToken);
+        }
+
+        try
+        {
+            var bodyBuilder = new StringBuilder();
+            bodyBuilder.Append('{');
+            bodyBuilder.Append("\"contents\":[{\"role\":\"user\",\"parts\":[");
+            bodyBuilder.Append($"{{\"text\":\"{EscapeJson(userInput)}\"}}");
+            foreach (var attachment in binaryAttachments)
+            {
+                var mimeType = string.IsNullOrWhiteSpace(attachment.MimeType) ? "application/octet-stream" : attachment.MimeType.Trim();
+                bodyBuilder.Append(",");
+                bodyBuilder.Append("{\"inline_data\":{");
+                bodyBuilder.Append($"\"mime_type\":\"{EscapeJson(mimeType)}\",");
+                bodyBuilder.Append($"\"data\":\"{EscapeJson(attachment.DataBase64)}\"");
+                bodyBuilder.Append("}}");
+            }
+
+            bodyBuilder.Append("]}],");
+            bodyBuilder.Append($"\"generationConfig\":{{\"temperature\":0.2,\"maxOutputTokens\":{effectiveMaxOutputTokens}}}");
+            bodyBuilder.Append("}");
+            var body = bodyBuilder.ToString();
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Add("x-goog-api-key", geminiApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine($"[gemini] multimodal chat failed ({(int)response.StatusCode}): {responseBody}");
+                return $"Gemini 요청 실패: {(int)response.StatusCode}";
+            }
+
+            CaptureGeminiUsage(responseBody);
+            var text = ExtractGeminiText(responseBody).Trim();
+            return string.IsNullOrWhiteSpace(text) ? "Gemini 응답이 비어 있습니다." : text;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] multimodal chat error: {ex.Message}");
+            return $"Gemini 호출 오류: {ex.Message}";
+        }
+    }
+
+    public async Task<string> GenerateCerebrasChatAsync(
+        string userInput,
+        string? modelOverride,
+        int maxOutputTokens,
+        CancellationToken cancellationToken
+    )
+    {
+        var cerebrasApiKey = _runtimeSettings.GetCerebrasApiKey();
+        if (string.IsNullOrWhiteSpace(cerebrasApiKey))
+        {
+            return "Cerebras API 키가 설정되지 않았습니다.";
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(modelOverride) ? _config.CerebrasModel : modelOverride.Trim();
+        var effectiveModel = selectedModel;
+        var fallbackRetried = false;
+        var endpoint = $"{_config.CerebrasBaseUrl.TrimEnd('/')}/chat/completions";
+        var systemPrompt = "You are Omni-node assistant. Respond in Korean with concise and practical answers.";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, _config.ChatMaxOutputTokens);
+        var promptForTurn = userInput;
+        var mergedBuilder = new StringBuilder();
+
+        try
+        {
+            for (var turn = 0; turn < ChatContinuationRounds; turn++)
+            {
+                var body = "{"
+                    + $"\"model\":\"{EscapeJson(effectiveModel)}\","
+                    + "\"temperature\":0.3,"
+                    + $"\"max_completion_tokens\":{effectiveMaxOutputTokens},"
+                    + "\"messages\":["
+                    + $"{{\"role\":\"system\",\"content\":\"{EscapeJson(systemPrompt)}\"}},"
+                    + $"{{\"role\":\"user\",\"content\":\"{EscapeJson(promptForTurn)}\"}}"
+                    + "]"
+                    + "}";
+
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", cerebrasApiKey);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                using var response = await _httpClient.SendAsync(request, cancellationToken);
+                var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                {
+                    if (!fallbackRetried
+                        && response.StatusCode == System.Net.HttpStatusCode.NotFound
+                        && IsCerebrasModelNotFound(responseBody)
+                        && !string.Equals(effectiveModel, CerebrasFallbackModel, StringComparison.OrdinalIgnoreCase))
+                    {
+                        fallbackRetried = true;
+                        effectiveModel = CerebrasFallbackModel;
+                        promptForTurn = userInput;
+                        mergedBuilder.Clear();
+                        turn = -1;
+                        Console.Error.WriteLine($"[cerebras] model_not_found fallback: {selectedModel} -> {effectiveModel}");
+                        continue;
+                    }
+
+                    Console.Error.WriteLine($"[cerebras] chat failed ({(int)response.StatusCode}): {responseBody}");
+                    return $"Cerebras 요청 실패: {(int)response.StatusCode}";
+                }
+
+                var chunk = ExtractGroqChatChunk(responseBody);
+                var chunkText = chunk.Content.Trim();
+                if (!string.IsNullOrWhiteSpace(chunkText))
+                {
+                    if (mergedBuilder.Length > 0)
+                    {
+                        mergedBuilder.AppendLine();
+                    }
+
+                    mergedBuilder.Append(chunkText);
+                }
+
+                if (!IsGroqTruncated(chunk.FinishReason) || string.IsNullOrWhiteSpace(chunkText))
+                {
+                    break;
+                }
+
+                promptForTurn = BuildContinuationPrompt(userInput, mergedBuilder.ToString());
+            }
+
+            var content = mergedBuilder.ToString().Trim();
+            return string.IsNullOrWhiteSpace(content) ? "Cerebras 응답이 비어 있습니다." : content;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[cerebras] chat error: {ex.Message}");
+            return $"Cerebras 호출 오류: {ex.Message}";
+        }
+    }
+
+    private static bool IsCerebrasModelNotFound(string responseBody)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            if (TryGetPropertyCaseInsensitive(doc.RootElement, "code", out var codeElement)
+                && codeElement.ValueKind == JsonValueKind.String
+                && codeElement.GetString()?.Trim().Equals("model_not_found", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return responseBody.IndexOf("model_not_found", StringComparison.OrdinalIgnoreCase) >= 0
+               || responseBody.IndexOf("does not exist or you do not have access", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool TryGetPropertyCaseInsensitive(JsonElement element, string propertyName, out JsonElement value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int ClampGroqMaxOutputTokens(int value)
+    {
+        return Math.Clamp(value, 256, 8192);
+    }
+
+    private static int ClampGroqMaxOutputTokensForModel(string model, int value)
+    {
+        var clamped = ClampGroqMaxOutputTokens(value);
+        if (IsGroqCompoundModel(model))
+        {
+            return Math.Min(clamped, 1024);
+        }
+
+        return clamped;
+    }
+
+    private static bool IsGroqCompoundModel(string model)
+    {
+        var normalized = (model ?? string.Empty).Trim();
+        return normalized.StartsWith("groq/compound", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int ResolveGroqPromptBudgetChars(string model)
+    {
+        return IsGroqCompoundModel(model) ? 12000 : 22000;
+    }
+
+    private static string TruncatePromptForGroq(string prompt, int maxChars)
+    {
+        var normalized = (prompt ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        var safeMax = Math.Max(1200, maxChars);
+        if (normalized.Length <= safeMax)
+        {
+            return normalized;
+        }
+
+        var headLen = (int)Math.Round(safeMax * 0.62);
+        var tailLen = Math.Max(200, safeMax - headLen - 80);
+        if (headLen + tailLen >= normalized.Length)
+        {
+            return normalized[..safeMax];
+        }
+
+        var head = normalized[..headLen].TrimEnd();
+        var tail = normalized[^tailLen..].TrimStart();
+        return head
+               + "\n\n[중간 내용 생략됨: 요청 크기 제한으로 축약]\n\n"
+               + tail;
+    }
+
+    private static bool TryExtractGroqMaxTokensLimit(string responseBody, out int limit)
+    {
+        limit = 0;
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return false;
+        }
+
+        var match = GroqMaxTokensLimitRegex.Match(responseBody);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var raw = match.Groups["limit"].Success ? match.Groups["limit"].Value : match.Groups["limit2"].Value;
+        return int.TryParse(raw, out limit) && limit > 0;
+    }
+
+    private static bool IsGroqRequestTooLarge(System.Net.HttpStatusCode statusCode, string responseBody)
+    {
+        if (statusCode == System.Net.HttpStatusCode.RequestEntityTooLarge)
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return false;
+        }
+
+        return responseBody.IndexOf("request_too_large", StringComparison.OrdinalIgnoreCase) >= 0
+               || responseBody.IndexOf("entity too large", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static int GetGroqRetryDelayMs(HttpResponseHeaders headers, int fallbackMs)
+    {
+        var retryAfter = ReadHeaderString(headers, "retry-after");
+        if (int.TryParse(retryAfter, out var seconds) && seconds > 0)
+        {
+            return Math.Clamp(seconds * 1000, 400, 5000);
+        }
+
+        return Math.Clamp(fallbackMs, 400, 5000);
+    }
+
+    private static int NormalizeMaxOutputTokens(int requested, int fallback)
+    {
+        var value = requested > 0 ? requested : fallback;
+        if (value <= 0)
+        {
+            value = 4096;
+        }
+
+        return Math.Clamp(value, 256, 32768);
+    }
+
+    private static bool IsImageAttachment(InputAttachment attachment)
+    {
+        if (attachment.IsImage)
+        {
+            return true;
+        }
+
+        if (!string.IsNullOrWhiteSpace(attachment.MimeType)
+            && attachment.MimeType.StartsWith("image/", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var name = (attachment.Name ?? string.Empty).Trim().ToLowerInvariant();
+        return name.EndsWith(".png", StringComparison.Ordinal)
+               || name.EndsWith(".jpg", StringComparison.Ordinal)
+               || name.EndsWith(".jpeg", StringComparison.Ordinal)
+               || name.EndsWith(".webp", StringComparison.Ordinal)
+               || name.EndsWith(".gif", StringComparison.Ordinal);
+    }
+
+    public void Dispose()
+    {
+        _httpClient.Dispose();
+    }
+
+    private void CaptureGroqUsage(string model, string responseBody)
+    {
+        var changed = false;
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            if (!doc.RootElement.TryGetProperty("usage", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            var promptTokens = GetInt(usageElement, "prompt_tokens");
+            var completionTokens = GetInt(usageElement, "completion_tokens");
+            var totalTokens = GetInt(usageElement, "total_tokens");
+
+            lock (_groqLock)
+            {
+                if (!_groqUsageByModel.TryGetValue(model, out var usage))
+                {
+                    usage = new GroqUsage();
+                    _groqUsageByModel[model] = usage;
+                }
+
+                usage.Requests += 1;
+                usage.PromptTokens += promptTokens;
+                usage.CompletionTokens += completionTokens;
+                usage.TotalTokens += totalTokens;
+                usage.LastUpdatedUtc = DateTimeOffset.UtcNow;
+                changed = true;
+            }
+        }
+        catch
+        {
+        }
+
+        if (changed)
+        {
+            SaveUsageState();
+        }
+    }
+
+    private void CaptureGroqRateLimitHeaders(string model, HttpResponseHeaders headers)
+    {
+        var limitRequests = ReadHeaderLong(headers, "x-ratelimit-limit-requests");
+        var remainingRequests = ReadHeaderLong(headers, "x-ratelimit-remaining-requests");
+        var limitTokens = ReadHeaderLong(headers, "x-ratelimit-limit-tokens");
+        var remainingTokens = ReadHeaderLong(headers, "x-ratelimit-remaining-tokens");
+        var resetRequests = ReadHeaderString(headers, "x-ratelimit-reset-requests");
+        var resetTokens = ReadHeaderString(headers, "x-ratelimit-reset-tokens");
+
+        lock (_groqLock)
+        {
+            _groqRateByModel[model] = new GroqRateLimit
+            {
+                LimitRequests = limitRequests,
+                RemainingRequests = remainingRequests,
+                LimitTokens = limitTokens,
+                RemainingTokens = remainingTokens,
+                ResetRequests = resetRequests,
+                ResetTokens = resetTokens,
+                LastUpdatedUtc = DateTimeOffset.UtcNow
+            };
+        }
+
+        SaveUsageState();
+    }
+
+    private void CaptureGeminiUsage(string responseBody)
+    {
+        var promptTokens = 0;
+        var completionTokens = 0;
+        var totalTokens = 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            if (!doc.RootElement.TryGetProperty("usageMetadata", out var usageElement) || usageElement.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+
+            promptTokens = GetInt(usageElement, "promptTokenCount");
+            completionTokens = GetInt(usageElement, "candidatesTokenCount");
+            totalTokens = GetInt(usageElement, "totalTokenCount");
+        }
+        catch
+        {
+            return;
+        }
+
+        var addedCost = ((decimal)promptTokens * _config.GeminiInputPricePerMillionUsd / 1_000_000m)
+                        + ((decimal)completionTokens * _config.GeminiOutputPricePerMillionUsd / 1_000_000m);
+        lock (_geminiLock)
+        {
+            _geminiUsage.Requests += 1;
+            _geminiUsage.PromptTokens += promptTokens;
+            _geminiUsage.CompletionTokens += completionTokens;
+            _geminiUsage.TotalTokens += totalTokens;
+            _geminiUsage.EstimatedCostUsd += addedCost;
+            _geminiUsage.LastUpdatedUtc = DateTimeOffset.UtcNow;
+        }
+
+        SaveUsageState();
+    }
+
+    private void LoadUsageState()
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(_usageStatePath);
+            if (!File.Exists(fullPath))
+            {
+                return;
+            }
+
+            var json = File.ReadAllText(fullPath);
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return;
+            }
+
+            var state = JsonSerializer.Deserialize(json, OmniJsonContext.Default.LlmUsageState);
+            if (state == null)
+            {
+                return;
+            }
+
+            lock (_groqLock)
+            {
+                _groqUsageByModel.Clear();
+                foreach (var item in state.GroqUsageByModel)
+                {
+                    _groqUsageByModel[item.Key] = item.Value ?? new GroqUsage();
+                }
+
+                _groqRateByModel.Clear();
+                foreach (var item in state.GroqRateByModel)
+                {
+                    _groqRateByModel[item.Key] = item.Value ?? new GroqRateLimit();
+                }
+            }
+
+            lock (_geminiLock)
+            {
+                _geminiUsage = state.GeminiUsage ?? new GeminiUsage();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[usage] load failed: {ex.Message}");
+        }
+    }
+
+    private void SaveUsageState()
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(_usageStatePath);
+            var dir = Path.GetDirectoryName(fullPath);
+            if (string.IsNullOrWhiteSpace(dir))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(dir);
+            var state = new LlmUsageState();
+            lock (_groqLock)
+            {
+                state.GroqUsageByModel = _groqUsageByModel.ToDictionary(
+                    x => x.Key,
+                    x => x.Value.Clone(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+                state.GroqRateByModel = _groqRateByModel.ToDictionary(
+                    x => x.Key,
+                    x => x.Value.Clone(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            }
+
+            lock (_geminiLock)
+            {
+                state.GeminiUsage = _geminiUsage.Clone();
+            }
+
+            var json = JsonSerializer.Serialize(state, OmniJsonContext.Default.LlmUsageState);
+            AtomicFileStore.WriteAllText(fullPath, json, ownerOnly: true);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[usage] save failed: {ex.Message}");
+        }
+    }
+
+    private static long? ReadHeaderLong(HttpResponseHeaders headers, string key)
+    {
+        if (!headers.TryGetValues(key, out var values))
+        {
+            return null;
+        }
+
+        var first = values.FirstOrDefault();
+        if (long.TryParse(first, out var parsed))
+        {
+            return parsed;
+        }
+
+        return null;
+    }
+
+    private static string? ReadHeaderString(HttpResponseHeaders headers, string key)
+    {
+        if (!headers.TryGetValues(key, out var values))
+        {
+            return null;
+        }
+
+        return values.FirstOrDefault();
+    }
+
+    private static int GetInt(JsonElement element, string name)
+    {
+        if (!element.TryGetProperty(name, out var prop))
+        {
+            return 0;
+        }
+
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var parsed))
+        {
+            return parsed;
+        }
+
+        return 0;
+    }
+
+    private static RouterIntent ClassifyIntentFallback(string input)
+    {
+        var normalized = input.Trim().ToLowerInvariant();
+
+        if (normalized.StartsWith("/kill ", StringComparison.Ordinal) || normalized.Contains("terminate", StringComparison.Ordinal))
+        {
+            return RouterIntent.OsControl;
+        }
+
+        if (normalized.StartsWith("/metrics", StringComparison.Ordinal)
+            || normalized.Contains("status", StringComparison.Ordinal)
+            || normalized.Contains("로그", StringComparison.Ordinal))
+        {
+            return RouterIntent.QuerySystem;
+        }
+
+        if (normalized.StartsWith("/code ", StringComparison.Ordinal)
+            || normalized.Contains("script", StringComparison.Ordinal)
+            || normalized.Contains("파이썬", StringComparison.Ordinal))
+        {
+            return RouterIntent.DynamicCode;
+        }
+
+        return RouterIntent.Unknown;
+    }
+
+    private static string BuildFallbackPlan(string userInput, string systemContext)
+    {
+        return $"""
+                [Execution Plan]
+                1. Validate requested task from user input.
+                2. Use current system context snapshot for safety checks.
+                3. Generate a minimal script to satisfy the request.
+                4. Print deterministic stdout only.
+                Input: {userInput}
+                Context: {systemContext}
+                """;
+    }
+
+    private static string ExtractGroqContent(string json)
+    {
+        return ExtractGroqChatChunk(json).Content;
+    }
+
+    private static string ExtractGeminiText(string json)
+    {
+        return ExtractGeminiChatChunk(json).Content;
+    }
+
+    private static GroqChatChunk ExtractGroqChatChunk(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0)
+        {
+            return new GroqChatChunk(string.Empty, string.Empty);
+        }
+
+        var first = choices[0];
+        var finishReason = first.TryGetProperty("finish_reason", out var finishReasonElement)
+            ? finishReasonElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        if (!first.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
+        {
+            return new GroqChatChunk(string.Empty, finishReason);
+        }
+
+        if (!message.TryGetProperty("content", out var content))
+        {
+            return new GroqChatChunk(string.Empty, finishReason);
+        }
+
+        return new GroqChatChunk(content.GetString() ?? string.Empty, finishReason);
+    }
+
+    private static GeminiChatChunk ExtractGeminiChatChunk(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("candidates", out var candidates) || candidates.ValueKind != JsonValueKind.Array || candidates.GetArrayLength() == 0)
+        {
+            return new GeminiChatChunk(string.Empty, string.Empty);
+        }
+
+        var first = candidates[0];
+        var finishReason = first.TryGetProperty("finishReason", out var finishElement)
+            ? finishElement.GetString() ?? string.Empty
+            : string.Empty;
+
+        if (!first.TryGetProperty("content", out var content) || content.ValueKind != JsonValueKind.Object)
+        {
+            return new GeminiChatChunk(string.Empty, finishReason);
+        }
+
+        if (!content.TryGetProperty("parts", out var parts) || parts.ValueKind != JsonValueKind.Array || parts.GetArrayLength() == 0)
+        {
+            return new GeminiChatChunk(string.Empty, finishReason);
+        }
+
+        var builder = new StringBuilder();
+        foreach (var part in parts.EnumerateArray())
+        {
+            if (part.TryGetProperty("text", out var textElement))
+            {
+                builder.AppendLine(textElement.GetString());
+            }
+        }
+
+        return new GeminiChatChunk(builder.ToString().Trim(), finishReason);
+    }
+
+    private static bool IsGroqTruncated(string? finishReason)
+    {
+        return string.Equals(finishReason, "length", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGeminiTruncated(string? finishReason)
+    {
+        if (string.IsNullOrWhiteSpace(finishReason))
+        {
+            return false;
+        }
+
+        return finishReason.Contains("MAX_TOKENS", StringComparison.OrdinalIgnoreCase)
+               || finishReason.Contains("LENGTH", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string BuildContinuationPrompt(string originalInput, string writtenText)
+    {
+        var tail = writtenText.Length <= 6000 ? writtenText : writtenText[^6000..];
+        return """
+               아래 답변이 길이 제한으로 중간에서 끊겼습니다.
+               이미 작성된 내용은 절대 반복하지 말고, 바로 다음 문장부터 자연스럽게 이어서만 작성하세요.
+               마크다운 머리말/서론 재출력 금지.
+
+               [원래 사용자 입력]
+               """
+               + originalInput
+               + """
+
+               [이미 작성된 답변 끝부분]
+               """
+               + tail;
+    }
+
+    private static string ExtractGeminiBlockReason(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("promptFeedback", out var promptFeedback) || promptFeedback.ValueKind != JsonValueKind.Object)
+        {
+            return string.Empty;
+        }
+
+        if (!promptFeedback.TryGetProperty("blockReason", out var blockReasonElement))
+        {
+            return string.Empty;
+        }
+
+        return blockReasonElement.GetString() ?? string.Empty;
+    }
+
+    private static RouterIntent MapIntent(string content)
+    {
+        var normalized = content.Trim().ToUpperInvariant();
+
+        if (normalized.Contains("OS_CONTROL", StringComparison.Ordinal))
+        {
+            return RouterIntent.OsControl;
+        }
+
+        if (normalized.Contains("QUERY_SYSTEM", StringComparison.Ordinal))
+        {
+            return RouterIntent.QuerySystem;
+        }
+
+        if (normalized.Contains("DYNAMIC_CODE", StringComparison.Ordinal))
+        {
+            return RouterIntent.DynamicCode;
+        }
+
+        return RouterIntent.Unknown;
+    }
+
+    private static string EscapeJson(string value)
+    {
+        return value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\t", "\\t", StringComparison.Ordinal)
+            .Replace("\b", "\\b", StringComparison.Ordinal)
+            .Replace("\f", "\\f", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+    }
+
+    private sealed record GroqChatChunk(string Content, string FinishReason);
+    private sealed record GeminiChatChunk(string Content, string FinishReason);
+}
+
+public sealed class GroqUsage
+{
+    public long Requests { get; set; }
+    public long PromptTokens { get; set; }
+    public long CompletionTokens { get; set; }
+    public long TotalTokens { get; set; }
+    public DateTimeOffset LastUpdatedUtc { get; set; }
+
+    public GroqUsage Clone()
+    {
+        return new GroqUsage
+        {
+            Requests = Requests,
+            PromptTokens = PromptTokens,
+            CompletionTokens = CompletionTokens,
+            TotalTokens = TotalTokens,
+            LastUpdatedUtc = LastUpdatedUtc
+        };
+    }
+}
+
+public sealed class GroqRateLimit
+{
+    public long? LimitRequests { get; set; }
+    public long? RemainingRequests { get; set; }
+    public long? LimitTokens { get; set; }
+    public long? RemainingTokens { get; set; }
+    public string? ResetRequests { get; set; }
+    public string? ResetTokens { get; set; }
+    public DateTimeOffset LastUpdatedUtc { get; set; }
+
+    public GroqRateLimit Clone()
+    {
+        return new GroqRateLimit
+        {
+            LimitRequests = LimitRequests,
+            RemainingRequests = RemainingRequests,
+            LimitTokens = LimitTokens,
+            RemainingTokens = RemainingTokens,
+            ResetRequests = ResetRequests,
+            ResetTokens = ResetTokens,
+            LastUpdatedUtc = LastUpdatedUtc
+        };
+    }
+}
+
+public sealed class GeminiUsage
+{
+    public long Requests { get; set; }
+    public long PromptTokens { get; set; }
+    public long CompletionTokens { get; set; }
+    public long TotalTokens { get; set; }
+    public decimal EstimatedCostUsd { get; set; }
+    public DateTimeOffset LastUpdatedUtc { get; set; }
+
+    public GeminiUsage Clone()
+    {
+        return new GeminiUsage
+        {
+            Requests = Requests,
+            PromptTokens = PromptTokens,
+            CompletionTokens = CompletionTokens,
+            TotalTokens = TotalTokens,
+            EstimatedCostUsd = EstimatedCostUsd,
+            LastUpdatedUtc = LastUpdatedUtc
+        };
+    }
+}
+
+public sealed class LlmUsageState
+{
+    public Dictionary<string, GroqUsage> GroqUsageByModel { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, GroqRateLimit> GroqRateByModel { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public GeminiUsage GeminiUsage { get; set; } = new();
+}

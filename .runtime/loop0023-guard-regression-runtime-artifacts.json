@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "stage": "P6",
+  "generatedAtUtc": "2026-03-05T02:53:19.457Z",
+  "keySourcePolicy": "keychain|secure_file_600",
+  "runtimeContractRequired": true,
+  "runtimeContractSatisfied": true,
+  "runtimeContractMissingChecks": [],
+  "runtimeKeySources": {
+    "guardAlert": "secure_file_600",
+    "guardRetryBrowser": "secure_file_600"
+  },
+  "runtimeRequiredKeySource": "secure_file_600",
+  "runtimeGeneratedAfter": null,
+  "runtimeGeneratedBefore": null,
+  "runtimeGeneratedMaxSkewSeconds": null,
+  "runtimeGeneratedSkewSeconds": null,
+  "runtimeGeneratedAtUtc": null,
+  "runtimeRequiredRunStatus": {
+    "guardAlertMockRun": "executed",
+    "guardAlertLiveRun": "skipped_no_live_urls",
+    "guardRetryBrowserRun": "executed"
+  },
+  "runtimeActualRunStatus": {
+    "guardAlertMockRun": "executed",
+    "guardAlertLiveRun": "skipped_no_live_urls",
+    "guardRetryBrowserRun": "executed"
+  },
+  "runtimeArtifactInput": {
+    "runtimeArtifactRoot": "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts",
+    "guardAlertArtifactDir": "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts",
+    "guardRetryBrowserArtifactDir": "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts"
+  },
+  "checks": {
+    "guardAlertArtifactAndLogs": true,
+    "guardAlertManifestContract": true,
+    "guardAlertNoDirectKeyInjection": true,
+    "guardRetryBrowserArtifactAndLogs": true,
+    "guardRetryBrowserManifestContract": true,
+    "guardRetryBrowserNoDirectKeyInjection": true,
+    "guardAlertRuntimeManifestContract": true,
+    "guardRetryBrowserRuntimeManifestContract": true,
+    "guardAlertRuntimeArtifactContract": true,
+    "guardRetryBrowserRuntimeArtifactContract": true,
+    "runtimeKeySourceConsistency": true,
+    "runtimeRequiredKeySource": true,
+    "runtimeGeneratedAfter": null,
+    "runtimeGeneratedBefore": null,
+    "runtimeGeneratedMaxSkew": null,
+    "runtimeRequiredRunStatus": true
+  },
+  "evidenceFiles": [
+    "/Users/songhabin/Omni-node/.github/workflows/guard-alert-dispatch-regression.yml",
+    "/Users/songhabin/Omni-node/.github/workflows/guard-retry-timeline-browser-e2e-regression.yml",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-alert-dispatch-regression/execution-manifest.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/execution-manifest.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-alert-dispatch-regression/mock-regression.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-alert-dispatch-regression/mock-regression-console.log",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-alert-dispatch-regression/live-regression-console.log",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/browser-e2e-result.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/browser-e2e-console.log",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/p3-guard-smoke.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/guard-sample-readiness.json",
+    "/Users/songhabin/Omni-node/.runtime/loop0023-runtime-artifacts/guard-retry-timeline-browser-e2e-regression/p7-failclosed-countlock-bundle.json"
+  ]
+}

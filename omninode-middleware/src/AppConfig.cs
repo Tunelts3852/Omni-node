@@ -1,0 +1,355 @@
+using System.Runtime.InteropServices;
+
+namespace OmniNode.Middleware;
+
+public sealed class AppConfig
+{
+    private const string DefaultKeychainAccount = "omninode";
+    private const string TelegramBotTokenService = "omninode_telegram_bot_token";
+    private const string TelegramChatIdService = "omninode_telegram_chat_id";
+    private const string GroqApiKeyService = "omninode_groq_api_key";
+    private const string GeminiApiKeyService = "omninode_gemini_api_key";
+    private const string TavilyApiKeyService = "omninode_tavily_api_key";
+    private const string CerebrasApiKeyService = "omninode_cerebras_api_key";
+
+    public int WebSocketPort { get; init; } = 8080;
+    public string CoreSocketPath { get; init; } = ResolveDefaultCoreSocketPath();
+    public string? TelegramBotToken { get; init; }
+    public string? TelegramChatId { get; init; }
+    public string? TelegramAllowedUserId { get; init; }
+    public string CopilotCliBinary { get; init; } = "gh";
+    public string CopilotDirectBinary { get; init; } = "copilot";
+    public string CopilotModel { get; init; } = "gpt-5-mini";
+    public string PythonBinary { get; init; } = "python3";
+    public string SandboxExecutorPath { get; init; } = "../omninode-sandbox/executor.py";
+    public string DashboardIndexPath { get; init; } = ResolveDefaultDashboardIndexPath();
+    public bool EnableDynamicCode { get; init; }
+    public string? GroqApiKey { get; init; }
+    public string GroqBaseUrl { get; init; } = "https://api.groq.com/openai/v1";
+    public string GroqModel { get; init; } = "meta-llama/llama-4-scout-17b-16e-instruct";
+    public string? GeminiApiKey { get; init; }
+    public string GeminiBaseUrl { get; init; } = "https://generativelanguage.googleapis.com/v1beta";
+    public string GeminiModel { get; init; } = "gemini-3-flash-preview";
+    public string GeminiSearchModel { get; init; } = "gemini-3.1-flash-lite-preview";
+    public string TavilyKeychainService { get; init; } = TavilyApiKeyService;
+    public string TavilyKeychainAccount { get; init; } = DefaultKeychainAccount;
+    public string TavilyBaseUrl { get; init; } = "https://api.tavily.com/search";
+    public int TavilyTimeoutSec { get; init; } = 15;
+    public int TavilyMaxResults { get; init; } = 5;
+    public string CerebrasBaseUrl { get; init; } = "https://api.cerebras.ai/v1";
+    public string CerebrasModel { get; init; } = "gpt-oss-120b";
+    public int CerebrasTimeoutSec { get; init; } = 20;
+    public string CerebrasKeychainService { get; init; } = CerebrasApiKeyService;
+    public string CerebrasKeychainAccount { get; init; } = DefaultKeychainAccount;
+    public string? TavilyApiKey { get; init; }
+    public string? CerebrasApiKey { get; init; }
+    public decimal GeminiInputPricePerMillionUsd { get; init; } = 0.50m;
+    public decimal GeminiOutputPricePerMillionUsd { get; init; } = 3.00m;
+    public string LlmUsageStatePath { get; init; } = "/tmp/omninode_llm_usage.json";
+    public string CopilotUsageStatePath { get; init; } = "/tmp/omninode_copilot_usage.json";
+    public string ConversationStatePath { get; init; } = "/tmp/omninode_conversations.json";
+    public string AuthSessionStatePath { get; init; } = "/tmp/omninode_auth_sessions.json";
+    public string MemoryNotesRootDir { get; init; } = "/tmp/omninode_memory_notes";
+    public int ConversationCompressChars { get; init; } = 12000;
+    public int ConversationKeepRecentMessages { get; init; } = 16;
+    public int ConversationHistoryMessages { get; init; } = 18;
+    public string CodeRunsRootDir { get; init; } = "/tmp/omninode_code_runs";
+    public int CodeExecutionTimeoutSec { get; init; } = 120;
+    public string WorkspaceRootDir { get; init; } = ResolveDefaultWorkspaceRootDir();
+    public int CodingAgentMaxIterations { get; init; } = 6;
+    public int CodingAgentMaxActionsPerIteration { get; init; } = 8;
+    public int CodingCopilotMaxActionsPerIteration { get; init; } = 2;
+    public int CodingWorkspaceSnapshotMaxEntries { get; init; } = 80;
+    public int CodingRecentLoopHistoryForCopilot { get; init; } = 2;
+    public bool CodingEnableOneShotUiClone { get; init; } = true;
+    public int ChatMaxOutputTokens { get; init; } = 8192;
+    public int CodingMaxOutputTokens { get; init; } = 16384;
+    public int LlmTimeoutSec { get; init; } = 20;
+    public bool EnableFastWebPipeline { get; init; } = true;
+    public int WebDecisionTimeoutMs { get; init; } = 700;
+    public int GeminiWebTimeoutMs { get; init; } = 10000;
+    public int WebDefaultNewsCount { get; init; } = 10;
+    public int WebDefaultListCount { get; init; } = 5;
+    public int WebSocketMaxMessageBytes { get; init; } = 157286400;
+    public int WebSocketCommandsPerMinute { get; init; } = 30;
+    public int MetricsPushIntervalSec { get; init; } = 2;
+    public int CommandMaxLength { get; init; } = 800;
+    public string AuditLogPath { get; init; } = "/tmp/omninode_audit.log";
+    public string GuardAlertWebhookUrl { get; init; } = string.Empty;
+    public string GuardAlertLogCollectorUrl { get; init; } = string.Empty;
+    public int GuardAlertDispatchTimeoutMs { get; init; } = 3500;
+    public int GuardAlertDispatchMaxAttempts { get; init; } = 2;
+    public string GuardRetryTimelineStatePath { get; init; } = "/tmp/omninode_guard_retry_timeline.json";
+    public string GatewayHealthStatePath { get; init; } = "/tmp/omninode_gateway_health.json";
+    public string GatewayStartupProbeStatePath { get; init; } = "/tmp/omninode_gateway_startup_probe.json";
+    public bool EnableHealthEndpoint { get; init; } = true;
+    public bool EnableGatewayStartupProbe { get; init; }
+    public int GatewayStartupProbeDelayMs { get; init; } = 250;
+    public int GatewayStartupProbeTimeoutSec { get; init; } = 8;
+    public int GatewayStartupProbePollIntervalMs { get; init; } = 150;
+    public string GatewayStartupProbeMode { get; init; } = "live";
+    public bool EnableLocalOtpFallback { get; init; } = true;
+    public string KillAllowlistCsv { get; init; } = string.Empty;
+
+    public static AppConfig LoadFromEnvironment()
+    {
+        return new AppConfig
+        {
+            WebSocketPort = GetIntEnv("OMNINODE_WS_PORT", 8080),
+            CoreSocketPath = GetStringEnv("OMNINODE_CORE_SOCKET_PATH", ResolveDefaultCoreSocketPath()),
+            TelegramBotToken = SecretLoader.ResolveApiKey(
+                providerName: "telegram_bot_token",
+                directEnvKey: "OMNINODE_TELEGRAM_BOT_TOKEN",
+                fileEnvKey: "OMNINODE_TELEGRAM_BOT_TOKEN_FILE",
+                keychainServiceEnvKey: "OMNINODE_TELEGRAM_TOKEN_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_TELEGRAM_TOKEN_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: TelegramBotTokenService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            TelegramChatId = SecretLoader.ResolveApiKey(
+                providerName: "telegram_chat_id",
+                directEnvKey: "OMNINODE_TELEGRAM_CHAT_ID",
+                fileEnvKey: "OMNINODE_TELEGRAM_CHAT_ID_FILE",
+                keychainServiceEnvKey: "OMNINODE_TELEGRAM_CHAT_ID_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_TELEGRAM_CHAT_ID_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: TelegramChatIdService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            TelegramAllowedUserId = GetStringEnv("OMNINODE_TELEGRAM_ALLOWED_USER_ID", string.Empty),
+            CopilotCliBinary = GetStringEnv("OMNINODE_COPILOT_BIN", "gh"),
+            CopilotDirectBinary = GetStringEnv("OMNINODE_COPILOT_DIRECT_BIN", "copilot"),
+            CopilotModel = GetStringEnv("OMNINODE_COPILOT_MODEL", "gpt-5-mini"),
+            PythonBinary = GetStringEnv("OMNINODE_PYTHON_BIN", "python3"),
+            SandboxExecutorPath = GetStringEnv("OMNINODE_SANDBOX_EXECUTOR", "../omninode-sandbox/executor.py"),
+            DashboardIndexPath = GetStringEnv("OMNINODE_DASHBOARD_INDEX", ResolveDefaultDashboardIndexPath()),
+            EnableDynamicCode = GetBoolEnv("OMNINODE_ENABLE_DYNAMIC_CODE", false),
+            GroqApiKey = SecretLoader.ResolveApiKey(
+                providerName: "groq",
+                directEnvKey: "OMNINODE_GROQ_API_KEY",
+                fileEnvKey: "OMNINODE_GROQ_API_KEY_FILE",
+                keychainServiceEnvKey: "OMNINODE_GROQ_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_GROQ_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: GroqApiKeyService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            GroqBaseUrl = GetStringEnv("OMNINODE_GROQ_BASE_URL", "https://api.groq.com/openai/v1"),
+            GroqModel = GetStringEnv("OMNINODE_GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            GeminiApiKey = SecretLoader.ResolveApiKey(
+                providerName: "gemini",
+                directEnvKey: "OMNINODE_GEMINI_API_KEY",
+                fileEnvKey: "OMNINODE_GEMINI_API_KEY_FILE",
+                keychainServiceEnvKey: "OMNINODE_GEMINI_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_GEMINI_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: GeminiApiKeyService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            GeminiBaseUrl = GetStringEnv("OMNINODE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+            GeminiModel = GetStringEnv("OMNINODE_GEMINI_MODEL", "gemini-3-flash-preview"),
+            GeminiSearchModel = GetStringEnv("OMNINODE_GEMINI_SEARCH_MODEL", "gemini-3.1-flash-lite-preview"),
+            TavilyKeychainService = GetStringEnv("OMNINODE_TAVILY_KEYCHAIN_SERVICE", TavilyApiKeyService),
+            TavilyKeychainAccount = GetStringEnv("OMNINODE_TAVILY_KEYCHAIN_ACCOUNT", DefaultKeychainAccount),
+            TavilyBaseUrl = GetStringEnv("OMNINODE_TAVILY_BASE_URL", "https://api.tavily.com/search"),
+            TavilyTimeoutSec = GetIntEnv("OMNINODE_TAVILY_TIMEOUT_SEC", 15),
+            TavilyMaxResults = GetIntEnv("OMNINODE_TAVILY_MAX_RESULTS", 5),
+            CerebrasBaseUrl = GetStringEnv("OMNINODE_CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1"),
+            CerebrasModel = GetStringEnv("OMNINODE_CEREBRAS_MODEL", "gpt-oss-120b"),
+            CerebrasTimeoutSec = GetIntEnv("OMNINODE_CEREBRAS_TIMEOUT_SEC", 20),
+            CerebrasKeychainService = GetStringEnv("OMNINODE_CEREBRAS_KEYCHAIN_SERVICE", CerebrasApiKeyService),
+            CerebrasKeychainAccount = GetStringEnv("OMNINODE_CEREBRAS_KEYCHAIN_ACCOUNT", DefaultKeychainAccount),
+            TavilyApiKey = SecretLoader.ResolveApiKey(
+                providerName: "tavily",
+                directEnvKey: "OMNINODE_TAVILY_API_KEY",
+                fileEnvKey: "OMNINODE_TAVILY_API_KEY_FILE",
+                keychainServiceEnvKey: "OMNINODE_TAVILY_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_TAVILY_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: TavilyApiKeyService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            CerebrasApiKey = SecretLoader.ResolveApiKey(
+                providerName: "cerebras",
+                directEnvKey: "OMNINODE_CEREBRAS_API_KEY",
+                fileEnvKey: "OMNINODE_CEREBRAS_API_KEY_FILE",
+                keychainServiceEnvKey: "OMNINODE_CEREBRAS_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_CEREBRAS_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: CerebrasApiKeyService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
+            GeminiInputPricePerMillionUsd = GetDecimalEnv("OMNINODE_GEMINI_INPUT_PRICE_PER_MILLION_USD", 0.50m),
+            GeminiOutputPricePerMillionUsd = GetDecimalEnv("OMNINODE_GEMINI_OUTPUT_PRICE_PER_MILLION_USD", 3.00m),
+            LlmUsageStatePath = GetStringEnv("OMNINODE_LLM_USAGE_STATE_PATH", BuildDefaultStateFilePath("llm_usage.json")),
+            CopilotUsageStatePath = GetStringEnv("OMNINODE_COPILOT_USAGE_STATE_PATH", BuildDefaultStateFilePath("copilot_usage.json")),
+            ConversationStatePath = GetStringEnv("OMNINODE_CONVERSATION_STATE_PATH", BuildDefaultStateFilePath("conversations.json")),
+            AuthSessionStatePath = GetStringEnv("OMNINODE_AUTH_SESSION_STATE_PATH", BuildDefaultStateFilePath("auth_sessions.json")),
+            MemoryNotesRootDir = GetStringEnv("OMNINODE_MEMORY_NOTES_DIR", Path.Combine(BuildDefaultStateDir(), "memory-notes")),
+            ConversationCompressChars = GetIntEnv("OMNINODE_CONVERSATION_COMPRESS_CHARS", 12000),
+            ConversationKeepRecentMessages = GetIntEnv("OMNINODE_CONVERSATION_KEEP_RECENT_MESSAGES", 16),
+            ConversationHistoryMessages = GetIntEnv("OMNINODE_CONVERSATION_HISTORY_MESSAGES", 18),
+            CodeRunsRootDir = GetStringEnv("OMNINODE_CODE_RUNS_DIR", Path.Combine(BuildDefaultStateDir(), "code-runs")),
+            CodeExecutionTimeoutSec = GetIntEnv("OMNINODE_CODE_EXEC_TIMEOUT_SEC", 120),
+            WorkspaceRootDir = GetStringEnv("OMNINODE_WORKSPACE_ROOT", ResolveDefaultWorkspaceRootDir()),
+            CodingAgentMaxIterations = GetIntEnv("OMNINODE_CODING_AGENT_MAX_ITERATIONS", 6),
+            CodingAgentMaxActionsPerIteration = GetIntEnv("OMNINODE_CODING_AGENT_MAX_ACTIONS", 8),
+            CodingCopilotMaxActionsPerIteration = GetIntEnv("OMNINODE_CODING_COPILOT_MAX_ACTIONS", 2),
+            CodingWorkspaceSnapshotMaxEntries = GetIntEnv("OMNINODE_CODING_SNAPSHOT_MAX_ENTRIES", 80),
+            CodingRecentLoopHistoryForCopilot = GetIntEnv("OMNINODE_CODING_COPILOT_HISTORY", 2),
+            CodingEnableOneShotUiClone = GetBoolEnv("OMNINODE_CODING_ENABLE_ONESHOT_UI_CLONE", true),
+            ChatMaxOutputTokens = GetIntEnv("OMNINODE_CHAT_MAX_OUTPUT_TOKENS", 8192),
+            CodingMaxOutputTokens = GetIntEnv("OMNINODE_CODING_MAX_OUTPUT_TOKENS", 16384),
+            LlmTimeoutSec = GetIntEnv("OMNINODE_LLM_TIMEOUT_SEC", 20),
+            EnableFastWebPipeline = GetBoolEnv("OMNINODE_FAST_WEB_PIPELINE", true),
+            WebDecisionTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_WEB_DECISION_TIMEOUT_MS", 700), 200, 5000),
+            GeminiWebTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_GEMINI_WEB_TIMEOUT_MS", 10000), 1000, 20000),
+            WebDefaultNewsCount = Math.Clamp(GetIntEnv("OMNINODE_WEB_DEFAULT_NEWS_COUNT", 10), 1, 20),
+            WebDefaultListCount = Math.Clamp(GetIntEnv("OMNINODE_WEB_DEFAULT_LIST_COUNT", 5), 1, 20),
+            WebSocketMaxMessageBytes = GetIntEnv("OMNINODE_WS_MAX_MESSAGE_BYTES", 157286400),
+            WebSocketCommandsPerMinute = GetIntEnv("OMNINODE_WS_COMMANDS_PER_MINUTE", 30),
+            MetricsPushIntervalSec = GetIntEnv("OMNINODE_METRICS_PUSH_INTERVAL_SEC", 2),
+            CommandMaxLength = GetIntEnv("OMNINODE_COMMAND_MAX_LENGTH", 800),
+            AuditLogPath = GetStringEnv("OMNINODE_AUDIT_LOG_PATH", "/tmp/omninode_audit.log"),
+            GuardAlertWebhookUrl = GetStringEnv("OMNINODE_GUARD_ALERT_WEBHOOK_URL", string.Empty),
+            GuardAlertLogCollectorUrl = GetStringEnv("OMNINODE_GUARD_ALERT_LOG_COLLECTOR_URL", string.Empty),
+            GuardAlertDispatchTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_GUARD_ALERT_DISPATCH_TIMEOUT_MS", 3500), 500, 120000),
+            GuardAlertDispatchMaxAttempts = Math.Clamp(GetIntEnv("OMNINODE_GUARD_ALERT_DISPATCH_MAX_ATTEMPTS", 2), 1, 5),
+            GuardRetryTimelineStatePath = GetStringEnv("OMNINODE_GUARD_RETRY_TIMELINE_STATE_PATH", BuildDefaultStateFilePath("guard_retry_timeline.json")),
+            GatewayHealthStatePath = GetStringEnv("OMNINODE_GATEWAY_HEALTH_STATE_PATH", BuildDefaultStateFilePath("gateway_health.json")),
+            GatewayStartupProbeStatePath = GetStringEnv("OMNINODE_GATEWAY_STARTUP_PROBE_STATE_PATH", BuildDefaultStateFilePath("gateway_startup_probe.json")),
+            EnableHealthEndpoint = GetBoolEnv("OMNINODE_ENABLE_HEALTH_ENDPOINT", true),
+            EnableGatewayStartupProbe = GetBoolEnv("OMNINODE_GATEWAY_STARTUP_PROBE", false),
+            GatewayStartupProbeDelayMs = Math.Max(0, GetIntEnv("OMNINODE_GATEWAY_STARTUP_PROBE_DELAY_MS", 250)),
+            GatewayStartupProbeTimeoutSec = Math.Max(3, GetIntEnv("OMNINODE_GATEWAY_STARTUP_PROBE_TIMEOUT_SEC", 8)),
+            GatewayStartupProbePollIntervalMs = Math.Max(50, GetIntEnv("OMNINODE_GATEWAY_STARTUP_PROBE_POLL_INTERVAL_MS", 150)),
+            GatewayStartupProbeMode = GetStringEnv("OMNINODE_GATEWAY_STARTUP_PROBE_MODE", "live"),
+            EnableLocalOtpFallback = GetBoolEnv("OMNINODE_ENABLE_LOCAL_OTP_FALLBACK", true),
+            KillAllowlistCsv = GetStringEnv("OMNINODE_KILL_ALLOWLIST", string.Empty)
+        };
+    }
+
+    private static int GetIntEnv(string key, int defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        return int.TryParse(value, out var parsed) ? parsed : defaultValue;
+    }
+
+    private static decimal GetDecimalEnv(string key, decimal defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        return decimal.TryParse(value, out var parsed) ? parsed : defaultValue;
+    }
+
+    private static string GetStringEnv(string key, string defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        return string.IsNullOrWhiteSpace(value) ? defaultValue : value;
+    }
+
+    private static bool GetBoolEnv(string key, bool defaultValue)
+    {
+        var value = Environment.GetEnvironmentVariable(key);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return defaultValue;
+        }
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string ResolveDefaultDashboardIndexPath()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var cwd = Directory.GetCurrentDirectory();
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(baseDir, "../../../../omninode-dashboard/index.html")),
+            Path.GetFullPath(Path.Combine(cwd, "omninode-dashboard/index.html")),
+            Path.GetFullPath(Path.Combine(cwd, "../omninode-dashboard/index.html"))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[0];
+    }
+
+    private static string ResolveDefaultCoreSocketPath()
+    {
+        try
+        {
+            var uid = GetCurrentUnixUid();
+            return $"/tmp/omninode_core.{uid}.sock";
+        }
+        catch
+        {
+            return "/tmp/omninode_core.sock";
+        }
+    }
+
+    private static string ResolveDefaultWorkspaceRootDir()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var cwd = Directory.GetCurrentDirectory();
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(baseDir, "../../../../coding")),
+            Path.GetFullPath(Path.Combine(cwd, "coding")),
+            Path.GetFullPath(Path.Combine(cwd, "../Omni-node/coding")),
+            Path.GetFullPath(Path.Combine(cwd, "../coding"))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            var parent = Directory.GetParent(candidate);
+            if (parent != null && Directory.Exists(parent.FullName))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[0];
+    }
+
+    private static uint GetCurrentUnixUid()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return 0;
+        }
+
+        try
+        {
+            return PosixNative.getuid();
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static class PosixNative
+    {
+        [DllImport("libc", SetLastError = true)]
+        internal static extern uint getuid();
+    }
+
+    private static string BuildDefaultStateFilePath(string fileName)
+    {
+        return Path.Combine(BuildDefaultStateDir(), fileName);
+    }
+
+    private static string BuildDefaultStateDir()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (string.IsNullOrWhiteSpace(home))
+        {
+            return "/tmp";
+        }
+
+        return Path.Combine(home, ".omninode");
+    }
+}

@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "wsPort": 18883,
+  "runtimeRoot": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e",
+  "guardRetryTimelineStatePath": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+  "otpSessionId": "55af80c6df46458d924ec2a5a3ba6d45",
+  "apiSchemaVersion": "guard_retry_timeline.v1",
+  "apiChannelTotals": [
+    {
+      "channel": "chat",
+      "totalSamples": 12,
+      "retryRequiredSamples": 12
+    },
+    {
+      "channel": "coding",
+      "totalSamples": 11,
+      "retryRequiredSamples": 11
+    },
+    {
+      "channel": "telegram",
+      "totalSamples": 31,
+      "retryRequiredSamples": 0
+    }
+  ],
+  "uiSourceHint": "retry 시계열 source=server_api · fetchedAt=2026-03-05T02:51:55.126Z",
+  "uiRowCount": 23,
+  "seedEntries": 4,
+  "preservedNonSeedEntries": 80,
+  "droppedNonSeedEntries": 0
+}

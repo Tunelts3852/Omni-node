@@ -1,0 +1,367 @@
+{
+  "ok": true,
+  "stage": "P6",
+  "generatedAtUtc": "2026-03-05T02:51:23.045Z",
+  "key_source_policy": "keychain|secure_file_600",
+  "project": "/Users/songhabin/Omni-node/omninode-middleware/OmniNode.Middleware.csproj",
+  "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044",
+  "liveTargets": {
+    "enabled": false,
+    "webhookConfigured": false,
+    "logCollectorConfigured": false
+  },
+  "dispatchPolicy": {
+    "timeoutMs": 900,
+    "maxAttempts": 1
+  },
+  "build": {
+    "command": "dotnet build /Users/songhabin/Omni-node/omninode-middleware/OmniNode.Middleware.csproj",
+    "stdoutTail": "  복원할 프로젝트를 확인하는 중...\n  /Users/songhabin/Omni-node/omninode-middleware/OmniNode.Middleware.csproj을(를) 922밀리초 동안 복원했습니다.\n  OmniNode.Middleware -> /Users/songhabin/Omni-node/omninode-middleware/bin/Debug/net9.0/OmniNode.Middleware.dll\n빌드했습니다.\n    경고 0개\n    오류 0개\n경과 시간: 00:00:01.52"
+  },
+  "scenarios": [
+    {
+      "name": "no_target_configured",
+      "description": "Webhook/Log Collector URL이 모두 비어 있을 때 no_target_configured",
+      "ok": true,
+      "wsPort": "61362",
+      "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044/no_target_configured",
+      "expected": {
+        "ok": false,
+        "status": "no_target_configured",
+        "sentCount": 0,
+        "failedCount": 0,
+        "skippedCount": 2,
+        "targetStatuses": {
+          "webhook": "skipped",
+          "log_collector": "skipped"
+        }
+      },
+      "dispatchResult": {
+        "type": "guard_alert_dispatch_result",
+        "ok": false,
+        "status": "no_target_configured",
+        "message": "guard alert dispatch skipped: no target configured",
+        "schemaVersion": "guard_alert_event.v1",
+        "eventType": "omninode.guard_alert.summary",
+        "attemptedAtUtc": "2026-03-05T02:51:28.0140610+00:00",
+        "sentCount": 0,
+        "failedCount": 0,
+        "skippedCount": 2,
+        "targets": [
+          {
+            "name": "webhook",
+            "status": "skipped",
+            "attempts": 0,
+            "statusCode": null,
+            "error": "target_not_configured",
+            "endpoint": "-"
+          },
+          {
+            "name": "log_collector",
+            "status": "skipped",
+            "attempts": 0,
+            "statusCode": null,
+            "error": "target_not_configured",
+            "endpoint": "-"
+          }
+        ]
+      },
+      "requestCounts": {
+        "webhook": 0,
+        "log_collector": 0
+      },
+      "payloadContract": {
+        "eventPayload": "verified",
+        "mockTargetPayload": "not_applicable",
+        "checkedMockRequestCount": 0,
+        "checkedMockTargets": [],
+        "reason": "no_mock_request_captured"
+      },
+      "logs": {
+        "stdoutTail": "[memory-index] ready db=/tmp/omninode-guard-alert-dispatch-1772679083044/no_target_configured/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61362, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61362/ ws=ws://127.0.0.1:61362/ws/\n[otp] local fallback otp=755873 session=481bb21f7fbf416eb52d46b99589ec87",
+        "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused\n[guard-alert] guard alert dispatch skipped: no target configured"
+      },
+      "error": ""
+    },
+    {
+      "name": "sent_all",
+      "description": "Webhook/Log Collector 모두 HTTP 2xx 응답 시 sent",
+      "ok": true,
+      "wsPort": "61370",
+      "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044/sent_all",
+      "expected": {
+        "ok": true,
+        "status": "sent",
+        "sentCount": 2,
+        "failedCount": 0,
+        "skippedCount": 0,
+        "targetStatuses": {
+          "webhook": "sent",
+          "log_collector": "sent"
+        }
+      },
+      "dispatchResult": {
+        "type": "guard_alert_dispatch_result",
+        "ok": true,
+        "status": "sent",
+        "message": "guard alert dispatched (2 targets)",
+        "schemaVersion": "guard_alert_event.v1",
+        "eventType": "omninode.guard_alert.summary",
+        "attemptedAtUtc": "2026-03-05T02:51:32.6971660+00:00",
+        "sentCount": 2,
+        "failedCount": 0,
+        "skippedCount": 0,
+        "targets": [
+          {
+            "name": "webhook",
+            "status": "sent",
+            "attempts": 1,
+            "statusCode": 202,
+            "error": "-",
+            "endpoint": "http://127.0.0.1:61371/webhook"
+          },
+          {
+            "name": "log_collector",
+            "status": "sent",
+            "attempts": 1,
+            "statusCode": 200,
+            "error": "-",
+            "endpoint": "http://127.0.0.1:61372/log_collector"
+          }
+        ]
+      },
+      "requestCounts": {
+        "webhook": 1,
+        "log_collector": 1
+      },
+      "payloadContract": {
+        "eventPayload": "verified",
+        "mockTargetPayload": "verified",
+        "checkedMockRequestCount": 2,
+        "checkedMockTargets": [
+          "webhook",
+          "log_collector"
+        ],
+        "reason": ""
+      },
+      "logs": {
+        "stdoutTail": "[memory-index] ready db=/tmp/omninode-guard-alert-dispatch-1772679083044/sent_all/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61370, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61370/ ws=ws://127.0.0.1:61370/ws/\n[otp] local fallback otp=874239 session=3f50d6c6f1294dde9b8ecc1f25391013\n[guard-alert] guard alert dispatched (2 targets)",
+        "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused"
+      },
+      "error": ""
+    },
+    {
+      "name": "partial_failed_http",
+      "description": "한쪽 HTTP 실패(500) 시 partial_failed",
+      "ok": true,
+      "wsPort": "61380",
+      "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044/partial_failed_http",
+      "expected": {
+        "ok": false,
+        "status": "partial_failed",
+        "sentCount": 1,
+        "failedCount": 1,
+        "skippedCount": 0,
+        "targetStatuses": {
+          "webhook": "sent",
+          "log_collector": "failed"
+        },
+        "targetErrorsInclude": {
+          "log_collector": "http_500"
+        }
+      },
+      "dispatchResult": {
+        "type": "guard_alert_dispatch_result",
+        "ok": false,
+        "status": "partial_failed",
+        "message": "guard alert partial failure (sent=1, failed=1, skipped=0)",
+        "schemaVersion": "guard_alert_event.v1",
+        "eventType": "omninode.guard_alert.summary",
+        "attemptedAtUtc": "2026-03-05T02:51:37.4065810+00:00",
+        "sentCount": 1,
+        "failedCount": 1,
+        "skippedCount": 0,
+        "targets": [
+          {
+            "name": "webhook",
+            "status": "sent",
+            "attempts": 1,
+            "statusCode": 200,
+            "error": "-",
+            "endpoint": "http://127.0.0.1:61381/webhook"
+          },
+          {
+            "name": "log_collector",
+            "status": "failed",
+            "attempts": 1,
+            "statusCode": 500,
+            "error": "http_500: collector down",
+            "endpoint": "http://127.0.0.1:61382/log_collector"
+          }
+        ]
+      },
+      "requestCounts": {
+        "webhook": 1,
+        "log_collector": 1
+      },
+      "payloadContract": {
+        "eventPayload": "verified",
+        "mockTargetPayload": "verified",
+        "checkedMockRequestCount": 2,
+        "checkedMockTargets": [
+          "webhook",
+          "log_collector"
+        ],
+        "reason": ""
+      },
+      "logs": {
+        "stdoutTail": "[memory-index] ready db=/tmp/omninode-guard-alert-dispatch-1772679083044/partial_failed_http/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61380, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61380/ ws=ws://127.0.0.1:61380/ws/\n[otp] local fallback otp=180806 session=be77c49a93b3464886d56532a7f5f53c",
+        "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused\n[guard-alert] guard alert partial failure (sent=1, failed=1, skipped=0)"
+      },
+      "error": ""
+    },
+    {
+      "name": "failed_timeout",
+      "description": "모든 대상 timeout 시 failed",
+      "ok": true,
+      "wsPort": "61393",
+      "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044/failed_timeout",
+      "expected": {
+        "ok": false,
+        "status": "failed",
+        "sentCount": 0,
+        "failedCount": 2,
+        "skippedCount": 0,
+        "targetStatuses": {
+          "webhook": "failed",
+          "log_collector": "failed"
+        },
+        "targetErrorsInclude": {
+          "webhook": "timeout",
+          "log_collector": "timeout"
+        }
+      },
+      "dispatchResult": {
+        "type": "guard_alert_dispatch_result",
+        "ok": false,
+        "status": "failed",
+        "message": "guard alert dispatch failed (failed=2, skipped=0)",
+        "schemaVersion": "guard_alert_event.v1",
+        "eventType": "omninode.guard_alert.summary",
+        "attemptedAtUtc": "2026-03-05T02:51:42.1243280+00:00",
+        "sentCount": 0,
+        "failedCount": 2,
+        "skippedCount": 0,
+        "targets": [
+          {
+            "name": "webhook",
+            "status": "failed",
+            "attempts": 1,
+            "statusCode": null,
+            "error": "timeout",
+            "endpoint": "http://127.0.0.1:61394/webhook"
+          },
+          {
+            "name": "log_collector",
+            "status": "failed",
+            "attempts": 1,
+            "statusCode": null,
+            "error": "timeout",
+            "endpoint": "http://127.0.0.1:61395/log_collector"
+          }
+        ]
+      },
+      "requestCounts": {
+        "webhook": 1,
+        "log_collector": 1
+      },
+      "payloadContract": {
+        "eventPayload": "verified",
+        "mockTargetPayload": "verified",
+        "checkedMockRequestCount": 2,
+        "checkedMockTargets": [
+          "webhook",
+          "log_collector"
+        ],
+        "reason": ""
+      },
+      "logs": {
+        "stdoutTail": "[memory-index] ready db=/tmp/omninode-guard-alert-dispatch-1772679083044/failed_timeout/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61393, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61393/ ws=ws://127.0.0.1:61393/ws/\n[otp] local fallback otp=572046 session=6af34963ced54081ab2de25320dea0fe",
+        "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused\n[guard-alert] guard alert dispatch failed (failed=2, skipped=0)"
+      },
+      "error": ""
+    },
+    {
+      "name": "failed_invalid_url",
+      "description": "유효하지 않은 스킴 URL 주입 시 invalid_url 계열 실패",
+      "ok": true,
+      "wsPort": "61405",
+      "runtimeDir": "/tmp/omninode-guard-alert-dispatch-1772679083044/failed_invalid_url",
+      "expected": {
+        "ok": false,
+        "status": "failed",
+        "sentCount": 0,
+        "failedCount": 1,
+        "skippedCount": 1,
+        "targetStatuses": {
+          "webhook": "failed",
+          "log_collector": "skipped"
+        },
+        "targetErrorsInclude": {
+          "webhook": "invalid_target_scheme"
+        }
+      },
+      "dispatchResult": {
+        "type": "guard_alert_dispatch_result",
+        "ok": false,
+        "status": "failed",
+        "message": "guard alert dispatch failed (failed=1, skipped=1)",
+        "schemaVersion": "guard_alert_event.v1",
+        "eventType": "omninode.guard_alert.summary",
+        "attemptedAtUtc": "2026-03-05T02:51:48.5240490+00:00",
+        "sentCount": 0,
+        "failedCount": 1,
+        "skippedCount": 1,
+        "targets": [
+          {
+            "name": "webhook",
+            "status": "failed",
+            "attempts": 0,
+            "statusCode": null,
+            "error": "invalid_target_scheme",
+            "endpoint": "-"
+          },
+          {
+            "name": "log_collector",
+            "status": "skipped",
+            "attempts": 0,
+            "statusCode": null,
+            "error": "target_not_configured",
+            "endpoint": "-"
+          }
+        ]
+      },
+      "requestCounts": {
+        "webhook": 0,
+        "log_collector": 0
+      },
+      "payloadContract": {
+        "eventPayload": "verified",
+        "mockTargetPayload": "not_applicable",
+        "checkedMockRequestCount": 0,
+        "checkedMockTargets": [],
+        "reason": "no_mock_request_captured"
+      },
+      "logs": {
+        "stdoutTail": "[memory-index] ready db=/tmp/omninode-guard-alert-dispatch-1772679083044/failed_invalid_url/memory-index/main.sqlite fts=available\n[memory-index] sync scanned=0 indexed=0 skipped=0 removed=0 fts=available\n[middleware] starting (ws=61405, uds=/tmp/omninode_core.501.sock)\n[web] dashboard=http://127.0.0.1:61405/ ws=ws://127.0.0.1:61405/ws/\n[otp] local fallback otp=127204 session=830e2dcadba3458a9a9e6a3f95a37cce",
+        "stderrTail": "[secrets] telegram_bot_token keychain lookup failed, fallback source will be used.\n[secrets] telegram_bot_token secret file not found.\n[secrets] telegram_chat_id keychain lookup failed, fallback source will be used.\n[secrets] telegram_chat_id secret file not found.\n[ws] metrics stream error: Connection refused\n[guard-alert] guard alert dispatch failed (failed=1, skipped=1)"
+      },
+      "error": ""
+    }
+  ],
+  "summary": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0
+  }
+}

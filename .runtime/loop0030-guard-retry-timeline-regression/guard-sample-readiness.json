@@ -1,0 +1,45 @@
+{
+  "ok": true,
+  "generatedAtUtc": "2026-03-05T03:35:16.669Z",
+  "schemaVersion": "guard_retry_timeline.v1",
+  "schemaVersionMatched": true,
+  "policy": {
+    "requiredTotalSamples": 30,
+    "requiredPerChannelSamples": 1,
+    "requiredChannels": [
+      "chat",
+      "coding",
+      "telegram"
+    ],
+    "excludeSeedEntries": true
+  },
+  "state": {
+    "path": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+    "totalEntries": 146,
+    "consideredEntries": 142,
+    "ignoredSeedEntries": 4,
+    "ignoredNonOperationalChannels": 0,
+    "invalidEntries": 0,
+    "invalidCapturedAtEntries": 0,
+    "earliestCapturedAtUtc": "2026-03-05T01:30:45.173Z",
+    "latestCapturedAtUtc": "2026-03-05T03:35:10.440Z"
+  },
+  "samples": {
+    "total": 142,
+    "byChannel": {
+      "chat": 29,
+      "coding": 28,
+      "telegram": 85
+    }
+  },
+  "readiness": {
+    "ready": true,
+    "reasons": [],
+    "totalShortfall": 0,
+    "channelShortfalls": {
+      "chat": 0,
+      "coding": 0,
+      "telegram": 0
+    }
+  }
+}

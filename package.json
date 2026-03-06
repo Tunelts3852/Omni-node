@@ -1,0 +1,15 @@
+{
+  "name": "omni-node",
+  "version": "1.0.0",
+  "description": "Omni-node는 로컬 PC 자원 제어, LLM 오케스트레이션, 코딩 실행 자동화, 루틴 스케줄링을 하나로 묶은 로컬 에이전트입니다. 현재 워크스페이스 기준으로 `C 코어 + C#(.NET 9) 미들웨어 + 대시보드(React) + 텔레그램 봇` 구조로 동작합니다.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "playwright": "^1.58.2"
+  }
+}

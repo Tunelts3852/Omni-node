@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.omninode.agent</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/omninode/bin/omninode_middleware</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/omninode.out.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/log/omninode.err.log</string>
+  </dict>
+</plist>
+

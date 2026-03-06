@@ -1,0 +1,173 @@
+{
+  "ok": true,
+  "stage": "P7",
+  "generatedAtUtc": "2026-03-05T03:41:00.039Z",
+  "policy": {
+    "geminiKeySource": "keychain|secure_file_600",
+    "geminiKeyRequiredFor": [
+      "test",
+      "validation",
+      "regression",
+      "production_run"
+    ],
+    "operationalScope": [
+      "local",
+      "telegram_bot"
+    ],
+    "expectedChannels": [
+      "chat",
+      "coding",
+      "telegram"
+    ]
+  },
+  "inputs": {
+    "smokeReportPath": "/Users/songhabin/Omni-node/.runtime/loop0031-guard-retry-timeline-regression/p3-guard-smoke-run2.json",
+    "timelineStatePath": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+    "readinessReportPath": "/Users/songhabin/Omni-node/.runtime/loop0031-guard-retry-timeline-regression/guard-sample-readiness.json"
+  },
+  "regression": {
+    "smoke": {
+      "smokeOk": true,
+      "keySourcePolicy": "keychain|secure_file_600",
+      "keySourcePolicyMatched": true,
+      "checks": {
+        "chatGuardBlocked": {
+          "ok": true,
+          "guardCategory": "coverage",
+          "guardReason": "insufficient_document_count",
+          "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+          "retryRequired": true,
+          "retryAction": "retry_with_recollect_loop",
+          "retryScope": "gemini_grounding_search",
+          "retryReason": "insufficient_document_count"
+        },
+        "codingGuardBlocked": {
+          "ok": true,
+          "guardCategory": "coverage",
+          "guardReason": "insufficient_document_count",
+          "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+          "retryRequired": true,
+          "retryAction": "retry_with_recollect_loop",
+          "retryScope": "gemini_grounding_search",
+          "retryReason": "insufficient_document_count"
+        },
+        "telegramGuardAuditBlocked": {
+          "ok": true,
+          "action": "telegram_guard_meta",
+          "status": "blocked",
+          "message": "route=telegram-single:copilot:gpt-5-mini:unsupported guardCategory=coverage guardReason=insufficient_document_count guardDetail=target=3, collected=0, termination=count_lock_unsatisfied_after_retries"
+        },
+        "telegramRouteResult": {
+          "ok": true,
+          "status": "ok",
+          "guardCategory": "-",
+          "guardReason": "-",
+          "guardDetail": "-",
+          "retryRequired": false,
+          "retryAction": "-",
+          "retryScope": "-",
+          "retryReason": "-"
+        }
+      },
+      "traces": [
+        {
+          "step": "chat_guard_probe",
+          "attempt": 1,
+          "guardCategory": "coverage",
+          "guardReason": "insufficient_document_count",
+          "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+          "retryRequired": true,
+          "retryAction": "retry_with_recollect_loop",
+          "retryScope": "gemini_grounding_search",
+          "retryReason": "insufficient_document_count"
+        },
+        {
+          "step": "coding_guard_probe",
+          "attempt": 1,
+          "guardCategory": "coverage",
+          "guardReason": "insufficient_document_count",
+          "guardDetail": "target=3, collected=0, termination=count_lock_unsatisfied_after_retries",
+          "retryRequired": true,
+          "retryAction": "retry_with_recollect_loop",
+          "retryScope": "gemini_grounding_search",
+          "retryReason": "insufficient_document_count"
+        }
+      ],
+      "searchPathSingleGeminiGrounding": true,
+      "countLockTerminationObserved": {
+        "chat": true,
+        "coding": true,
+        "telegramAudit": true
+      },
+      "countLockTerminationObservedAllChannels": true,
+      "multiProviderRouteObserved": true
+    },
+    "timeline": {
+      "statePath": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+      "schemaVersion": "guard_retry_timeline.v1",
+      "schemaVersionMatched": true,
+      "totalEntries": 156,
+      "nonSeedEntries": 152,
+      "byChannel": {
+        "chat": 31,
+        "coding": 30,
+        "telegram": 91
+      },
+      "retryRequiredTotal": 60,
+      "retryRequiredRate": 0.394737,
+      "stopReasons": {
+        "count_lock_unsatisfied": 0,
+        "count_lock_unsatisfied_after_retries": 0,
+        "citation_validation_failed": 0,
+        "max_attempts_reached": 60,
+        "other": 1
+      },
+      "latestCapturedAtUtc": "2026-03-05T03:40:48.543Z"
+    },
+    "readiness": {
+      "ok": true,
+      "generatedAtUtc": "2026-03-05T03:40:55.656Z",
+      "schemaVersion": "guard_retry_timeline.v1",
+      "schemaVersionMatched": true,
+      "policy": {
+        "requiredTotalSamples": 30,
+        "requiredPerChannelSamples": 1,
+        "requiredChannels": [
+          "chat",
+          "coding",
+          "telegram"
+        ],
+        "excludeSeedEntries": true
+      },
+      "state": {
+        "path": "/Users/songhabin/Omni-node/.runtime/loop43-guard-retry-timeline-browser-e2e/guard_retry_timeline.json",
+        "totalEntries": 156,
+        "consideredEntries": 152,
+        "ignoredSeedEntries": 4,
+        "ignoredNonOperationalChannels": 0,
+        "invalidEntries": 0,
+        "invalidCapturedAtEntries": 0,
+        "earliestCapturedAtUtc": "2026-03-05T01:30:45.173Z",
+        "latestCapturedAtUtc": "2026-03-05T03:40:48.543Z"
+      },
+      "samples": {
+        "total": 152,
+        "byChannel": {
+          "chat": 31,
+          "coding": 30,
+          "telegram": 91
+        }
+      },
+      "readiness": {
+        "ready": true,
+        "reasons": [],
+        "totalShortfall": 0,
+        "channelShortfalls": {
+          "chat": 0,
+          "coding": 0,
+          "telegram": 0
+        }
+      }
+    }
+  }
+}
