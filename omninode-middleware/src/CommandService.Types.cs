@@ -93,6 +93,24 @@ public sealed record MultiChatRequest(
     IReadOnlyList<string>? WebUrls = null,
     bool WebSearchEnabled = true
 );
+public sealed record ChatStreamUpdate(
+    string Scope,
+    string Mode,
+    string ConversationId,
+    string Provider,
+    string Model,
+    string Route,
+    string Delta,
+    int ChunkIndex
+);
+public sealed record ChatLatencyMetrics(
+    long DecisionMs,
+    long PromptBuildMs,
+    long FirstChunkMs,
+    long FullResponseMs,
+    long SanitizeMs,
+    string DecisionPath
+);
 public sealed record ConversationChatResult(
     string Mode,
     string ConversationId,
@@ -108,7 +126,8 @@ public sealed record ConversationChatResult(
     SearchCitationValidationSummary? CitationValidation = null,
     int RetryAttempt = 0,
     int RetryMaxAttempts = 0,
-    string RetryStopReason = "-"
+    string RetryStopReason = "-",
+    ChatLatencyMetrics? Latency = null
 );
 public sealed record ConversationMultiResult(
     string ConversationId,

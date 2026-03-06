@@ -9,7 +9,6 @@ public sealed class AppConfig
     private const string TelegramChatIdService = "omninode_telegram_chat_id";
     private const string GroqApiKeyService = "omninode_groq_api_key";
     private const string GeminiApiKeyService = "omninode_gemini_api_key";
-    private const string TavilyApiKeyService = "omninode_tavily_api_key";
     private const string CerebrasApiKeyService = "omninode_cerebras_api_key";
 
     public int WebSocketPort { get; init; } = 8080;
@@ -31,17 +30,11 @@ public sealed class AppConfig
     public string GeminiBaseUrl { get; init; } = "https://generativelanguage.googleapis.com/v1beta";
     public string GeminiModel { get; init; } = "gemini-3-flash-preview";
     public string GeminiSearchModel { get; init; } = "gemini-3.1-flash-lite-preview";
-    public string TavilyKeychainService { get; init; } = TavilyApiKeyService;
-    public string TavilyKeychainAccount { get; init; } = DefaultKeychainAccount;
-    public string TavilyBaseUrl { get; init; } = "https://api.tavily.com/search";
-    public int TavilyTimeoutSec { get; init; } = 15;
-    public int TavilyMaxResults { get; init; } = 5;
     public string CerebrasBaseUrl { get; init; } = "https://api.cerebras.ai/v1";
     public string CerebrasModel { get; init; } = "gpt-oss-120b";
     public int CerebrasTimeoutSec { get; init; } = 20;
     public string CerebrasKeychainService { get; init; } = CerebrasApiKeyService;
     public string CerebrasKeychainAccount { get; init; } = DefaultKeychainAccount;
-    public string? TavilyApiKey { get; init; }
     public string? CerebrasApiKey { get; init; }
     public decimal GeminiInputPricePerMillionUsd { get; init; } = 0.50m;
     public decimal GeminiOutputPricePerMillionUsd { get; init; } = 3.00m;
@@ -67,7 +60,7 @@ public sealed class AppConfig
     public int LlmTimeoutSec { get; init; } = 20;
     public bool EnableFastWebPipeline { get; init; } = true;
     public int WebDecisionTimeoutMs { get; init; } = 700;
-    public int GeminiWebTimeoutMs { get; init; } = 10000;
+    public int GeminiWebTimeoutMs { get; init; } = 30000;
     public int WebDefaultNewsCount { get; init; } = 10;
     public int WebDefaultListCount { get; init; } = 5;
     public int WebSocketMaxMessageBytes { get; init; } = 157286400;
@@ -146,25 +139,11 @@ public sealed class AppConfig
             GeminiBaseUrl = GetStringEnv("OMNINODE_GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
             GeminiModel = GetStringEnv("OMNINODE_GEMINI_MODEL", "gemini-3-flash-preview"),
             GeminiSearchModel = GetStringEnv("OMNINODE_GEMINI_SEARCH_MODEL", "gemini-3.1-flash-lite-preview"),
-            TavilyKeychainService = GetStringEnv("OMNINODE_TAVILY_KEYCHAIN_SERVICE", TavilyApiKeyService),
-            TavilyKeychainAccount = GetStringEnv("OMNINODE_TAVILY_KEYCHAIN_ACCOUNT", DefaultKeychainAccount),
-            TavilyBaseUrl = GetStringEnv("OMNINODE_TAVILY_BASE_URL", "https://api.tavily.com/search"),
-            TavilyTimeoutSec = GetIntEnv("OMNINODE_TAVILY_TIMEOUT_SEC", 15),
-            TavilyMaxResults = GetIntEnv("OMNINODE_TAVILY_MAX_RESULTS", 5),
             CerebrasBaseUrl = GetStringEnv("OMNINODE_CEREBRAS_BASE_URL", "https://api.cerebras.ai/v1"),
             CerebrasModel = GetStringEnv("OMNINODE_CEREBRAS_MODEL", "gpt-oss-120b"),
             CerebrasTimeoutSec = GetIntEnv("OMNINODE_CEREBRAS_TIMEOUT_SEC", 20),
             CerebrasKeychainService = GetStringEnv("OMNINODE_CEREBRAS_KEYCHAIN_SERVICE", CerebrasApiKeyService),
             CerebrasKeychainAccount = GetStringEnv("OMNINODE_CEREBRAS_KEYCHAIN_ACCOUNT", DefaultKeychainAccount),
-            TavilyApiKey = SecretLoader.ResolveApiKey(
-                providerName: "tavily",
-                directEnvKey: "OMNINODE_TAVILY_API_KEY",
-                fileEnvKey: "OMNINODE_TAVILY_API_KEY_FILE",
-                keychainServiceEnvKey: "OMNINODE_TAVILY_KEYCHAIN_SERVICE",
-                keychainAccountEnvKey: "OMNINODE_TAVILY_KEYCHAIN_ACCOUNT",
-                defaultKeychainService: TavilyApiKeyService,
-                defaultKeychainAccount: DefaultKeychainAccount
-            ),
             CerebrasApiKey = SecretLoader.ResolveApiKey(
                 providerName: "cerebras",
                 directEnvKey: "OMNINODE_CEREBRAS_API_KEY",
@@ -198,7 +177,7 @@ public sealed class AppConfig
             LlmTimeoutSec = GetIntEnv("OMNINODE_LLM_TIMEOUT_SEC", 20),
             EnableFastWebPipeline = GetBoolEnv("OMNINODE_FAST_WEB_PIPELINE", true),
             WebDecisionTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_WEB_DECISION_TIMEOUT_MS", 700), 200, 5000),
-            GeminiWebTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_GEMINI_WEB_TIMEOUT_MS", 10000), 1000, 20000),
+            GeminiWebTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_GEMINI_WEB_TIMEOUT_MS", 30000), 5000, 60000),
             WebDefaultNewsCount = Math.Clamp(GetIntEnv("OMNINODE_WEB_DEFAULT_NEWS_COUNT", 10), 1, 20),
             WebDefaultListCount = Math.Clamp(GetIntEnv("OMNINODE_WEB_DEFAULT_LIST_COUNT", 5), 1, 20),
             WebSocketMaxMessageBytes = GetIntEnv("OMNINODE_WS_MAX_MESSAGE_BYTES", 157286400),

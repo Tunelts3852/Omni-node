@@ -689,6 +689,12 @@ public sealed partial class CommandService
         var command = NormalizeNaturalCommandKey(interpretation.Command);
         var args = interpretation.Args ?? new Dictionary<string, string>();
 
+        if (command.StartsWith("routine.", StringComparison.Ordinal)
+            && !ContainsExplicitRoutineKeyword(rawInput))
+        {
+            return new NaturalCommandValidationResult(false, false, null, "routine_keyword_required", "루틴 키워드가 필요합니다.");
+        }
+
         string GetArg(params string[] keys)
         {
             foreach (var key in keys)
@@ -706,6 +712,11 @@ public sealed partial class CommandService
         {
             case "profile.set":
             {
+                if (!ContainsExplicitProfileControlIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "profile_keyword_required", "프로필 키워드가 필요합니다.");
+                }
+
                 var profile = GetArg("profile", "name", "value").ToLowerInvariant();
                 if (profile is not ("talk" or "code"))
                 {
@@ -722,6 +733,11 @@ public sealed partial class CommandService
             }
             case "mode.set":
             {
+                if (!ContainsExplicitModeControlIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "mode_keyword_required", "모드 변경 키워드가 필요합니다.");
+                }
+
                 var mode = GetArg("mode", "value").ToLowerInvariant();
                 if (mode is not ("single" or "orchestration" or "multi"))
                 {
@@ -734,6 +750,11 @@ public sealed partial class CommandService
             {
                 var slot = GetArg("slot", "target").ToLowerInvariant();
                 var provider = GetArg("provider", "value").ToLowerInvariant();
+                if (!ContainsExplicitProviderControlIntent(rawInput, slot))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "provider_keyword_required", "제공자 변경 키워드가 필요합니다.");
+                }
+
                 if (slot is not ("single" or "orchestration" or "summary"))
                 {
                     return new NaturalCommandValidationResult(false, false, null, "invalid_provider_slot", "invalid provider slot");
@@ -748,6 +769,11 @@ public sealed partial class CommandService
             }
             case "model.set":
             {
+                if (!ContainsExplicitModelControlIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "model_keyword_required", "모델 변경 키워드가 필요합니다.");
+                }
+
                 var slot = GetArg("slot", "target").ToLowerInvariant();
                 var model = GetArg("model", "value");
                 if (slot is not ("single" or "orchestration" or "multi.groq" or "multi.copilot" or "multi.cerebras"))
@@ -796,13 +822,33 @@ public sealed partial class CommandService
                 return new NaturalCommandValidationResult(true, false, new CanonicalCommand(command, $"/routine {action} {id}"), "ok", string.Empty);
             }
             case "metrics.get":
+                if (!ContainsExplicitMetricsIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "metrics_keyword_required", "메트릭 키워드가 필요합니다.");
+                }
+
                 return new NaturalCommandValidationResult(true, false, new CanonicalCommand(command, "/metrics"), "ok", string.Empty);
             case "llm.status":
+                if (!ContainsExplicitLlmStatusIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "llm_status_keyword_required", "LLM 상태 확인 키워드가 필요합니다.");
+                }
+
                 return new NaturalCommandValidationResult(true, false, new CanonicalCommand(command, "/llm status"), "ok", string.Empty);
             case "llm.usage":
+                if (!ContainsExplicitLlmUsageIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "llm_usage_keyword_required", "LLM 사용량 키워드가 필요합니다.");
+                }
+
                 return new NaturalCommandValidationResult(true, false, new CanonicalCommand(command, "/llm usage"), "ok", string.Empty);
             case "help.show":
             {
+                if (!ContainsExplicitHelpIntent(rawInput))
+                {
+                    return new NaturalCommandValidationResult(false, false, null, "help_keyword_required", "도움말 키워드가 필요합니다.");
+                }
+
                 var topic = GetArg("topic", "value").ToLowerInvariant();
                 if (string.IsNullOrWhiteSpace(topic))
                 {
@@ -873,6 +919,180 @@ public sealed partial class CommandService
         }
 
         return normalized.Contains("메모리", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ContainsExplicitProfileControlIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hasProfileKeyword = ContainsAny(normalized, "프로필", "profile", "talk", "code");
+        return hasProfileKeyword && ContainsNaturalSettingVerb(normalized);
+    }
+
+    private static bool ContainsExplicitModeControlIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hasModeKeyword = ContainsAny(
+            normalized,
+            "모드",
+            "mode",
+            "단일모드",
+            "멀티모드",
+            "오케스트레이션",
+            "orchestration",
+            "single mode",
+            "multi mode"
+        );
+        return hasModeKeyword && ContainsNaturalSettingVerb(normalized);
+    }
+
+    private static bool ContainsExplicitProviderControlIntent(string text, string slot)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hasProviderKeyword = ContainsAny(normalized, "provider", "제공자", "공급자");
+        var hasLlmContext = ContainsAny(normalized, "llm", "모델", "model", "채팅", "single", "multi", "orchestration");
+        var providerNameCount = CountProviderNameMentions(normalized);
+        var hasSummaryKeyword = ContainsAny(normalized, "summary", "요약");
+        if (string.Equals(slot, "summary", StringComparison.OrdinalIgnoreCase) && !hasSummaryKeyword)
+        {
+            return false;
+        }
+
+        if (hasProviderKeyword && (hasLlmContext || hasSummaryKeyword || providerNameCount > 0))
+        {
+            return true;
+        }
+
+        return ContainsNaturalSettingVerb(normalized)
+            && providerNameCount > 0
+            && (hasLlmContext || providerNameCount >= 2 || hasSummaryKeyword);
+    }
+
+    private static bool ContainsExplicitModelControlIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(normalized, "모델", "model", "llm")
+            && ContainsNaturalSettingVerb(normalized);
+    }
+
+    private static bool ContainsExplicitMetricsIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(normalized, "metrics", "metric", "메트릭", "지표");
+    }
+
+    private static bool ContainsExplicitLlmStatusIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hasLlmKeyword = ContainsAny(normalized, "llm", "모델", "model", "provider", "제공자");
+        var hasStatusKeyword = ContainsAny(normalized, "상태", "status", "뭐", "무엇", "어떤", "현재", "지금", "사용", "쓰고");
+        return hasLlmKeyword && hasStatusKeyword;
+    }
+
+    private static bool ContainsExplicitLlmUsageIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(normalized, "quota", "usage", "limit", "사용량", "한도", "쿼터", "잔여");
+    }
+
+    private static bool ContainsExplicitHelpIntent(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(normalized, "help", "도움말", "명령어", "사용법", "가이드", "뭐 할 수", "뭘 할 수", "할수있는", "할 수 있는");
+    }
+
+    private static int CountProviderNameMentions(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return 0;
+        }
+
+        var count = 0;
+        foreach (var provider in new[] { "groq", "gemini", "copilot", "cerebras", "auto" })
+        {
+            if (normalized.Contains(provider, StringComparison.Ordinal))
+            {
+                count += 1;
+            }
+        }
+
+        return count;
+    }
+
+    private static bool ContainsNaturalSettingVerb(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+            normalized,
+            "변경",
+            "바꿔",
+            "바꿔줘",
+            "설정",
+            "전환",
+            "set",
+            "switch",
+            "맞춰",
+            "해줘",
+            "선택"
+        );
+    }
+
+    private static bool ContainsExplicitRoutineKeyword(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return normalized.Contains("루틴", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("routine", StringComparison.OrdinalIgnoreCase);
     }
 
     private string ApplyChannelProfile(string source, string profile, string thinking)

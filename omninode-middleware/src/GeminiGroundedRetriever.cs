@@ -21,8 +21,8 @@ public sealed record GeminiGroundedRetrieverResult(
 
 public sealed class GeminiGroundedRetriever
 {
-    private const string RetrieverModel = "gemini-3.1-flash-lite-preview";
-    private const int DefaultTimeoutSeconds = 10;
+    private const string DefaultRetrieverModel = "gemini-3.1-flash-lite-preview";
+    private const int DefaultTimeoutSeconds = 30;
     private const int MaxOutputTokens = 8192;
     private static readonly Regex RawUrlRegex = new(
         @"https?://[^\s""'<>\\]+",
@@ -55,7 +55,7 @@ public sealed class GeminiGroundedRetriever
         _config = config;
         _runtimeSettings = runtimeSettings;
         _httpClient = httpClient ?? SharedHttpClient;
-        _timeoutSeconds = ResolveTimeout(config.LlmTimeoutSec);
+        _timeoutSeconds = ResolveTimeout(config.GeminiWebTimeoutMs);
     }
 
     public async Task<GeminiGroundedRetrieverResult> RetrieveAsync(
@@ -77,7 +77,8 @@ public sealed class GeminiGroundedRetriever
         }
 
         var normalizedMaxResults = NormalizeMaxResults(maxResults);
-        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{RetrieverModel}:generateContent";
+        var selectedModel = ResolveRetrieverModel(_config.GeminiSearchModel);
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
         var prompt = BuildRetrieverPrompt(request, normalizedMaxResults);
         var requestJson = BuildRequestJson(prompt);
 
@@ -116,6 +117,9 @@ public sealed class GeminiGroundedRetriever
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            Console.Error.WriteLine(
+                $"[gemini] grounding timeout ({_timeoutSeconds}s, model={selectedModel}, maxResults={normalizedMaxResults})"
+            );
             return new GeminiGroundedRetrieverResult(Array.Empty<GeminiGroundedResultItem>(), true, "gemini grounding timeout");
         }
         catch (Exception ex)
@@ -124,14 +128,21 @@ public sealed class GeminiGroundedRetriever
         }
     }
 
-    private static int ResolveTimeout(int timeoutSeconds)
+    private static int ResolveTimeout(int timeoutMs)
     {
-        if (timeoutSeconds <= 0)
+        if (timeoutMs <= 0)
         {
             return DefaultTimeoutSeconds;
         }
 
-        return Math.Clamp(timeoutSeconds, 4, 30);
+        var timeoutSeconds = (int)Math.Ceiling(timeoutMs / 1000d);
+        return Math.Clamp(timeoutSeconds, 5, 60);
+    }
+
+    private static string ResolveRetrieverModel(string? configuredModel)
+    {
+        var normalized = (configuredModel ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? DefaultRetrieverModel : normalized;
     }
 
     private static int NormalizeMaxResults(int maxResults)

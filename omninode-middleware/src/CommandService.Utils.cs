@@ -715,6 +715,7 @@ public sealed partial class CommandService
         }
 
         merged = NormalizeSourceBlockToSingleLine(merged);
+        merged = NormalizeStructuredLabelBlocks(merged);
         return merged;
     }
 
@@ -787,6 +788,136 @@ public sealed partial class CommandService
         }
 
         return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static string NormalizeStructuredLabelBlocks(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var normalized = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<=[.!?]|…)\s*(?=(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?[A-Za-z가-힣0-9(][A-Za-z가-힣0-9().&+_/\-·\s]{1,80}[:：](?:\s|$))",
+            "\n\n",
+            RegexOptions.CultureInvariant
+        );
+        normalized = Regex.Replace(
+            normalized,
+            @"(?im)^(?<head>(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?출처\s*링크\s*[:：]\s*[^\n]*?)\s+(?<url>https?://\S+)\s*$",
+            "${head}\n${url}",
+            RegexOptions.CultureInvariant
+        );
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length + 8);
+        foreach (var raw in lines)
+        {
+            var line = (raw ?? string.Empty).Trim();
+            if (line.Length == 0)
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+                continue;
+            }
+
+            if (line.StartsWith("```", StringComparison.Ordinal) || IsMarkdownTableRow(line))
+            {
+                output.Add(line);
+                continue;
+            }
+
+            if (TryFormatStructuredMarkdownLabelLine(line, out var formatted))
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                output.Add(formatted);
+                continue;
+            }
+
+            output.Add(line);
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static bool TryFormatStructuredMarkdownLabelLine(string line, out string formatted)
+    {
+        formatted = string.Empty;
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0
+            || normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("[", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(
+                normalized,
+                @"^(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?\*\*.+?:\*\*(?:\s|$)",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            normalized,
+            @"^(?<lead>(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?)(?<label>[A-Za-z가-힣0-9(][A-Za-z가-힣0-9().&+_/\-·\s]{0,80}?)\s*[:：]\s*(?<value>.*)$",
+            RegexOptions.CultureInvariant
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var lead = match.Groups["lead"].Value;
+        var label = Regex.Replace(match.Groups["label"].Value, @"\s{2,}", " ").Trim();
+        var value = match.Groups["value"].Value.Trim();
+        if (!LooksLikeStructuredLabel(label))
+        {
+            return false;
+        }
+
+        formatted = value.Length == 0
+            ? $"{lead}**{label}:**"
+            : $"{lead}**{label}:** {value}";
+        return true;
+    }
+
+    private static bool LooksLikeStructuredLabel(string label)
+    {
+        var normalized = (label ?? string.Empty).Trim();
+        if (normalized.Length == 0 || normalized.Length > 80)
+        {
+            return false;
+        }
+
+        if (normalized.Contains("://", StringComparison.Ordinal)
+            || normalized.Contains('[', StringComparison.Ordinal)
+            || normalized.Contains(']', StringComparison.Ordinal)
+            || normalized.Contains('{', StringComparison.Ordinal)
+            || normalized.Contains('}', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(normalized, @"^(?:오전|오후)\s*\d{1,2}$", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(normalized, @"[A-Za-z가-힣0-9]", RegexOptions.CultureInvariant);
     }
 
     private static bool TryExtractSourceNameCandidateLine(string line, out string sourceName)

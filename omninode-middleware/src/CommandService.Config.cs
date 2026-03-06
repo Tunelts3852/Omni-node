@@ -52,7 +52,6 @@ public sealed partial class CommandService
         var result = _runtimeSettings.UpdateLlmKeys(
             groqApiKey,
             geminiApiKey,
-            null,
             cerebrasApiKey,
             persist
         );

@@ -7,7 +7,6 @@ public sealed class RuntimeSettings
     private const string TelegramChatIdService = "omninode_telegram_chat_id";
     private const string GroqApiKeyService = "omninode_groq_api_key";
     private const string GeminiApiKeyService = "omninode_gemini_api_key";
-    private const string TavilyApiKeyService = "omninode_tavily_api_key";
     private const string CerebrasApiKeyService = "omninode_cerebras_api_key";
 
     private readonly object _lock = new();
@@ -15,10 +14,7 @@ public sealed class RuntimeSettings
     private string? _telegramChatId;
     private string? _groqApiKey;
     private string? _geminiApiKey;
-    private string? _tavilyApiKey;
     private string? _cerebrasApiKey;
-    private readonly string _tavilyKeychainService;
-    private readonly string _tavilyKeychainAccount;
     private readonly string _cerebrasKeychainService;
     private readonly string _cerebrasKeychainAccount;
 
@@ -28,14 +24,7 @@ public sealed class RuntimeSettings
         _telegramChatId = config.TelegramChatId;
         _groqApiKey = config.GroqApiKey;
         _geminiApiKey = config.GeminiApiKey;
-        _tavilyApiKey = config.TavilyApiKey;
         _cerebrasApiKey = config.CerebrasApiKey;
-        _tavilyKeychainService = string.IsNullOrWhiteSpace(config.TavilyKeychainService)
-            ? TavilyApiKeyService
-            : config.TavilyKeychainService.Trim();
-        _tavilyKeychainAccount = string.IsNullOrWhiteSpace(config.TavilyKeychainAccount)
-            ? KeychainAccount
-            : config.TavilyKeychainAccount.Trim();
         _cerebrasKeychainService = string.IsNullOrWhiteSpace(config.CerebrasKeychainService)
             ? CerebrasApiKeyService
             : config.CerebrasKeychainService.Trim();
@@ -76,14 +65,6 @@ public sealed class RuntimeSettings
         }
     }
 
-    public string? GetTavilyApiKey()
-    {
-        lock (_lock)
-        {
-            return _tavilyApiKey;
-        }
-    }
-
     public string? GetCerebrasApiKey()
     {
         lock (_lock)
@@ -109,13 +90,11 @@ public sealed class RuntimeSettings
                 Mask(_telegramChatId),
                 Mask(_groqApiKey),
                 Mask(_geminiApiKey),
-                Mask(_tavilyApiKey),
                 Mask(_cerebrasApiKey),
                 HasValue(_telegramBotToken),
                 HasValue(_telegramChatId),
                 HasValue(_groqApiKey),
                 HasValue(_geminiApiKey),
-                HasValue(_tavilyApiKey),
                 HasValue(_cerebrasApiKey)
             );
         }
@@ -176,7 +155,6 @@ public sealed class RuntimeSettings
     public string UpdateLlmKeys(
         string? groqApiKey,
         string? geminiApiKey,
-        string? tavilyApiKey,
         string? cerebrasApiKey,
         bool persist
     )
@@ -194,12 +172,6 @@ public sealed class RuntimeSettings
             {
                 _geminiApiKey = geminiApiKey.Trim();
                 updatedFields.Add("gemini_api_key");
-            }
-
-            if (!string.IsNullOrWhiteSpace(tavilyApiKey))
-            {
-                _tavilyApiKey = tavilyApiKey.Trim();
-                updatedFields.Add("tavily_api_key");
             }
 
             if (!string.IsNullOrWhiteSpace(cerebrasApiKey))
@@ -227,11 +199,6 @@ public sealed class RuntimeSettings
             if (!Persist(GeminiApiKeyService, KeychainAccount, geminiApiKey))
             {
                 failed.Add("gemini_api_key");
-            }
-
-            if (!Persist(_tavilyKeychainService, _tavilyKeychainAccount, tavilyApiKey))
-            {
-                failed.Add("tavily_api_key");
             }
 
             if (!Persist(_cerebrasKeychainService, _cerebrasKeychainAccount, cerebrasApiKey))
@@ -291,7 +258,6 @@ public sealed class RuntimeSettings
         {
             _groqApiKey = null;
             _geminiApiKey = null;
-            _tavilyApiKey = null;
             _cerebrasApiKey = null;
         }
 
@@ -309,11 +275,6 @@ public sealed class RuntimeSettings
         if (!SecretLoader.TryDeletePlatformSecret(GeminiApiKeyService, KeychainAccount))
         {
             failed.Add("gemini_api_key");
-        }
-
-        if (!SecretLoader.TryDeletePlatformSecret(_tavilyKeychainService, _tavilyKeychainAccount))
-        {
-            failed.Add("tavily_api_key");
         }
 
         if (!SecretLoader.TryDeletePlatformSecret(_cerebrasKeychainService, _cerebrasKeychainAccount))
@@ -373,12 +334,10 @@ public sealed record SettingsSnapshot(
     string TelegramChatIdMasked,
     string GroqApiKeyMasked,
     string GeminiApiKeyMasked,
-    string TavilyApiKeyMasked,
     string CerebrasApiKeyMasked,
     bool TelegramBotTokenSet,
     bool TelegramChatIdSet,
     bool GroqApiKeySet,
     bool GeminiApiKeySet,
-    bool TavilyApiKeySet,
     bool CerebrasApiKeySet
 );

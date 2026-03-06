@@ -15,13 +15,13 @@
 
 ## B. 설정/키 저장
 
-- [ ] B1. 설정탭에서 Tavily API Key 저장 성공
+- [ ] B1. 설정탭에서 Gemini API Key 저장 성공
   코멘트: 정상.
 
 - [ ] B2. 설정탭에서 Cerebras API Key 저장 성공
   코멘트: 정상.
 
-- [ ] B3. 서버 재시작 후 Tavily/Cerebras 상태가 계속 `설정됨`
+- [ ] B3. 서버 재시작 후 Gemini/Cerebras 상태가 계속 `설정됨`
   코멘트: 정상.
 
 - [ ] B4. 다른 기존 키들도 재시작 후 유지됨
@@ -143,5 +143,4 @@
 ## H. 최종 판정
 
 - 주요 기능 중 RAG 관련 최신 정보 가져오는 기능 비정상. 나머지는 자잘한 오류나 어쩔수 없는 것들. -> RAG 는 [google gemini 3.0 flash preview](GEMINI_SEARCH_RETRIEVER_INTEGRATION_PLAN.md) 참조하여 갈아 엎을 예정임. 나머지 해결해야함.
-
 

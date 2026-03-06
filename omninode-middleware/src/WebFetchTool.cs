@@ -47,7 +47,7 @@ public sealed class WebFetchTool
     public WebFetchTool(AppConfig config, HttpClient? httpClient = null)
     {
         _httpClient = httpClient ?? SharedHttpClient;
-        _timeoutSeconds = NormalizeTimeoutSeconds(config.TavilyTimeoutSec);
+        _timeoutSeconds = NormalizeTimeoutSeconds(config.GeminiWebTimeoutMs);
     }
 
     public async Task<WebFetchToolResult> FetchAsync(
@@ -194,14 +194,15 @@ public sealed class WebFetchTool
         );
     }
 
-    private static int NormalizeTimeoutSeconds(int configured)
+    private static int NormalizeTimeoutSeconds(int configuredTimeoutMs)
     {
-        if (configured <= 0)
+        if (configuredTimeoutMs <= 0)
         {
             return DefaultTimeoutSeconds;
         }
 
-        return Math.Clamp(configured, 2, 120);
+        var timeoutSeconds = (int)Math.Ceiling(configuredTimeoutMs / 1000d);
+        return Math.Clamp(timeoutSeconds, 2, 120);
     }
 
     private static string NormalizeExtractMode(string? extractMode)

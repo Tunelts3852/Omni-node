@@ -16,7 +16,7 @@ Gemini 검색 리트리버 기반 구조를 Omni-node에 적용하기 위한 실
 ## 문서 목록
 - [01_master_plan.md](./01_master_plan.md): 전체 목표, 범위, 단계, 완료 기준
 - [02_architecture_mapping.md](./02_architecture_mapping.md): 아키텍처 및 모듈 매핑
-- [03_rag_tavily_design.md](./03_rag_tavily_design.md): Gemini 검색 리트리버 + RAG 설계
+- [03_rag_grounding_design.md](./03_rag_grounding_design.md): Gemini 검색 리트리버 + RAG 설계
 - [04_provider_expansion.md](./04_provider_expansion.md): 멀티 생성기 제공자 확장 설계
 - [05_feature_backlog.md](./05_feature_backlog.md): 기능군별 백로그
 - [06_sprint_schedule.md](./06_sprint_schedule.md): 스프린트 일정과 산출물
@@ -28,6 +28,6 @@ Gemini 검색 리트리버 기반 구조를 Omni-node에 적용하기 위한 실
 ## 사용 방법
 1. `01_master_plan.md`에서 P0~P7 목표와 완료 기준을 고정한다.
 2. `02_architecture_mapping.md` 기준으로 구현 책임 모듈을 확정한다.
-3. `03_rag_tavily_design.md`를 검색/근거 파이프라인 기준으로 채택한다.
+3. `03_rag_grounding_design.md`를 검색/근거 파이프라인 기준으로 채택한다.
 4. `05`, `06`, `07` 문서로 루프 운영을 진행한다.
 5. `08`, `09`, `10` 문서로 릴리스 게이트를 통과한다.

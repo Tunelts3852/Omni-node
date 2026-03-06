@@ -45,7 +45,6 @@ function buildMiddlewareEnv() {
   if (disableKeychain) {
     base.OMNINODE_GROQ_KEYCHAIN_SERVICE = "__none__";
     base.OMNINODE_GEMINI_KEYCHAIN_SERVICE = "__none__";
-    base.OMNINODE_TAVILY_KEYCHAIN_SERVICE = "__none__";
     base.OMNINODE_CEREBRAS_KEYCHAIN_SERVICE = "__none__";
   }
 

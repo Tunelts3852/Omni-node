@@ -269,7 +269,8 @@ public sealed partial class CommandService
 
     public async Task<ConversationChatResult> ChatSingleWithStateAsync(
         ChatRequest request,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<ChatStreamUpdate>? streamCallback = null
     )
     {
         var session = PrepareSessionContext(
@@ -323,45 +324,72 @@ public sealed partial class CommandService
         var resolvedModel = ResolveModel(requestedProvider, request.Model);
         if (request.WebSearchEnabled)
         {
-            var webDecision = await DecideNeedWebBySelectedProviderAsync(
-                rawInput,
-                requestedProvider,
-                resolvedModel,
-                cancellationToken
-            );
-            var shouldFallbackToGeminiWeb = !webDecision.DecisionSucceeded && LooksLikeRealtimeQuestion(rawInput);
-            if (webDecision.NeedWeb || shouldFallbackToGeminiWeb)
+            var decisionStopwatch = Stopwatch.StartNew();
+            var decisionPath = "llm";
+            var shouldUseGeminiWeb = false;
+            var selfDecideNeedWeb = false;
+
+            if (LooksLikeRealtimeQuestion(rawInput))
+            {
+                decisionPath = "heuristic_web";
+                shouldUseGeminiWeb = true;
+            }
+            else if (LooksLikeClearlyNonWebQuestion(rawInput))
+            {
+                decisionPath = "heuristic_no_web";
+            }
+            else
+            {
+                var webDecision = await DecideNeedWebBySelectedProviderAsync(
+                    rawInput,
+                    requestedProvider,
+                    resolvedModel,
+                    cancellationToken
+                );
+                var shouldFallbackToGeminiWeb = !webDecision.DecisionSucceeded && LooksLikeRealtimeQuestion(rawInput);
+                shouldUseGeminiWeb = webDecision.NeedWeb || shouldFallbackToGeminiWeb;
+                selfDecideNeedWeb = shouldFallbackToGeminiWeb;
+            }
+
+            var decisionMs = Math.Max(0L, decisionStopwatch.ElapsedMilliseconds);
+            if (shouldUseGeminiWeb)
             {
                 var memoryHint = BuildSafeWebMemoryPreferenceHint(
                     session.SessionId,
                     rawInput,
                     session.LinkedMemoryNotes
                 );
-                var webResult = await GenerateGeminiGroundedWebAnswerAsync(
+                var webResult = await GenerateGeminiGroundedWebAnswerDetailedAsync(
                     rawInput,
                     memoryHint,
-                    selfDecideNeedWeb: shouldFallbackToGeminiWeb,
+                    selfDecideNeedWeb,
                     allowMarkdownTable: true,
                     enforceTelegramOutputStyle: false,
+                    streamCallback,
+                    session.Scope,
+                    session.Mode,
+                    thread.Id,
+                    decisionPath,
+                    decisionMs,
                     cancellationToken
                 );
-                var webText = SanitizeChatOutput(webResult.Text, keepMarkdownTables: true);
+                var webText = webResult.Response.Text;
                 var assistantMeta = "gemini-web-single";
                 _conversationStore.AppendMessage(thread.Id, "user", rawInput, $"{requestedProvider}:{request.Model ?? "-"}");
                 _conversationStore.AppendMessage(thread.Id, "assistant", webText, assistantMeta);
                 ScheduleConversationMaintenance(
                     thread.Id,
                     $"{session.Scope}-{session.Mode}",
-                    webResult.Provider,
-                    webResult.Model
+                    webResult.Response.Provider,
+                    webResult.Response.Model
                 );
 
                 var updatedWeb = _conversationStore.Get(thread.Id) ?? thread;
                 return new ConversationChatResult(
                     "single",
                     updatedWeb.Id,
-                    webResult.Provider,
-                    webResult.Model,
+                    webResult.Response.Provider,
+                    webResult.Response.Model,
                     webText,
                     assistantMeta,
                     updatedWeb,
@@ -372,7 +400,8 @@ public sealed partial class CommandService
                     null,
                     0,
                     0,
-                    "-"
+                    "-",
+                    webResult.Latency
                 );
             }
         }
@@ -4150,6 +4179,10 @@ public sealed partial class CommandService
         string Model
     );
     private readonly record struct WebPreferenceHint(string Category, string Text);
+    private readonly record struct GeminiGroundedWebAnswerResult(
+        LlmSingleChatResult Response,
+        ChatLatencyMetrics? Latency
+    );
 
     private async Task<WebNeedDecisionResult> DecideNeedWebBySelectedProviderAsync(
         string input,
@@ -4237,28 +4270,101 @@ public sealed partial class CommandService
         CancellationToken cancellationToken
     )
     {
-        var model = "gemini-3.1-flash-lite-preview";
+        var result = await GenerateGeminiGroundedWebAnswerDetailedAsync(
+            input,
+            memoryHint,
+            selfDecideNeedWeb,
+            allowMarkdownTable,
+            enforceTelegramOutputStyle,
+            null,
+            "chat",
+            "single",
+            string.Empty,
+            string.Empty,
+            0,
+            cancellationToken
+        );
+        return result.Response;
+    }
+
+    private async Task<GeminiGroundedWebAnswerResult> GenerateGeminiGroundedWebAnswerDetailedAsync(
+        string input,
+        string memoryHint,
+        bool selfDecideNeedWeb,
+        bool allowMarkdownTable,
+        bool enforceTelegramOutputStyle,
+        Action<ChatStreamUpdate>? streamCallback,
+        string scope,
+        string mode,
+        string conversationId,
+        string decisionPath,
+        long decisionMs,
+        CancellationToken cancellationToken
+    )
+    {
+        var model = ResolveSearchLlmModel();
+        var route = "gemini-web-single";
+        var chunkIndex = 0;
+        Action<string>? deltaCallback = null;
+        if (streamCallback != null)
+        {
+            deltaCallback = delta =>
+            {
+                if (string.IsNullOrEmpty(delta))
+                {
+                    return;
+                }
+
+                chunkIndex += 1;
+                streamCallback(new ChatStreamUpdate(scope, mode, conversationId, "gemini", model, route, delta, chunkIndex));
+            };
+        }
+
+        var promptStopwatch = Stopwatch.StartNew();
         var prompt = BuildGeminiWebAnswerPrompt(input, memoryHint, selfDecideNeedWeb, allowMarkdownTable, enforceTelegramOutputStyle);
         var maxOutputTokens = ResolveGeminiWebAnswerMaxOutputTokens(input);
-        var text = await _llmRouter.GenerateGeminiGroundedChatAsync(
+        var promptBuildMs = Math.Max(0L, promptStopwatch.ElapsedMilliseconds);
+        var response = await _llmRouter.GenerateGeminiGroundedChatStreamingAsync(
             prompt,
             model,
             maxOutputTokens,
             _config.GeminiWebTimeoutMs,
+            deltaCallback,
             cancellationToken
         );
-        if (IsGeminiWebFailureText(text))
+        var sanitizeStopwatch = Stopwatch.StartNew();
+        string outputText;
+        if (IsGeminiWebFailureText(response.Text))
         {
-            return new LlmSingleChatResult("gemini", model, BuildGeminiWebFailureNotice(input, text));
+            outputText = BuildGeminiWebFailureNotice(input, response.Text);
+        }
+        else
+        {
+            outputText = SanitizeChatOutput(response.Text, keepMarkdownTables: allowMarkdownTable);
+            if (allowMarkdownTable && LooksLikeTableRenderRequest(input))
+            {
+                outputText = EnsureMarkdownTableResponseIfRequested(outputText);
+            }
         }
 
-        var sanitized = SanitizeChatOutput(text, keepMarkdownTables: allowMarkdownTable);
-        if (allowMarkdownTable && LooksLikeTableRenderRequest(input))
+        var sanitizeMs = Math.Max(0L, sanitizeStopwatch.ElapsedMilliseconds);
+        ChatLatencyMetrics? latency = null;
+        if (!string.IsNullOrWhiteSpace(decisionPath))
         {
-            sanitized = EnsureMarkdownTableResponseIfRequested(sanitized);
+            latency = new ChatLatencyMetrics(
+                decisionMs,
+                promptBuildMs,
+                response.FirstChunkMs,
+                response.FullResponseMs,
+                sanitizeMs,
+                decisionPath
+            );
         }
 
-        return new LlmSingleChatResult("gemini", model, sanitized);
+        return new GeminiGroundedWebAnswerResult(
+            new LlmSingleChatResult("gemini", model, outputText),
+            latency
+        );
     }
 
     private static string EnsureMarkdownTableResponseIfRequested(string text)
@@ -4570,6 +4676,21 @@ public sealed partial class CommandService
                 || normalizedValue.Equals("sources", StringComparison.Ordinal);
         }
 
+        static bool StartsWithSourceMetadata(string value)
+        {
+            var trimmed = (value ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                return false;
+            }
+
+            return Regex.IsMatch(
+                trimmed,
+                @"^(?:\*\*)?\s*(?:출처|sources?)\s*(?:\*\*)?\s*[:：]",
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+            );
+        }
+
         static string[] ParseCells(string line)
         {
             var trimmed = (line ?? string.Empty).Trim();
@@ -4762,10 +4883,12 @@ public sealed partial class CommandService
                 rowCells[col] = col < parsed.Length ? parsed[col] : string.Empty;
             }
 
-            if (rowCells.Length > 0 && IsSourceLabel(rowCells[0]))
+            var mergedRowText = string.Join(", ", rowCells.Where(value => !string.IsNullOrWhiteSpace(value)));
+            var isSourceMetadataRow = rowCells.Any(StartsWithSourceMetadata)
+                || (rowCells.Length > 0 && IsSourceLabel(rowCells[0]));
+            if (isSourceMetadataRow)
             {
-                var merged = string.Join(", ", rowCells.Skip(1).Where(value => !string.IsNullOrWhiteSpace(value)));
-                AppendSourceNames(sourceNames, merged);
+                AppendSourceNames(sourceNames, mergedRowText);
                 movedFromTable = true;
                 continue;
             }
@@ -4852,12 +4975,14 @@ public sealed partial class CommandService
         var sourceFocus = ExtractSourceFocusHintFromInput(normalizedInput);
         var sourceDomain = ResolveSourceDomainFromQueryOrFocus(normalizedInput, sourceFocus);
         var listMode = LooksLikeListOutputRequest(normalizedInput);
+        var tableMode = allowMarkdownTable && LooksLikeTableRenderRequest(normalizedInput);
+        var comparisonMode = LooksLikeComparisonRequest(normalizedInput);
 
         var builder = new StringBuilder();
-        builder.AppendLine("너는 웹검색 기반 한국어 답변기다.");
+        builder.AppendLine("너는 최신 웹 근거 기반 한국어 답변기다.");
         builder.AppendLine("- 현재 사용자 입력을 최우선으로 따른다.");
         builder.AppendLine("- 선호 메모리가 있더라도 현재 입력과 충돌하면 즉시 무시한다.");
-        builder.AppendLine("- 사실/수치/날짜/가격/사건 정보는 메모리에서 복원하지 말고 웹 근거로만 작성한다.");
+        builder.AppendLine("- 사실/수치/날짜/가격/사건 정보는 웹 근거만 사용하고 추정하지 마라.");
         if (selfDecideNeedWeb)
         {
             builder.AppendLine("- 먼저 사용자 입력만 보고 웹검색 필요 여부를 스스로 판단해라.");
@@ -4865,49 +4990,28 @@ public sealed partial class CommandService
         }
         else
         {
-            builder.AppendLine("- 이번 요청은 최신 웹 근거가 필요하므로 웹검색을 사용해 답변해라.");
+            builder.AppendLine("- 이번 요청은 웹검색으로만 답변해라.");
         }
 
-        builder.AppendLine("- 허위/추정/기억 기반 문장 금지.");
-        builder.AppendLine("- 아래 금지 문구를 절대 출력하지 마라: '핵심 내용 확인이 필요합니다.', '내용없음'.");
-        builder.AppendLine("- 제목에 경로 조각(view AKR, articleView.html 등) 같은 문자열을 쓰지 마라.");
-        if (allowMarkdownTable)
+        builder.AppendLine("- 허위/기억 기반 문장 금지.");
+        builder.AppendLine("- 출처는 URL이 아닌 매체명으로만 작성해라.");
+        builder.AppendLine("- 출처 표기는 마지막 한 줄 형식으로만 작성: '출처: 매체1, 매체2, 매체3'.");
+        if (tableMode)
         {
-            if (LooksLikeTableRenderRequest(normalizedInput))
-            {
-                builder.AppendLine("- 사용자가 표를 요청했으므로 반드시 GitHub 마크다운 표로 작성해라.");
-                builder.AppendLine("- 표의 헤더/구분선/데이터 행은 모두 '|'로 시작하고 '|'로 끝내라.");
-                builder.AppendLine("- ASCII 박스(+, -, | 조합) 형태 도표는 금지한다.");
-                builder.AppendLine("- 표를 코드블록(```)으로 감싸지 마라.");
-                builder.AppendLine("- 표 안에 '출처' 열이나 '출처' 행을 만들지 마라.");
-                builder.AppendLine("- 출처는 반드시 표 아래 한 줄로만 작성: '출처: 매체1, 매체2'.");
-            }
-            else
-            {
-                builder.AppendLine("- 사용자가 표를 요청하면 마크다운 표를 사용해도 된다.");
-                builder.AppendLine("- 표를 쓰지 않는 경우에는 기존 목록/문단 형식을 유지한다.");
-            }
+            builder.AppendLine("- 사용자가 표를 요청했으므로 반드시 GitHub 마크다운 표로 작성해라.");
+            builder.AppendLine("- 표의 헤더/구분선/데이터 행은 모두 '|'로 시작하고 '|'로 끝내라.");
+            builder.AppendLine("- 표를 코드블록으로 감싸지 마라.");
+            builder.AppendLine("- 표 안에 '출처' 열이나 '출처' 행을 만들지 마라.");
         }
         else
         {
-            builder.AppendLine("- 마크다운 표(|---|) 금지.");
-            builder.AppendLine("- 사용자가 표를 요청하지 않았다면 표/도표/ASCII 테이블 형식(+, -, | 조합)도 금지.");
+            builder.AppendLine("- 사용자가 표를 요청하지 않았다면 표/ASCII 테이블 형식은 쓰지 마라.");
         }
-        builder.AppendLine("- 출처는 URL이 아닌 매체명으로만 작성해라.");
-        builder.AppendLine("- 출처 표기는 반드시 한 줄 형식으로 작성: '출처: 매체1, 매체2, 매체3'.");
         if (enforceTelegramOutputStyle)
         {
-            builder.AppendLine("- 출력 채널은 텔레그램이다. 아래 형식 규칙을 반드시 지켜라.");
-            builder.AppendLine("  1) 문장 중간에서 임의 줄바꿈 금지. 항목 단위로만 줄바꿈.");
-            builder.AppendLine("  2) 첫 줄은 요약 1~2문장으로 작성.");
-            builder.AppendLine("  3) 요약 뒤에는 반드시 빈 줄 1개.");
-            builder.AppendLine("  4) 핵심 항목은 '▪ ' 특수기호로 시작.");
-            builder.AppendLine("  5) 라벨은 마크다운 볼드로 표기: '**제목:**', '**내용:**', '**출처:**'.");
-            builder.AppendLine("  6) 각 항목의 '**출처:** ...' 다음에는 반드시 빈 줄 1개.");
-            builder.AppendLine("  7) URL 본문 노출은 금지하고 매체명만 사용.");
-            builder.AppendLine("  8) 비교/분류형 질문(국가별·유형별·카테고리별)이면 반드시 '**내용:**' 라인을 먼저 쓰고, 그 전에 빈 줄 1개를 넣어라.");
-            builder.AppendLine("  9) '**내용:**' 다음에는 빈 줄 1개를 넣고, 각 분류를 한 줄씩 '- **미국:** ...' 형식으로 작성해라.");
-            builder.AppendLine(" 10) 분류 항목은 항목마다 줄바꿈 1개를 유지하고 한 줄 안에서 불필요하게 줄을 쪼개지 마라.");
+            builder.AppendLine("- 출력 채널은 텔레그램이다. 첫 줄은 1~2문장 요약으로 작성해라.");
+            builder.AppendLine("- 요약 뒤에는 빈 줄 1개를 두고 핵심 항목은 '▪ ' 불릿으로 정리해라.");
+            builder.AppendLine("- URL 본문 노출은 금지하고 매체명만 사용해라.");
         }
         if (sourceFocus.Length > 0)
         {
@@ -4921,21 +5025,7 @@ public sealed partial class CommandService
         if (listMode)
         {
             builder.AppendLine($"- 목록 모드: 목표 {requestedCount}건.");
-            if (enforceTelegramOutputStyle)
-            {
-                builder.AppendLine("- 각 항목 형식은 반드시 다음 4줄:");
-                builder.AppendLine("  ▪ **제목:** ...");
-                builder.AppendLine("  **내용:** ...");
-                builder.AppendLine("  **출처:** 매체1, 매체2");
-                builder.AppendLine("  (빈 줄 1개)");
-            }
-            else
-            {
-                builder.AppendLine("- 각 항목 형식은 반드시 다음 3줄:");
-                builder.AppendLine("  n.제목: ...");
-                builder.AppendLine("  내용: ...");
-                builder.AppendLine("  출처: ...");
-            }
+            builder.AppendLine("- 각 항목은 제목과 핵심 내용만 간결하게 정리해라.");
             if (hasExplicitCount)
             {
                 builder.AppendLine($"- 사용자가 건수를 명시했으므로 가능하면 정확히 {requestedCount}건을 작성해라.");
@@ -4947,15 +5037,10 @@ public sealed partial class CommandService
         }
         else
         {
-            if (enforceTelegramOutputStyle)
+            builder.AppendLine("- 일반 질의 모드: 핵심 답변을 간결하게 작성해라.");
+            if (comparisonMode)
             {
-                builder.AppendLine("- 일반 질의 모드: 요약 1~2문장 뒤 빈 줄 1개, 이후 '▪' 불릿으로 핵심만 정리해라.");
-                builder.AppendLine("- 비교/분류형 질의면 '**내용:**' 라인을 먼저 작성하고, 다음 줄부터 '- **라벨:** 설명' 형식으로 항목별 줄바꿈을 유지해라.");
-                builder.AppendLine("- 마지막 줄은 반드시 '**출처:** 매체1, 매체2' 형식으로 작성해라.");
-            }
-            else
-            {
-                builder.AppendLine("- 일반 질의 모드: 핵심 답변을 간결하게 작성하고 필요한 경우 출처를 줄 단위로 덧붙여라.");
+                builder.AppendLine("- 비교/분류형 답변이면 항목별 줄바꿈을 유지해라.");
             }
         }
 
@@ -4998,6 +5083,11 @@ public sealed partial class CommandService
         var hasFormatOverride = LooksLikeWebFormatDirective(normalizedInput);
         var hasToneOverride = LooksLikeWebToneDirective(normalizedInput);
         var hasLanguageOverride = LooksLikeWebLanguageDirective(normalizedInput);
+        var shouldReadMemoryHint = hasSourceOverride || hasFormatOverride || hasToneOverride || hasLanguageOverride;
+        if (!shouldReadMemoryHint)
+        {
+            return string.Empty;
+        }
 
         var candidates = new List<WebPreferenceHint>(16);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -5093,12 +5183,12 @@ public sealed partial class CommandService
             return string.Empty;
         }
 
-        var lines = new List<string>(6);
-        var charBudget = 420;
+        var lines = new List<string>(2);
+        var charBudget = 160;
         var used = 0;
         foreach (var text in filtered)
         {
-            if (lines.Count >= 6)
+            if (lines.Count >= 2)
             {
                 break;
             }
@@ -5382,11 +5472,24 @@ public sealed partial class CommandService
 
     private int ResolveGeminiWebAnswerMaxOutputTokens(string input)
     {
-        var targetCount = HasExplicitRequestedCountInQuery(input)
-            ? Math.Clamp(ResolveRequestedResultCountFromQuery(input), 1, 20)
-            : ResolveWebDefaultCount(input);
-        var budget = 700 + (targetCount * 90);
-        return Math.Clamp(budget, 800, 1600);
+        var normalized = (input ?? string.Empty).Trim();
+        var targetCount = HasExplicitRequestedCountInQuery(normalized)
+            ? Math.Clamp(ResolveRequestedResultCountFromQuery(normalized), 1, 20)
+            : ResolveWebDefaultCount(normalized);
+        var tableMode = LooksLikeTableRenderRequest(normalized);
+        var listMode = LooksLikeListOutputRequest(normalized);
+        var comparisonMode = LooksLikeComparisonRequest(normalized);
+        if (!tableMode && !listMode && !comparisonMode)
+        {
+            return 512;
+        }
+
+        if (targetCount > 5 || (tableMode && normalized.Length >= 80))
+        {
+            return 1024;
+        }
+
+        return 768;
     }
 
     private static bool IsGeminiWebFailureText(string text)
@@ -5951,6 +6054,68 @@ public sealed partial class CommandService
             "update",
             "release",
             "current"
+        );
+    }
+
+    private static bool LooksLikeClearlyNonWebQuestion(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0 || LooksLikeRealtimeQuestion(normalized))
+        {
+            return false;
+        }
+
+        if (ContainsAny(
+                normalized,
+                "번역",
+                "translate",
+                "영작",
+                "영문",
+                "맞춤법",
+                "교정",
+                "다듬",
+                "rewrite",
+                "rephrase"))
+        {
+            return true;
+        }
+
+        if (ContainsAny(normalized, "코드", "code")
+            && ContainsAny(normalized, "설명", "해석", "리뷰", "explain", "review"))
+        {
+            return true;
+        }
+
+        if (ContainsAny(normalized, "요약", "summary", "summarize", "정리"))
+        {
+            return normalized.Contains('\n')
+                || normalized.Contains("```", StringComparison.Ordinal)
+                || normalized.Contains("다음", StringComparison.Ordinal)
+                || normalized.Contains("\"", StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeComparisonRequest(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+            normalized,
+            "비교",
+            "차이",
+            "대비",
+            "vs",
+            "compare",
+            "difference",
+            "국가별",
+            "유형별",
+            "카테고리별"
         );
     }
 

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -12,6 +13,12 @@ public enum RouterIntent
     DynamicCode,
     Unknown
 }
+
+public sealed record GeminiGroundedChatResponse(
+    string Text,
+    long FirstChunkMs,
+    long FullResponseMs
+);
 
 public sealed class LlmRouter : IDisposable
 {
@@ -40,7 +47,7 @@ public sealed class LlmRouter : IDisposable
         _usageStatePath = _config.LlmUsageStatePath;
         _httpClient = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(Math.Max(5, _config.LlmTimeoutSec))
+            Timeout = ResolveSharedHttpTimeout(_config)
         };
 
         LoadUsageState();
@@ -577,20 +584,8 @@ public sealed class LlmRouter : IDisposable
         var selectedModel = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite-preview" : model.Trim();
         var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
         var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
-        var effectiveTimeoutMs = Math.Clamp(timeoutMs, 1000, 20000);
-        var body = "{"
-            + "\"contents\":[{"
-            + "\"role\":\"user\","
-            + "\"parts\":["
-            + $"{{\"text\":\"{EscapeJson(prompt)}\"}}"
-            + "]"
-            + "}],"
-            + "\"tools\":[{\"google_search\":{}}],"
-            + "\"generationConfig\":{"
-            + "\"temperature\":0.1,"
-            + $"\"maxOutputTokens\":{effectiveMaxOutputTokens}"
-            + "}"
-            + "}";
+        var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
+        var body = BuildGeminiGroundedBody(prompt, effectiveMaxOutputTokens);
 
         try
         {
@@ -614,12 +609,207 @@ public sealed class LlmRouter : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            Console.Error.WriteLine(
+                $"[gemini] grounded chat timeout ({effectiveTimeoutMs} ms, model={selectedModel})"
+            );
             return "Gemini 웹검색 응답 시간이 초과되었습니다.";
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[gemini] grounded chat error: {ex.Message}");
             return $"Gemini 웹검색 호출 오류: {ex.Message}";
+        }
+    }
+
+    public async Task<GeminiGroundedChatResponse> GenerateGeminiGroundedChatStreamingAsync(
+        string prompt,
+        string model,
+        int maxOutputTokens,
+        int timeoutMs,
+        Action<string>? deltaCallback,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return new GeminiGroundedChatResponse("Gemini API 키가 설정되지 않았습니다.", 0, 0);
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite-preview" : model.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:streamGenerateContent?alt=sse";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
+        var body = BuildGeminiGroundedBody(prompt, effectiveMaxOutputTokens);
+        var stopwatch = Stopwatch.StartNew();
+        var firstChunkMs = 0L;
+        var streamedTextStarted = false;
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Add("x-goog-api-key", geminiApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                timeoutCts.Token
+            );
+            if (!response.IsSuccessStatusCode)
+            {
+                var failureBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                Console.Error.WriteLine($"[gemini] grounded chat stream failed ({(int)response.StatusCode}): {failureBody}");
+                var fallback = await GenerateGeminiGroundedChatAsync(
+                    prompt,
+                    selectedModel,
+                    effectiveMaxOutputTokens,
+                    effectiveTimeoutMs,
+                    cancellationToken
+                );
+                return new GeminiGroundedChatResponse(
+                    fallback,
+                    0,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds)
+                );
+            }
+
+            using var responseStream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+            using var reader = new StreamReader(responseStream);
+            var mergedBuilder = new StringBuilder();
+            var eventBuilder = new StringBuilder();
+            string? usagePayload = null;
+
+            while (true)
+            {
+                var line = await reader.ReadLineAsync(timeoutCts.Token);
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (line.Length == 0)
+                {
+                    ConsumeEvent(eventBuilder.ToString());
+                    eventBuilder.Clear();
+                    continue;
+                }
+
+                if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var payloadLine = line[5..].TrimStart();
+                    if (payloadLine.Length > 0)
+                    {
+                        if (eventBuilder.Length > 0)
+                        {
+                            eventBuilder.Append('\n');
+                        }
+
+                        eventBuilder.Append(payloadLine);
+                    }
+                }
+            }
+
+            if (eventBuilder.Length > 0)
+            {
+                ConsumeEvent(eventBuilder.ToString());
+            }
+
+            if (!string.IsNullOrWhiteSpace(usagePayload))
+            {
+                CaptureGeminiUsage(usagePayload);
+            }
+
+            var content = mergedBuilder.ToString().Trim();
+            return new GeminiGroundedChatResponse(
+                string.IsNullOrWhiteSpace(content) ? "Gemini 웹검색 응답이 비어 있습니다." : content,
+                firstChunkMs,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds)
+            );
+
+            void ConsumeEvent(string eventPayload)
+            {
+                var trimmedPayload = (eventPayload ?? string.Empty).Trim();
+                if (trimmedPayload.Length == 0 || trimmedPayload.Equals("[DONE]", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (trimmedPayload.Contains("\"usageMetadata\"", StringComparison.Ordinal))
+                {
+                    usagePayload = trimmedPayload;
+                }
+
+                var chunk = ExtractGeminiChatChunk(trimmedPayload);
+                var delta = NormalizeGeminiStreamDelta(chunk.Content, mergedBuilder.ToString());
+                if (delta.Length == 0)
+                {
+                    return;
+                }
+
+                mergedBuilder.Append(delta);
+                if (!streamedTextStarted)
+                {
+                    streamedTextStarted = true;
+                    firstChunkMs = Math.Max(0L, stopwatch.ElapsedMilliseconds);
+                }
+
+                if (deltaCallback != null)
+                {
+                    try
+                    {
+                        deltaCallback(delta);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine(
+                $"[gemini] grounded chat stream timeout ({effectiveTimeoutMs} ms, model={selectedModel})"
+            );
+            return new GeminiGroundedChatResponse(
+                "Gemini 웹검색 응답 시간이 초과되었습니다.",
+                firstChunkMs,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds)
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] grounded chat stream error: {ex.Message}");
+            if (!streamedTextStarted)
+            {
+                var fallback = await GenerateGeminiGroundedChatAsync(
+                    prompt,
+                    selectedModel,
+                    effectiveMaxOutputTokens,
+                    effectiveTimeoutMs,
+                    cancellationToken
+                );
+                return new GeminiGroundedChatResponse(
+                    fallback,
+                    0,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds)
+                );
+            }
+
+            var fallbackAfterStream = await GenerateGeminiGroundedChatAsync(
+                prompt,
+                selectedModel,
+                effectiveMaxOutputTokens,
+                effectiveTimeoutMs,
+                cancellationToken
+            );
+            return new GeminiGroundedChatResponse(
+                fallbackAfterStream,
+                firstChunkMs,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds)
+            );
         }
     }
 
@@ -691,6 +881,67 @@ public sealed class LlmRouter : IDisposable
             Console.Error.WriteLine($"[gemini] multimodal chat error: {ex.Message}");
             return $"Gemini 호출 오류: {ex.Message}";
         }
+    }
+
+    private static TimeSpan ResolveSharedHttpTimeout(AppConfig config)
+    {
+        var llmTimeoutMs = Math.Max(5000, config.LlmTimeoutSec * 1000);
+        var geminiWebTimeoutMs = NormalizeGeminiGroundedTimeoutMs(config.GeminiWebTimeoutMs);
+        return TimeSpan.FromMilliseconds(Math.Max(llmTimeoutMs, geminiWebTimeoutMs + 5000));
+    }
+
+    private static int NormalizeGeminiGroundedTimeoutMs(int timeoutMs)
+    {
+        if (timeoutMs <= 0)
+        {
+            return 30000;
+        }
+
+        return Math.Clamp(timeoutMs, 5000, 60000);
+    }
+
+    private static string BuildGeminiGroundedBody(string prompt, int maxOutputTokens)
+    {
+        return "{"
+            + "\"contents\":[{"
+            + "\"role\":\"user\","
+            + "\"parts\":["
+            + $"{{\"text\":\"{EscapeJson(prompt)}\"}}"
+            + "]"
+            + "}],"
+            + "\"tools\":[{\"google_search\":{}}],"
+            + "\"generationConfig\":{"
+            + "\"temperature\":0.1,"
+            + $"\"maxOutputTokens\":{maxOutputTokens}"
+            + "}"
+            + "}";
+    }
+
+    private static string NormalizeGeminiStreamDelta(string chunkText, string currentText)
+    {
+        var nextChunk = chunkText ?? string.Empty;
+        if (nextChunk.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var merged = currentText ?? string.Empty;
+        if (merged.Length == 0)
+        {
+            return nextChunk;
+        }
+
+        if (nextChunk.StartsWith(merged, StringComparison.Ordinal))
+        {
+            return nextChunk[merged.Length..];
+        }
+
+        if (merged.EndsWith(nextChunk, StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        return nextChunk;
     }
 
     public async Task<string> GenerateCerebrasChatAsync(

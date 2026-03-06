@@ -106,7 +106,8 @@ internal static class Program
             commandService,
             llmRouter,
             groqModelCatalog,
-            new GuardRetryTimelineStore(config.GuardRetryTimelineStatePath)
+            new GuardRetryTimelineStore(config.GuardRetryTimelineStatePath),
+            auditLogger
         );
 
         var telegramUpdateLoop = new TelegramUpdateLoop(

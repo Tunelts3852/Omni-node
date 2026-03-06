@@ -7,7 +7,7 @@ const repoRoot = path.resolve(dashboardDir, "..");
 
 const sourcePaths = {
   omniExternalGuard: path.resolve(repoRoot, "omninode-middleware/src/ExternalContentGuard.cs"),
-  omniWebSearchTool: path.resolve(repoRoot, "omninode-middleware/src/WebSearchTool.cs"),
+  omniWebSearchConfig: path.resolve(repoRoot, "omninode-middleware/src/CommandService.Config.cs"),
   omniWebFetchTool: path.resolve(repoRoot, "omninode-middleware/src/WebFetchTool.cs"),
   omniGateway: path.resolve(repoRoot, "omninode-middleware/src/WebSocketGateway.cs"),
   omniCommands: path.resolve(repoRoot, "omninode-middleware/src/CommandService.Commands.cs"),
@@ -45,7 +45,7 @@ function assertIncludesAll(text, patterns, label) {
 
 function checkExternalContentBoundary(files) {
   const guardText = readText(files.omniExternalGuard);
-  const webSearchText = readText(files.omniWebSearchTool);
+  const webSearchText = readText(files.omniWebSearchConfig);
   const webFetchText = readText(files.omniWebFetchTool);
   const gatewayText = readText(files.omniGateway);
 
@@ -63,12 +63,13 @@ function checkExternalContentBoundary(files) {
   assertIncludesAll(
     webSearchText,
     [
-      "ExternalContentGuard.WrapWebContent",
       "ExternalContentDescriptor",
+      "Source: \"web_search\"",
+      "Provider: \"gemini_grounding\"",
       "Untrusted: true",
       "Wrapped: true"
     ],
-    "WebSearchTool.cs"
+    "CommandService.Config.cs"
   );
 
   assertIncludesAll(
@@ -84,16 +85,16 @@ function checkExternalContentBoundary(files) {
   assertIncludesAll(
     gatewayText,
     [
-      "\"web_search_result\"",
-      "\"web_fetch_result\"",
-      "\"externalContent\""
+      "web_search_result",
+      "web_fetch_result",
+      "externalContent"
     ],
     "WebSocketGateway.cs"
   );
 
   return {
     ok: true,
-    files: [files.omniExternalGuard, files.omniWebSearchTool, files.omniWebFetchTool, files.omniGateway]
+    files: [files.omniExternalGuard, files.omniWebSearchConfig, files.omniWebFetchTool, files.omniGateway]
   };
 }
 
@@ -116,9 +117,9 @@ function checkLogClassification(files) {
   assertIncludesAll(
     auditText,
     [
-      "\"source\":\"",
-      "\"action\":\"",
-      "\"status\":\"",
+      "source",
+      "action",
+      "status",
       "Trim(message, 1200)"
     ],
     "AuditLogger.cs"

@@ -416,6 +416,136 @@
     return matches ? matches.length : 0;
   }
 
+  function canonicalizeMarkdownTableRow(line) {
+    const trimmed = `${line ?? ""}`.trim();
+    if (!trimmed.includes("|")) {
+      return "";
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return "";
+    }
+
+    let candidate = trimmed;
+    if (!candidate.startsWith("|")) {
+      candidate = `| ${candidate}`;
+    }
+    if (!candidate.endsWith("|")) {
+      candidate = `${candidate} |`;
+    }
+
+    const cells = candidate
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => `${cell ?? ""}`.trim());
+    if (cells.length < 2 || cells.every((cell) => !cell)) {
+      return "";
+    }
+
+    return `| ${cells.join(" | ")} |`;
+  }
+
+  function canonicalizeMarkdownTableSeparatorLine(line, expectedCells = 0) {
+    const dashVariantsRegex = /[\u2014\u2013\u2011\u2212\u2500\u2012]/g;
+    const normalizedRow = canonicalizeMarkdownTableRow(line);
+    if (!normalizedRow) {
+      return "";
+    }
+
+    const rawCells = normalizedRow
+      .slice(1, -1)
+      .split("|")
+      .map((cell) => `${cell ?? ""}`.trim());
+    if (rawCells.length < 2) {
+      return "";
+    }
+    if (expectedCells > 0 && rawCells.length !== expectedCells) {
+      return "";
+    }
+
+    const normalizedCells = [];
+    for (const cell of rawCells) {
+      const compact = `${cell ?? ""}`.replace(/\s+/g, "").replace(dashVariantsRegex, "-");
+      if (!/^:?-+:?$/.test(compact)) {
+        return "";
+      }
+
+      const leadingColon = compact.startsWith(":") ? ":" : "";
+      const trailingColon = compact.endsWith(":") ? ":" : "";
+      const dashCount = Math.max(3, countMatches(compact, /-/g));
+      normalizedCells.push(`${leadingColon}${"-".repeat(dashCount)}${trailingColon}`);
+    }
+
+    return `| ${normalizedCells.join(" | ")} |`;
+  }
+
+  function normalizeMarkdownTableBlocks(text) {
+    if (!text) {
+      return "";
+    }
+
+    const lines = `${text ?? ""}`.split("\n");
+    let changed = false;
+
+    for (let i = 0; i + 1 < lines.length; i += 1) {
+      const headerRow = canonicalizeMarkdownTableRow(lines[i]);
+      if (!headerRow) {
+        continue;
+      }
+
+      const headerCells = headerRow
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => `${cell ?? ""}`.trim());
+      const separatorRow = canonicalizeMarkdownTableSeparatorLine(lines[i + 1], headerCells.length);
+      if (!separatorRow) {
+        continue;
+      }
+
+      if (lines[i] !== headerRow) {
+        lines[i] = headerRow;
+        changed = true;
+      }
+      if (lines[i + 1] !== separatorRow) {
+        lines[i + 1] = separatorRow;
+        changed = true;
+      }
+
+      for (let j = i + 2; j < lines.length; j += 1) {
+        const bodyRow = canonicalizeMarkdownTableRow(lines[j]);
+        if (!bodyRow) {
+          break;
+        }
+
+        if (lines[j] !== bodyRow) {
+          lines[j] = bodyRow;
+          changed = true;
+        }
+      }
+    }
+
+    return changed ? lines.join("\n") : text;
+  }
+
+  function hasMarkdownTableBlock(text) {
+    const lines = `${text ?? ""}`.split("\n");
+    for (let i = 0; i + 1 < lines.length; i += 1) {
+      const headerRow = canonicalizeMarkdownTableRow(lines[i]);
+      if (!headerRow) {
+        continue;
+      }
+
+      const headerCells = headerRow
+        .slice(1, -1)
+        .split("|")
+        .map((cell) => `${cell ?? ""}`.trim());
+      if (canonicalizeMarkdownTableSeparatorLine(lines[i + 1], headerCells.length)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   function normalizeMarkdownTableSeparators(text) {
     if (!text) {
       return "";
@@ -478,14 +608,7 @@
   }
 
   function isMarkdownTableRow(line) {
-    const trimmed = `${line ?? ""}`.trim();
-    if (trimmed.length < 3) {
-      return false;
-    }
-    if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
-      return false;
-    }
-    return countMatches(trimmed, /\|/g) >= 2;
+    return !!canonicalizeMarkdownTableRow(line);
   }
 
   function collapseMarkdownTableBlankLines(text) {
@@ -523,37 +646,16 @@
   }
 
   function isMarkdownTableSeparatorLine(line) {
-    const trimmed = `${line ?? ""}`.trim();
-    if (!trimmed.includes("|")) {
-      return false;
-    }
-
-    let candidate = trimmed;
-    if (!candidate.startsWith("|")) {
-      candidate = `|${candidate}`;
-    }
-    if (!candidate.endsWith("|")) {
-      candidate = `${candidate}|`;
-    }
-
-    return /^\|\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|$/.test(candidate);
+    return !!canonicalizeMarkdownTableSeparatorLine(line);
   }
 
   function splitMarkdownTableCells(line) {
-    const trimmed = `${line ?? ""}`.trim();
-    if (!trimmed) {
+    const normalizedRow = canonicalizeMarkdownTableRow(line);
+    if (!normalizedRow) {
       return [];
     }
 
-    let candidate = trimmed;
-    if (!candidate.startsWith("|")) {
-      candidate = `|${candidate}`;
-    }
-    if (!candidate.endsWith("|")) {
-      candidate = `${candidate}|`;
-    }
-
-    return candidate
+    return normalizedRow
       .slice(1, -1)
       .split("|")
       .map((cell) => escapeHtml(`${cell ?? ""}`.trim()));
@@ -617,6 +719,7 @@
     }
 
     text = normalizeMarkdownTableSeparators(text);
+    text = normalizeMarkdownTableBlocks(text);
     text = collapseMarkdownTableBlankLines(text);
 
     const markdownSignalCount =
@@ -657,7 +760,7 @@
 
     if (markdownRenderer) {
       html = markdownRenderer.render(text);
-      if (/\|\s*[-:]{3,}\s*\|/.test(text) && !/<table[\s>]/i.test(html)) {
+      if (hasMarkdownTableBlock(text) && !/<table[\s>]/i.test(html)) {
         html = renderTableAwareFallbackHtml(text);
       }
     } else {
@@ -1790,6 +1893,9 @@
     const currentMemoryNotes = currentConversationId
       ? (selectedMemoryByConversation[currentConversationId] || currentConversation?.linkedMemoryNotes || [])
       : [];
+    const currentCheckedMemoryNotes = memoryNotes
+      .filter((note) => currentMemoryNotes.includes(note.name))
+      .map((note) => note.name);
     const currentAttachments = attachmentsByKey[currentKey] || [];
     const currentWebUrlDraft = webUrlsByKey[currentKey] || "";
     const currentWebSearchEnabled = Object.prototype.hasOwnProperty.call(webSearchByKey, currentKey)
@@ -2805,7 +2911,13 @@
         [key]: {
           active: true,
           conversationId: normalizedConversationId,
-          startedUtc: new Date(now).toISOString()
+          startedUtc: new Date(now).toISOString(),
+          updatedAt: now,
+          draftText: "",
+          provider: "",
+          model: "",
+          route: "",
+          chunkIndex: 0
         }
       }));
       setError(key, "");
@@ -3083,6 +3195,22 @@
         type: "create_memory_note",
         conversationId: currentConversationId,
         compactConversation
+      });
+    }
+
+    function deleteSelectedMemoryNotes() {
+      if (currentCheckedMemoryNotes.length === 0) {
+        return;
+      }
+
+      const confirmed = window.confirm(`체크된 메모리 노트 ${currentCheckedMemoryNotes.length}개를 삭제할까요?`);
+      if (!confirmed) {
+        return;
+      }
+
+      send({
+        type: "delete_memory_notes",
+        memoryNotes: currentCheckedMemoryNotes
       });
     }
 
@@ -4223,6 +4351,45 @@
         return;
       }
 
+      if (msg.type === "memory_note_deleted") {
+        const ok = !!msg.ok;
+        const removedNames = Array.isArray(msg.removedNames)
+          ? msg.removedNames.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim())
+          : [];
+
+        if (removedNames.length > 0) {
+          setSelectedMemoryByConversation((prev) => {
+            const next = {};
+            Object.entries(prev).forEach(([conversationId, names]) => {
+              next[conversationId] = Array.isArray(names)
+                ? names.filter((name) => !removedNames.includes(name))
+                : names;
+            });
+            return next;
+          });
+          setConversationDetails((prev) => {
+            const next = {};
+            Object.entries(prev).forEach(([conversationId, detail]) => {
+              next[conversationId] = detail && Array.isArray(detail.linkedMemoryNotes)
+                ? { ...detail, linkedMemoryNotes: detail.linkedMemoryNotes.filter((name) => !removedNames.includes(name)) }
+                : detail;
+            });
+            return next;
+          });
+          setMemoryPreview((prev) => (
+            removedNames.includes(prev.name)
+              ? { open: false, name: "", content: "" }
+              : prev
+          ));
+        }
+
+        if (msg.message) {
+          log(`[memory] ${msg.message}`, ok ? "info" : "error");
+        }
+        send({ type: "list_memory_notes" }, { silent: true, queueIfClosed: false });
+        return;
+      }
+
       if (msg.type === "workspace_file_preview") {
         const conversationId = msg.conversationId || currentConversationId || "";
         if (!conversationId) {
@@ -4288,6 +4455,64 @@
               conversationId,
               startedAt: base.startedAt || now,
               updatedAt: now
+            }
+          };
+        });
+        return;
+      }
+
+      if (msg.type === "llm_chat_stream_chunk") {
+        const key = `${msg.scope || "chat"}:${msg.mode || "single"}`;
+        const conversationId = `${msg.conversationId || ""}`.trim();
+        setPendingByKey((prev) => {
+          const now = Date.now();
+          const base = prev[key] || {};
+          const baseDraft = typeof base.draftText === "string" ? base.draftText : "";
+          const delta = typeof msg.delta === "string" ? msg.delta : "";
+          return {
+            ...prev,
+            [key]: {
+              ...base,
+              active: true,
+              conversationId,
+              startedUtc: base.startedUtc || new Date(now).toISOString(),
+              updatedAt: now,
+              draftText: `${baseDraft}${delta}`,
+              provider: msg.provider || base.provider || "",
+              model: msg.model || base.model || "",
+              route: msg.route || base.route || "",
+              chunkIndex: Number.isFinite(msg.chunkIndex) ? msg.chunkIndex : (base.chunkIndex || 0)
+            }
+          };
+        });
+        setActiveConversationByKey((prev) => {
+          if (!conversationId) {
+            return prev;
+          }
+
+          const current = `${prev[key] || ""}`.trim();
+          if (current) {
+            return prev;
+          }
+
+          return { ...prev, [key]: conversationId };
+        });
+        setOptimisticUserByKey((prev) => {
+          const base = prev[key];
+          if (!base || !conversationId) {
+            return prev;
+          }
+
+          const currentConversationId = `${base.conversationId || ""}`.trim();
+          if (currentConversationId) {
+            return prev;
+          }
+
+          return {
+            ...prev,
+            [key]: {
+              ...base,
+              conversationId
             }
           };
         });
@@ -4923,6 +5148,11 @@
               disabled: !currentConversationId,
               onClick: () => createManualMemoryNote(false)
             }, "수동 생성"),
+            e("button", {
+              className: "btn ghost",
+              disabled: currentCheckedMemoryNotes.length === 0,
+              onClick: deleteSelectedMemoryNotes
+            }, "삭제"),
             e("button", { className: "btn ghost", onClick: () => setMemoryPickerOpen(false) }, "닫기")
           )
         ),
@@ -5031,8 +5261,9 @@
       const pendingEntry = pendingByKey[currentKey];
       const progressEntry = codingProgressByKey[currentKey];
       const optimisticUser = isConversationBoundEntryVisible(optimisticUserEntry, currentConversationId) ? optimisticUserEntry : null;
+      const pending = isConversationBoundEntryVisible(pendingEntry, currentConversationId) ? pendingEntry : null;
       const progress = isConversationBoundEntryVisible(progressEntry, currentConversationId) ? progressEntry : null;
-      const isPendingVisible = isConversationBoundEntryVisible(pendingEntry, currentConversationId) && !!(pendingEntry && pendingEntry.active);
+      const isPendingVisible = !!(pending && pending.active);
       const isCodingScope = currentKey.startsWith("coding:");
       const elapsed = elapsedSeconds(progress);
       const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
@@ -5066,6 +5297,12 @@
             { className: "bubble assistant pending-bubble" },
             e("div", { className: "bubble-meta" }, "assistant"),
             e("div", { className: "pending" }, "작성중..."),
+            !isCodingScope && pending?.provider
+              ? e("div", { className: "pending-route" }, `${pending.provider || "-"}:${pending.model || "-"}${pending.route ? ` · ${pending.route}` : ""}`)
+              : null,
+            !isCodingScope && pending?.draftText
+              ? e(MarkdownBubbleText, { text: pending.draftText })
+              : null,
             isCodingScope
               ? e("div", { className: "pending-details" },
                 e("div", { className: "pending-meta-row" },

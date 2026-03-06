@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
@@ -47,6 +48,7 @@ public sealed class WebSocketGateway
     private readonly LlmRouter _llmRouter;
     private readonly GroqModelCatalog _groqModelCatalog;
     private readonly GuardRetryTimelineStore _guardRetryTimelineStore;
+    private readonly AuditLogger _auditLogger;
     private readonly string _dashboardRootPath;
     private readonly Dictionary<string, RateWindow> _sessionRateMap = new();
     private readonly object _rateLock = new();
@@ -89,7 +91,8 @@ public sealed class WebSocketGateway
         CommandService commandService,
         LlmRouter llmRouter,
         GroqModelCatalog groqModelCatalog,
-        GuardRetryTimelineStore guardRetryTimelineStore
+        GuardRetryTimelineStore guardRetryTimelineStore,
+        AuditLogger auditLogger
     )
     {
         _config = config;
@@ -100,6 +103,7 @@ public sealed class WebSocketGateway
         _llmRouter = llmRouter;
         _groqModelCatalog = groqModelCatalog;
         _guardRetryTimelineStore = guardRetryTimelineStore;
+        _auditLogger = auditLogger;
         _dashboardRootPath = Path.GetDirectoryName(Path.GetFullPath(config.DashboardIndexPath))
                              ?? Path.GetFullPath(".");
     }
@@ -944,6 +948,31 @@ public sealed class WebSocketGateway
                         + "}",
                         cancellationToken
                     );
+                    continue;
+                }
+
+                if (message.Type == "delete_memory_notes")
+                {
+                    var deleted = _commandService.DeleteMemoryNotes(message.MemoryNotes);
+                    var removedNamesJson = string.Join(
+                        ",",
+                        deleted.RemovedNames.Select(name => $"\"{EscapeJson(name)}\"")
+                    );
+                    await SendTextAsync(
+                        socket,
+                        sendLock,
+                        "{"
+                        + "\"type\":\"memory_note_deleted\","
+                        + $"\"ok\":{(deleted.Ok ? "true" : "false")},"
+                        + $"\"message\":\"{EscapeJson(deleted.Message)}\","
+                        + $"\"requested\":{deleted.Requested},"
+                        + $"\"removed\":{deleted.Removed},"
+                        + $"\"unlinkedConversations\":{deleted.UnlinkedConversations},"
+                        + $"\"removedNames\":[{removedNamesJson}]"
+                        + "}",
+                        cancellationToken
+                    );
+                    await SendMemoryNotesAsync(socket, sendLock, cancellationToken);
                     continue;
                 }
 
@@ -1872,12 +1901,24 @@ public sealed class WebSocketGateway
 
                     try
                     {
+                        var scopeValue = message.Scope ?? "chat";
+                        var modeValue = message.Mode ?? "single";
+                        Action<ChatStreamUpdate> stream = update =>
+                        {
+                            try
+                            {
+                                SendChatStreamChunkAsync(socket, sendLock, update, cancellationToken).GetAwaiter().GetResult();
+                            }
+                            catch
+                            {
+                            }
+                        };
                         var result = await _commandService.ChatSingleWithStateAsync(
                             new ChatRequest(
                                 message.Text,
                                 "web",
-                                message.Scope ?? "chat",
-                                message.Mode ?? "single",
+                                scopeValue,
+                                modeValue,
                                 message.ConversationId,
                                 message.ConversationTitle,
                                 message.Project,
@@ -1894,7 +1935,8 @@ public sealed class WebSocketGateway
                                 message.WebUrls,
                                 message.WebSearchEnabled
                             ),
-                            cancellationToken
+                            cancellationToken,
+                            stream
                         );
 
                         await SendChatResultAsync(socket, sendLock, result, cancellationToken);
@@ -4318,6 +4360,7 @@ public sealed class WebSocketGateway
             retryMaxAttempts: result.RetryMaxAttempts,
             retryStopReason: normalizedRetryStopReason
         );
+        var finalizeStopwatch = Stopwatch.StartNew();
         await SendTextAsync(
             socket,
             sendLock,
@@ -4347,6 +4390,59 @@ public sealed class WebSocketGateway
             + "}",
             cancellationToken
         );
+        if (result.Latency != null && result.Route.Equals("gemini-web-single", StringComparison.OrdinalIgnoreCase))
+        {
+            _auditLogger.Log(
+                "web",
+                "chat_single:web",
+                "ok",
+                $"decision_ms={result.Latency.DecisionMs.ToString(CultureInfo.InvariantCulture)} "
+                + $"prompt_build_ms={result.Latency.PromptBuildMs.ToString(CultureInfo.InvariantCulture)} "
+                + $"first_chunk_ms={result.Latency.FirstChunkMs.ToString(CultureInfo.InvariantCulture)} "
+                + $"full_response_ms={result.Latency.FullResponseMs.ToString(CultureInfo.InvariantCulture)} "
+                + $"sanitize_ms={result.Latency.SanitizeMs.ToString(CultureInfo.InvariantCulture)} "
+                + $"ws_finalize_ms={Math.Max(0L, finalizeStopwatch.ElapsedMilliseconds).ToString(CultureInfo.InvariantCulture)} "
+                + $"model={NormalizeAuditToken(result.Model, "-")} "
+                + $"route={NormalizeAuditToken(result.Route, "-")} "
+                + $"decision_path={NormalizeAuditToken(result.Latency.DecisionPath, "-")}"
+            );
+        }
+    }
+
+    private async Task SendChatStreamChunkAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        ChatStreamUpdate update,
+        CancellationToken cancellationToken
+    )
+    {
+        await SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"llm_chat_stream_chunk\","
+            + $"\"scope\":\"{EscapeJson(update.Scope)}\","
+            + $"\"mode\":\"{EscapeJson(update.Mode)}\","
+            + $"\"provider\":\"{EscapeJson(update.Provider)}\","
+            + $"\"model\":\"{EscapeJson(update.Model)}\","
+            + $"\"route\":\"{EscapeJson(update.Route)}\","
+            + $"\"delta\":\"{EscapeJson(update.Delta)}\","
+            + $"\"conversationId\":\"{EscapeJson(update.ConversationId)}\","
+            + $"\"chunkIndex\":{Math.Max(0, update.ChunkIndex)}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private static string NormalizeAuditToken(string? token, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return fallback;
+        }
+
+        var normalized = token.Trim();
+        return normalized.Length == 0 ? fallback : normalized.Replace(' ', '_');
     }
 
     private async Task SendCodingResultAsync(
