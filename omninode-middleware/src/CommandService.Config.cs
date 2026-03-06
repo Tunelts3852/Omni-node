@@ -294,6 +294,25 @@ public sealed partial class CommandService
         return _memoryNoteStore.Read(name);
     }
 
+    public (MemoryNoteRenameResult Result, int RelinkedConversations) RenameMemoryNote(string name, string newName)
+    {
+        var renamed = _memoryNoteStore.Rename(name, newName);
+        if (!renamed.Ok || string.IsNullOrWhiteSpace(renamed.OldName) || string.IsNullOrWhiteSpace(renamed.NewName))
+        {
+            _auditLogger.Log("web", "memory_note_rename", renamed.Ok ? "ok" : "skip", renamed.Message);
+            return (renamed, 0);
+        }
+
+        var relinkedConversations = _conversationStore.RenameLinkedMemoryNote(renamed.OldName, renamed.NewName);
+        _auditLogger.Log(
+            "web",
+            "memory_note_rename",
+            "ok",
+            $"old={renamed.OldName} new={renamed.NewName} relinkedConversations={relinkedConversations}"
+        );
+        return (renamed, relinkedConversations);
+    }
+
     public MemoryNoteDeleteResult DeleteMemoryNotes(IReadOnlyList<string>? names)
     {
         var normalizedNames = (names ?? Array.Empty<string>())
@@ -4446,7 +4465,73 @@ public sealed partial class CommandService
             );
         }
 
-        return ComputeNextDailyRunUtc(routine.Hour, routine.Minute, routine.TimezoneId, nowUtc);
+        return ComputeNextSupportedRoutineCronUtc(
+            routine.CronScheduleExpr,
+            routine.TimezoneId,
+            routine.Hour,
+            routine.Minute,
+            nowUtc
+        );
+    }
+
+    private static DateTimeOffset ComputeNextSupportedRoutineCronUtc(
+        string? cronExpr,
+        string timezoneId,
+        int fallbackHour,
+        int fallbackMinute,
+        DateTimeOffset nowUtc
+    )
+    {
+        if (!TryParseSupportedRoutineCronExpression(
+                cronExpr,
+                out var kind,
+                out var hour,
+                out var minute,
+                out var dayOfMonth,
+                out var weekdays,
+                out _,
+                out _
+            ))
+        {
+            return ComputeNextDailyRunUtc(fallbackHour, fallbackMinute, timezoneId, nowUtc);
+        }
+
+        var tz = ResolveTimeZone(timezoneId);
+        var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, tz);
+        var startDate = nowLocal.Date;
+        for (var offsetDays = 0; offsetDays <= 800; offsetDays += 1)
+        {
+            var candidateDate = startDate.AddDays(offsetDays);
+            if (string.Equals(kind, "weekly", StringComparison.Ordinal)
+                && Array.IndexOf(weekdays, (int)candidateDate.DayOfWeek) < 0)
+            {
+                continue;
+            }
+
+            if (string.Equals(kind, "monthly", StringComparison.Ordinal)
+                && candidateDate.Day != dayOfMonth.GetValueOrDefault())
+            {
+                continue;
+            }
+
+            var candidateLocal = new DateTime(
+                candidateDate.Year,
+                candidateDate.Month,
+                candidateDate.Day,
+                hour,
+                minute,
+                0,
+                DateTimeKind.Unspecified
+            );
+            var candidateOffset = tz.GetUtcOffset(candidateLocal);
+            var candidateUtc = new DateTimeOffset(candidateLocal, candidateOffset).ToUniversalTime();
+            if (candidateUtc > nowUtc)
+            {
+                return candidateUtc;
+            }
+        }
+
+        return ComputeNextDailyRunUtc(fallbackHour, fallbackMinute, timezoneId, nowUtc);
     }
 
     private static string? FormatCronAtSchedule(long? atMs)

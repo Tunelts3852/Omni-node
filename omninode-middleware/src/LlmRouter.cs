@@ -20,6 +20,13 @@ public sealed record GeminiGroundedChatResponse(
     long FullResponseMs
 );
 
+public sealed record GeminiUrlContextChatResponse(
+    string Text,
+    long FirstChunkMs,
+    long FullResponseMs,
+    IReadOnlyList<SearchCitationReference> Citations
+);
+
 public sealed class LlmRouter : IDisposable
 {
     private const int ChatContinuationRounds = 4;
@@ -560,6 +567,11 @@ public sealed class LlmRouter : IDisposable
             var text = mergedBuilder.ToString().Trim();
             return string.IsNullOrWhiteSpace(text) ? "Gemini 응답이 비어 있습니다." : text;
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"[gemini] chat timeout (model={selectedModel})");
+            return "Gemini 응답 시간이 초과되었습니다.";
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[gemini] chat error: {ex.Message}");
@@ -583,7 +595,7 @@ public sealed class LlmRouter : IDisposable
 
         var selectedModel = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite-preview" : model.Trim();
         var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
-        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 4096));
         var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
         var body = BuildGeminiGroundedBody(prompt, effectiveMaxOutputTokens);
 
@@ -638,17 +650,24 @@ public sealed class LlmRouter : IDisposable
 
         var selectedModel = string.IsNullOrWhiteSpace(model) ? "gemini-3.1-flash-lite-preview" : model.Trim();
         var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:streamGenerateContent?alt=sse";
-        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 4096));
         var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
+        var effectiveFirstChunkTimeoutMs = NormalizeGeminiGroundedFirstChunkTimeoutMs(effectiveTimeoutMs);
         var body = BuildGeminiGroundedBody(prompt, effectiveMaxOutputTokens);
         var stopwatch = Stopwatch.StartNew();
         var firstChunkMs = 0L;
         var streamedTextStarted = false;
+        var mergedBuilder = new StringBuilder();
 
         try
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+            using var totalTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            totalTimeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+            using var firstChunkTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                totalTimeoutCts.Token
+            );
+            firstChunkTimeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveFirstChunkTimeoutMs));
             using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
             request.Headers.Add("x-goog-api-key", geminiApiKey);
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");
@@ -656,35 +675,28 @@ public sealed class LlmRouter : IDisposable
             using var response = await _httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
-                timeoutCts.Token
+                firstChunkTimeoutCts.Token
             );
             if (!response.IsSuccessStatusCode)
             {
-                var failureBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                var failureBody = await response.Content.ReadAsStringAsync(totalTimeoutCts.Token);
                 Console.Error.WriteLine($"[gemini] grounded chat stream failed ({(int)response.StatusCode}): {failureBody}");
-                var fallback = await GenerateGeminiGroundedChatAsync(
-                    prompt,
-                    selectedModel,
-                    effectiveMaxOutputTokens,
-                    effectiveTimeoutMs,
-                    cancellationToken
-                );
                 return new GeminiGroundedChatResponse(
-                    fallback,
+                    $"Gemini 웹검색 요청 실패: {(int)response.StatusCode}",
                     0,
                     Math.Max(0L, stopwatch.ElapsedMilliseconds)
                 );
             }
 
-            using var responseStream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+            using var responseStream = await response.Content.ReadAsStreamAsync(firstChunkTimeoutCts.Token);
             using var reader = new StreamReader(responseStream);
-            var mergedBuilder = new StringBuilder();
             var eventBuilder = new StringBuilder();
             string? usagePayload = null;
 
             while (true)
             {
-                var line = await reader.ReadLineAsync(timeoutCts.Token);
+                var activeToken = streamedTextStarted ? totalTimeoutCts.Token : firstChunkTimeoutCts.Token;
+                var line = await reader.ReadLineAsync(activeToken);
                 if (line == null)
                 {
                     break;
@@ -754,6 +766,7 @@ public sealed class LlmRouter : IDisposable
                 {
                     streamedTextStarted = true;
                     firstChunkMs = Math.Max(0L, stopwatch.ElapsedMilliseconds);
+                    firstChunkTimeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
                 }
 
                 if (deltaCallback != null)
@@ -770,9 +783,19 @@ public sealed class LlmRouter : IDisposable
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            Console.Error.WriteLine(
-                $"[gemini] grounded chat stream timeout ({effectiveTimeoutMs} ms, model={selectedModel})"
-            );
+            var timeoutKind = streamedTextStarted ? "total" : "first_chunk";
+            var timeoutValueMs = streamedTextStarted ? effectiveTimeoutMs : effectiveFirstChunkTimeoutMs;
+            Console.Error.WriteLine($"[gemini] grounded chat stream timeout ({timeoutKind}={timeoutValueMs} ms, model={selectedModel})");
+            var partialContent = mergedBuilder.ToString().Trim();
+            if (streamedTextStarted && !string.IsNullOrWhiteSpace(partialContent))
+            {
+                return new GeminiGroundedChatResponse(
+                    partialContent,
+                    firstChunkMs,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds)
+                );
+            }
+
             return new GeminiGroundedChatResponse(
                 "Gemini 웹검색 응답 시간이 초과되었습니다.",
                 firstChunkMs,
@@ -782,33 +805,355 @@ public sealed class LlmRouter : IDisposable
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[gemini] grounded chat stream error: {ex.Message}");
-            if (!streamedTextStarted)
+            var partialContent = mergedBuilder.ToString().Trim();
+            if (streamedTextStarted && !string.IsNullOrWhiteSpace(partialContent))
             {
-                var fallback = await GenerateGeminiGroundedChatAsync(
-                    prompt,
-                    selectedModel,
-                    effectiveMaxOutputTokens,
-                    effectiveTimeoutMs,
-                    cancellationToken
-                );
                 return new GeminiGroundedChatResponse(
-                    fallback,
-                    0,
+                    partialContent,
+                    firstChunkMs,
                     Math.Max(0L, stopwatch.ElapsedMilliseconds)
                 );
             }
 
-            var fallbackAfterStream = await GenerateGeminiGroundedChatAsync(
-                prompt,
-                selectedModel,
-                effectiveMaxOutputTokens,
-                effectiveTimeoutMs,
-                cancellationToken
-            );
             return new GeminiGroundedChatResponse(
-                fallbackAfterStream,
-                firstChunkMs,
+                $"Gemini 웹검색 호출 오류: {ex.Message}",
+                0,
                 Math.Max(0L, stopwatch.ElapsedMilliseconds)
+            );
+        }
+    }
+
+    public async Task<GeminiUrlContextChatResponse> GenerateGeminiUrlContextChatAsync(
+        string prompt,
+        string model,
+        int maxOutputTokens,
+        int timeoutMs,
+        bool includeGoogleSearch,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return new GeminiUrlContextChatResponse(
+                "Gemini API 키가 설정되지 않았습니다.",
+                0,
+                0,
+                Array.Empty<SearchCitationReference>()
+            );
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(model) ? _config.GeminiModel : model.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:generateContent";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
+        var stopwatch = Stopwatch.StartNew();
+        var promptForTurn = prompt;
+        var mergedBuilder = new StringBuilder();
+        var citationByKey = new Dictionary<string, SearchCitationReference>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            for (var turn = 0; turn < ChatContinuationRounds; turn++)
+            {
+                var body = BuildGeminiUrlContextBody(promptForTurn, effectiveMaxOutputTokens, includeGoogleSearch);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                request.Headers.Add("x-goog-api-key", geminiApiKey);
+                request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+                using var response = await _httpClient.SendAsync(request, timeoutCts.Token);
+                var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.Error.WriteLine($"[gemini] url context failed ({(int)response.StatusCode}): {responseBody}");
+                    return new GeminiUrlContextChatResponse(
+                        $"Gemini URL 참조 요청 실패: {(int)response.StatusCode}",
+                        0,
+                        Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                        Array.Empty<SearchCitationReference>()
+                    );
+                }
+
+                CaptureGeminiUsage(responseBody);
+                MergeCitations(ExtractGeminiUrlContextCitations(responseBody));
+                MergeCitations(ExtractGeminiGroundingCitations(responseBody));
+                var chunk = ExtractGeminiChatChunk(responseBody);
+                var chunkText = chunk.Content.Trim();
+                if (!string.IsNullOrWhiteSpace(chunkText))
+                {
+                    if (mergedBuilder.Length > 0)
+                    {
+                        mergedBuilder.AppendLine();
+                    }
+
+                    mergedBuilder.Append(chunkText);
+                }
+
+                if (!IsGeminiTruncated(chunk.FinishReason) || string.IsNullOrWhiteSpace(chunkText))
+                {
+                    break;
+                }
+
+                promptForTurn = BuildContinuationPrompt(prompt, mergedBuilder.ToString());
+            }
+
+            var content = mergedBuilder.ToString().Trim();
+            return new GeminiUrlContextChatResponse(
+                string.IsNullOrWhiteSpace(content) ? "Gemini URL 참조 응답이 비어 있습니다." : content,
+                0,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                citationByKey.Values.ToArray()
+            );
+
+            void MergeCitations(IEnumerable<SearchCitationReference> citations)
+            {
+                foreach (var citation in citations)
+                {
+                    var key = BuildCitationDedupKey(citation);
+                    if (key.Length == 0)
+                    {
+                        continue;
+                    }
+
+                    citationByKey[key] = citation;
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine(
+                $"[gemini] url context timeout ({effectiveTimeoutMs} ms, model={selectedModel})"
+            );
+            return new GeminiUrlContextChatResponse(
+                "Gemini URL 참조 응답 시간이 초과되었습니다.",
+                0,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                Array.Empty<SearchCitationReference>()
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] url context error: {ex.Message}");
+            return new GeminiUrlContextChatResponse(
+                $"Gemini URL 참조 호출 오류: {ex.Message}",
+                0,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                Array.Empty<SearchCitationReference>()
+            );
+        }
+    }
+
+    public async Task<GeminiUrlContextChatResponse> GenerateGeminiUrlContextChatStreamingAsync(
+        string prompt,
+        string model,
+        int maxOutputTokens,
+        int timeoutMs,
+        bool includeGoogleSearch,
+        Action<string>? deltaCallback,
+        CancellationToken cancellationToken
+    )
+    {
+        var geminiApiKey = _runtimeSettings.GetGeminiApiKey();
+        if (string.IsNullOrWhiteSpace(geminiApiKey))
+        {
+            return new GeminiUrlContextChatResponse(
+                "Gemini API 키가 설정되지 않았습니다.",
+                0,
+                0,
+                Array.Empty<SearchCitationReference>()
+            );
+        }
+
+        var selectedModel = string.IsNullOrWhiteSpace(model) ? _config.GeminiModel : model.Trim();
+        var endpoint = $"{_config.GeminiBaseUrl.TrimEnd('/')}/models/{selectedModel}:streamGenerateContent?alt=sse";
+        var effectiveMaxOutputTokens = NormalizeMaxOutputTokens(maxOutputTokens, Math.Min(_config.ChatMaxOutputTokens, 2048));
+        var effectiveTimeoutMs = NormalizeGeminiGroundedTimeoutMs(timeoutMs);
+        var effectiveFirstChunkTimeoutMs = NormalizeGeminiUrlContextFirstChunkTimeoutMs(effectiveTimeoutMs);
+        var body = BuildGeminiUrlContextBody(prompt, effectiveMaxOutputTokens, includeGoogleSearch);
+        var stopwatch = Stopwatch.StartNew();
+        var firstChunkMs = 0L;
+        var streamedTextStarted = false;
+        var mergedBuilder = new StringBuilder();
+        var citationByUrl = new Dictionary<string, SearchCitationReference>(StringComparer.OrdinalIgnoreCase);
+
+        try
+        {
+            using var totalTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            totalTimeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveTimeoutMs));
+            using var firstChunkTimeoutCts = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                totalTimeoutCts.Token
+            );
+            firstChunkTimeoutCts.CancelAfter(TimeSpan.FromMilliseconds(effectiveFirstChunkTimeoutMs));
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
+            request.Headers.Add("x-goog-api-key", geminiApiKey);
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+
+            using var response = await _httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                firstChunkTimeoutCts.Token
+            );
+            if (!response.IsSuccessStatusCode)
+            {
+                var failureBody = await response.Content.ReadAsStringAsync(totalTimeoutCts.Token);
+                Console.Error.WriteLine($"[gemini] url context stream failed ({(int)response.StatusCode}): {failureBody}");
+                return new GeminiUrlContextChatResponse(
+                    $"Gemini URL 참조 요청 실패: {(int)response.StatusCode}",
+                    0,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                    Array.Empty<SearchCitationReference>()
+                );
+            }
+
+            using var responseStream = await response.Content.ReadAsStreamAsync(firstChunkTimeoutCts.Token);
+            using var reader = new StreamReader(responseStream);
+            var eventBuilder = new StringBuilder();
+            string? usagePayload = null;
+
+            while (true)
+            {
+                var activeToken = streamedTextStarted ? totalTimeoutCts.Token : firstChunkTimeoutCts.Token;
+                var line = await reader.ReadLineAsync(activeToken);
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (line.Length == 0)
+                {
+                    ConsumeEvent(eventBuilder.ToString());
+                    eventBuilder.Clear();
+                    continue;
+                }
+
+                if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var payloadLine = line[5..].TrimStart();
+                    if (payloadLine.Length > 0)
+                    {
+                        if (eventBuilder.Length > 0)
+                        {
+                            eventBuilder.Append('\n');
+                        }
+
+                        eventBuilder.Append(payloadLine);
+                    }
+                }
+            }
+
+            if (eventBuilder.Length > 0)
+            {
+                ConsumeEvent(eventBuilder.ToString());
+            }
+
+            if (!string.IsNullOrWhiteSpace(usagePayload))
+            {
+                CaptureGeminiUsage(usagePayload);
+            }
+
+            var content = mergedBuilder.ToString().Trim();
+            return new GeminiUrlContextChatResponse(
+                string.IsNullOrWhiteSpace(content) ? "Gemini URL 참조 응답이 비어 있습니다." : content,
+                firstChunkMs,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                citationByUrl.Values.ToArray()
+            );
+
+            void ConsumeEvent(string eventPayload)
+            {
+                var trimmedPayload = (eventPayload ?? string.Empty).Trim();
+                if (trimmedPayload.Length == 0 || trimmedPayload.Equals("[DONE]", StringComparison.Ordinal))
+                {
+                    return;
+                }
+
+                if (trimmedPayload.Contains("\"usageMetadata\"", StringComparison.Ordinal))
+                {
+                    usagePayload = trimmedPayload;
+                }
+
+                foreach (var citation in ExtractGeminiUrlContextCitations(trimmedPayload))
+                {
+                    citationByUrl[BuildCitationDedupKey(citation)] = citation;
+                }
+
+                foreach (var citation in ExtractGeminiGroundingCitations(trimmedPayload))
+                {
+                    citationByUrl[BuildCitationDedupKey(citation)] = citation;
+                }
+
+                var chunk = ExtractGeminiChatChunk(trimmedPayload);
+                var delta = NormalizeGeminiStreamDelta(chunk.Content, mergedBuilder.ToString());
+                if (delta.Length == 0)
+                {
+                    return;
+                }
+
+                mergedBuilder.Append(delta);
+                if (!streamedTextStarted)
+                {
+                    streamedTextStarted = true;
+                    firstChunkMs = Math.Max(0L, stopwatch.ElapsedMilliseconds);
+                    firstChunkTimeoutCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                }
+
+                if (deltaCallback != null)
+                {
+                    try
+                    {
+                        deltaCallback(delta);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            var timeoutKind = streamedTextStarted ? "total" : "first_chunk";
+            var timeoutValueMs = streamedTextStarted ? effectiveTimeoutMs : effectiveFirstChunkTimeoutMs;
+            Console.Error.WriteLine($"[gemini] url context stream timeout ({timeoutKind}={timeoutValueMs} ms, model={selectedModel})");
+            var partialContent = mergedBuilder.ToString().Trim();
+            if (streamedTextStarted && !string.IsNullOrWhiteSpace(partialContent))
+            {
+                return new GeminiUrlContextChatResponse(
+                    partialContent,
+                    firstChunkMs,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                    citationByUrl.Values.ToArray()
+                );
+            }
+
+            return new GeminiUrlContextChatResponse(
+                "Gemini URL 참조 응답 시간이 초과되었습니다.",
+                firstChunkMs,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                citationByUrl.Values.ToArray()
+            );
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[gemini] url context stream error: {ex.Message}");
+            var partialContent = mergedBuilder.ToString().Trim();
+            if (streamedTextStarted && !string.IsNullOrWhiteSpace(partialContent))
+            {
+                return new GeminiUrlContextChatResponse(
+                    partialContent,
+                    firstChunkMs,
+                    Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                    citationByUrl.Values.ToArray()
+                );
+            }
+
+            return new GeminiUrlContextChatResponse(
+                $"Gemini URL 참조 호출 오류: {ex.Message}",
+                0,
+                Math.Max(0L, stopwatch.ElapsedMilliseconds),
+                citationByUrl.Values.ToArray()
             );
         }
     }
@@ -876,6 +1221,11 @@ public sealed class LlmRouter : IDisposable
             var text = ExtractGeminiText(responseBody).Trim();
             return string.IsNullOrWhiteSpace(text) ? "Gemini 응답이 비어 있습니다." : text;
         }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"[gemini] multimodal chat timeout (model={selectedModel})");
+            return "Gemini 응답 시간이 초과되었습니다.";
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[gemini] multimodal chat error: {ex.Message}");
@@ -900,6 +1250,20 @@ public sealed class LlmRouter : IDisposable
         return Math.Clamp(timeoutMs, 5000, 60000);
     }
 
+    private static int NormalizeGeminiGroundedFirstChunkTimeoutMs(int totalTimeoutMs)
+    {
+        var normalizedTotal = NormalizeGeminiGroundedTimeoutMs(totalTimeoutMs);
+        var derived = Math.Min(7000, Math.Max(3000, normalizedTotal / 4));
+        return Math.Clamp(derived, 3000, normalizedTotal);
+    }
+
+    private static int NormalizeGeminiUrlContextFirstChunkTimeoutMs(int totalTimeoutMs)
+    {
+        var normalizedTotal = NormalizeGeminiGroundedTimeoutMs(totalTimeoutMs);
+        var derived = Math.Min(30000, Math.Max(8000, normalizedTotal));
+        return Math.Clamp(derived, 8000, normalizedTotal);
+    }
+
     private static string BuildGeminiGroundedBody(string prompt, int maxOutputTokens)
     {
         return "{"
@@ -910,6 +1274,26 @@ public sealed class LlmRouter : IDisposable
             + "]"
             + "}],"
             + "\"tools\":[{\"google_search\":{}}],"
+            + "\"generationConfig\":{"
+            + "\"temperature\":0.1,"
+            + $"\"maxOutputTokens\":{maxOutputTokens}"
+            + "}"
+            + "}";
+    }
+
+    private static string BuildGeminiUrlContextBody(string prompt, int maxOutputTokens, bool includeGoogleSearch)
+    {
+        var tools = includeGoogleSearch
+            ? "[{\"url_context\":{}},{\"google_search\":{}}]"
+            : "[{\"url_context\":{}}]";
+        return "{"
+            + "\"contents\":[{"
+            + "\"role\":\"user\","
+            + "\"parts\":["
+            + $"{{\"text\":\"{EscapeJson(prompt)}\"}}"
+            + "]"
+            + "}],"
+            + $"\"tools\":{tools},"
             + "\"generationConfig\":{"
             + "\"temperature\":0.1,"
             + $"\"maxOutputTokens\":{maxOutputTokens}"
@@ -1558,6 +1942,199 @@ public sealed class LlmRouter : IDisposable
         }
 
         return new GeminiChatChunk(builder.ToString().Trim(), finishReason);
+    }
+
+    private static SearchCitationReference[] ExtractGeminiUrlContextCitations(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!TryGetPropertyIgnoreCase(doc.RootElement, "candidates", out var candidates)
+                || candidates.ValueKind != JsonValueKind.Array
+                || candidates.GetArrayLength() == 0)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            var first = candidates[0];
+            if (!TryGetPropertyIgnoreCase(first, "urlContextMetadata", out var metadata)
+                || metadata.ValueKind != JsonValueKind.Object)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            if (!TryGetPropertyIgnoreCase(metadata, "urlMetadata", out var urlMetadata)
+                || urlMetadata.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            var citations = new List<SearchCitationReference>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in urlMetadata.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var url = GetJsonString(item, "retrievedUrl", "retrieved_url");
+                if (string.IsNullOrWhiteSpace(url) || !seen.Add(url))
+                {
+                    continue;
+                }
+
+                var status = GetJsonString(item, "urlRetrievalStatus", "url_retrieval_status");
+                var citationId = $"urlctx-{citations.Count + 1}";
+                citations.Add(new SearchCitationReference(
+                    citationId,
+                    BuildUrlContextCitationTitle(url),
+                    url,
+                    string.Empty,
+                    string.IsNullOrWhiteSpace(status) ? "URL_CONTEXT" : status,
+                    "url_context"
+                ));
+            }
+
+            return citations.ToArray();
+        }
+        catch
+        {
+            return Array.Empty<SearchCitationReference>();
+        }
+    }
+
+    private static SearchCitationReference[] ExtractGeminiGroundingCitations(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (!TryGetPropertyIgnoreCase(doc.RootElement, "candidates", out var candidates)
+                || candidates.ValueKind != JsonValueKind.Array
+                || candidates.GetArrayLength() == 0)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            var first = candidates[0];
+            if (!TryGetPropertyIgnoreCase(first, "groundingMetadata", out var metadata)
+                || metadata.ValueKind != JsonValueKind.Object)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            if (!TryGetPropertyIgnoreCase(metadata, "groundingChunks", out var groundingChunks)
+                || groundingChunks.ValueKind != JsonValueKind.Array)
+            {
+                return Array.Empty<SearchCitationReference>();
+            }
+
+            var citations = new List<SearchCitationReference>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in groundingChunks.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (!TryGetPropertyIgnoreCase(item, "web", out var webChunk)
+                    || webChunk.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var url = GetJsonString(webChunk, "uri");
+                if (string.IsNullOrWhiteSpace(url) || !seen.Add(url))
+                {
+                    continue;
+                }
+
+                var title = GetJsonString(webChunk, "title");
+                var citationId = $"gsearch-{citations.Count + 1}";
+                citations.Add(new SearchCitationReference(
+                    citationId,
+                    string.IsNullOrWhiteSpace(title) ? BuildUrlContextCitationTitle(url) : title,
+                    url,
+                    string.Empty,
+                    "GOOGLE_SEARCH",
+                    "google_search"
+                ));
+            }
+
+            return citations.ToArray();
+        }
+        catch
+        {
+            return Array.Empty<SearchCitationReference>();
+        }
+    }
+
+    private static string BuildUrlContextCitationTitle(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return url;
+        }
+
+        var host = uri.Host?.Trim() ?? string.Empty;
+        if (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase))
+        {
+            host = host[4..];
+        }
+
+        return string.IsNullOrWhiteSpace(host) ? url : host;
+    }
+
+    private static string GetJsonString(JsonElement element, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryGetPropertyIgnoreCase(element, name, out var property)
+                && property.ValueKind == JsonValueKind.String)
+            {
+                return property.GetString() ?? string.Empty;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string BuildCitationDedupKey(SearchCitationReference citation)
+    {
+        var url = (citation.Url ?? string.Empty).Trim();
+        if (url.Length > 0)
+        {
+            return url;
+        }
+
+        var title = (citation.Title ?? string.Empty).Trim();
+        return title;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement element, string propertyName, out JsonElement value)
+    {
+        value = default;
+        if (element.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        if (element.TryGetProperty(propertyName, out value))
+        {
+            return true;
+        }
+
+        foreach (var property in element.EnumerateObject())
+        {
+            if (property.NameEquals(propertyName) || property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                value = property.Value;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool IsGroqTruncated(string? finishReason)

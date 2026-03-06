@@ -27,6 +27,121 @@
     ["css", "CSS"],
     ["bash", "Bash"]
   ];
+  const ROUTINE_WEEKDAY_OPTIONS = [
+    { value: 1, label: "월" },
+    { value: 2, label: "화" },
+    { value: 3, label: "수" },
+    { value: 4, label: "목" },
+    { value: 5, label: "금" },
+    { value: 6, label: "토" },
+    { value: 0, label: "일" }
+  ];
+
+  function getRoutineLocalTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Seoul";
+    } catch (_err) {
+      return "Asia/Seoul";
+    }
+  }
+
+  function normalizeRoutineWeekdays(values) {
+    if (!Array.isArray(values)) {
+      return [];
+    }
+
+    const normalized = values
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value))
+      .map((value) => (value === 7 ? 0 : value))
+      .filter((value) => value >= 0 && value <= 6);
+    const unique = Array.from(new Set(normalized));
+    unique.sort((a, b) => {
+      const normalizedA = a === 0 ? 7 : a;
+      const normalizedB = b === 0 ? 7 : b;
+      return normalizedA - normalizedB;
+    });
+    return unique;
+  }
+
+  function formatRoutineWeekdayLabel(value) {
+    switch (value) {
+      case 0: return "일";
+      case 1: return "월";
+      case 2: return "화";
+      case 3: return "수";
+      case 4: return "목";
+      case 5: return "금";
+      case 6: return "토";
+      default: return "월";
+    }
+  }
+
+  function createRoutineFormState(overrides = {}) {
+    return {
+      title: "",
+      request: "",
+      scheduleKind: "daily",
+      scheduleTime: "08:00",
+      dayOfMonth: 1,
+      weekdays: [1, 2, 3, 4, 5],
+      timezoneId: getRoutineLocalTimezone(),
+      ...overrides
+    };
+  }
+
+  function hydrateRoutineFormFromRoutine(routine) {
+    if (!routine) {
+      return createRoutineFormState();
+    }
+
+    return createRoutineFormState({
+      title: routine.title || "",
+      request: routine.request || "",
+      scheduleKind: routine.scheduleKind || "daily",
+      scheduleTime: routine.timeOfDay || "08:00",
+      dayOfMonth: Number.isFinite(routine.dayOfMonth) ? Number(routine.dayOfMonth) : 1,
+      weekdays: normalizeRoutineWeekdays(routine.weekdays || []),
+      timezoneId: routine.timezoneId || getRoutineLocalTimezone()
+    });
+  }
+
+  function buildRoutinePayloadFromForm(form) {
+    const scheduleKind = (form?.scheduleKind || "daily").trim().toLowerCase();
+    const weekdays = scheduleKind === "weekly"
+      ? normalizeRoutineWeekdays(form?.weekdays || [])
+      : [];
+    const dayOfMonth = scheduleKind === "monthly"
+      ? Math.min(31, Math.max(1, Number(form?.dayOfMonth || 1) || 1))
+      : null;
+    return {
+      title: (form?.title || "").trim(),
+      text: (form?.request || "").trim(),
+      scheduleKind,
+      scheduleTime: (form?.scheduleTime || "08:00").trim() || "08:00",
+      dayOfMonth,
+      weekdays,
+      timezoneId: (form?.timezoneId || getRoutineLocalTimezone()).trim() || getRoutineLocalTimezone()
+    };
+  }
+
+  function formatRoutineSchedulePreview(form) {
+    const kind = (form?.scheduleKind || "daily").trim().toLowerCase();
+    const timeOfDay = (form?.scheduleTime || "08:00").trim() || "08:00";
+    const timezoneId = (form?.timezoneId || getRoutineLocalTimezone()).trim() || getRoutineLocalTimezone();
+    const suffix = timezoneId === getRoutineLocalTimezone() ? "" : ` · ${timezoneId}`;
+    if (kind === "weekly") {
+      const labels = normalizeRoutineWeekdays(form?.weekdays || []).map((value) => formatRoutineWeekdayLabel(value));
+      return `매주 ${labels.length > 0 ? labels.join(", ") : "월"} ${timeOfDay}${suffix}`;
+    }
+
+    if (kind === "monthly") {
+      const dayOfMonth = Math.min(31, Math.max(1, Number(form?.dayOfMonth || 1) || 1));
+      return `매월 ${dayOfMonth}일 ${timeOfDay}${suffix}`;
+    }
+
+    return `매일 ${timeOfDay}${suffix}`;
+  }
   const NONE_MODEL = "none";
   const DEFAULT_GROQ_SINGLE_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
   const DEFAULT_GROQ_WORKER_MODEL = "openai/gpt-oss-120b";
@@ -399,6 +514,91 @@
     return parsed.toFixed(digits);
   }
 
+  function formatLatencySeconds(ms) {
+    const numeric = Number(ms);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      return "-";
+    }
+    return `${formatDecimal(numeric / 1000, numeric >= 1000 ? 2 : 3)}s`;
+  }
+
+  function normalizeLatencyMetrics(raw) {
+    if (!raw || typeof raw !== "object") {
+      return null;
+    }
+
+    const normalized = {
+      decisionMs: Number(raw.decisionMs || 0),
+      promptBuildMs: Number(raw.promptBuildMs || 0),
+      firstChunkMs: Number(raw.firstChunkMs || 0),
+      fullResponseMs: Number(raw.fullResponseMs || 0),
+      sanitizeMs: Number(raw.sanitizeMs || 0),
+      serverTotalMs: Number(raw.serverTotalMs || 0),
+      decisionPath: `${raw.decisionPath || ""}`.trim()
+    };
+
+    if (!Number.isFinite(normalized.serverTotalMs) || normalized.serverTotalMs <= 0) {
+      normalized.serverTotalMs = Math.max(
+        0,
+        normalized.decisionMs + normalized.promptBuildMs + normalized.fullResponseMs + normalized.sanitizeMs
+      );
+    }
+
+    return normalized;
+  }
+
+  function formatLatencyMeta(latency) {
+    const normalized = normalizeLatencyMetrics(latency);
+    if (!normalized || normalized.serverTotalMs <= 0) {
+      return "";
+    }
+
+    const parts = [
+      `server ${formatLatencySeconds(normalized.serverTotalMs)}`,
+      `first ${formatLatencySeconds(normalized.firstChunkMs)}`,
+      `full ${formatLatencySeconds(normalized.fullResponseMs)}`
+    ];
+    if (normalized.decisionMs > 0) {
+      parts.push(`decision ${normalized.decisionMs}ms`);
+    }
+    if (normalized.sanitizeMs > 0) {
+      parts.push(`sanitize ${normalized.sanitizeMs}ms`);
+    }
+    return parts.join(" · ");
+  }
+
+  function attachLatencyMetaToConversation(conversation, msg) {
+    if (!conversation || !Array.isArray(conversation.messages)) {
+      return conversation;
+    }
+
+    const latencyMeta = formatLatencyMeta(msg && msg.latency);
+    if (!latencyMeta) {
+      return conversation;
+    }
+
+    const messages = conversation.messages.slice();
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const item = messages[i];
+      if (!item || item.role !== "assistant") {
+        continue;
+      }
+
+      const baseMeta = `${item.meta || ""}`.trim();
+      if (baseMeta.includes("server ") || baseMeta.includes("first ")) {
+        return conversation;
+      }
+
+      messages[i] = {
+        ...item,
+        meta: baseMeta ? `${baseMeta} · ${latencyMeta}` : latencyMeta
+      };
+      return { ...conversation, messages };
+    }
+
+    return conversation;
+  }
+
   function escapeHtml(value) {
     return `${value ?? ""}`
       .replace(/&/g, "&amp;")
@@ -649,6 +849,24 @@
     return !!canonicalizeMarkdownTableSeparatorLine(line);
   }
 
+  function renderFallbackInlineMarkdown(value) {
+    let html = escapeHtml(`${value ?? ""}`);
+    html = html.replace(/\*\*([^*\n][\s\S]*?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/__([^_\n][\s\S]*?)__/g, "<strong>$1</strong>");
+    return html;
+  }
+
+  function autoResizeComposerTextarea(node) {
+    if (!node) {
+      return;
+    }
+
+    node.style.height = "0px";
+    const nextHeight = Math.min(Math.max(node.scrollHeight, 46), 168);
+    node.style.height = `${nextHeight}px`;
+    node.style.overflowY = node.scrollHeight > 168 ? "auto" : "hidden";
+  }
+
   function splitMarkdownTableCells(line) {
     const normalizedRow = canonicalizeMarkdownTableRow(line);
     if (!normalizedRow) {
@@ -658,7 +876,7 @@
     return normalizedRow
       .slice(1, -1)
       .split("|")
-      .map((cell) => escapeHtml(`${cell ?? ""}`.trim()));
+      .map((cell) => renderFallbackInlineMarkdown(`${cell ?? ""}`.trim()));
   }
 
   function renderTableAwareFallbackHtml(text) {
@@ -699,12 +917,52 @@
       if (`${line ?? ""}`.trim().length === 0) {
         chunks.push("<br>");
       } else {
-        chunks.push(escapeHtml(line));
+        chunks.push(renderFallbackInlineMarkdown(line));
       }
       i += 1;
     }
 
     return chunks.join("<br>").replace(/(?:<br>){3,}/g, "<br><br>");
+  }
+
+  function normalizeStructuredMarkdownArtifacts(value) {
+    let text = `${value ?? ""}`;
+    text = text.replace(
+      /(^|\n)(\d+\.)\s*\n+(?=\s*(?:\*\*[^*\n]+:\*\*|[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:\s))/g,
+      "$1$2 "
+    );
+    text = text.replace(
+      /(^|\n)((?:\*\*[^*\n]+:\*\*)|(?:[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:))\s+\*\*\s+/g,
+      "$1$2 "
+    );
+    text = text.replace(
+      /(^|\n)((?:\*\*[^*\n]+:\*\*)|(?:[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:))\s+\*\*(?=\n|$)/g,
+      "$1$2"
+    );
+    text = text.replace(
+      /(^|\n)(?<lead>[-•▪]\s*)?(?<body>\d+[.)]\s*[^\n:*|]+)(?=\n|$)/g,
+      (match, prefix, lead, body) => {
+        const normalizedLead = `${lead ?? ""}`;
+        const normalizedBody = `${body ?? ""}`.trim();
+        if (!normalizedBody || /\*\*/.test(normalizedBody)) {
+          return `${prefix}${normalizedLead}${normalizedBody}`;
+        }
+
+        const headline = normalizedBody.replace(/^\d+[.)]\s*/, "").trim();
+        if (!headline
+          || headline.length < 2
+          || headline.length > 140
+          || /[:：|]/.test(headline)
+          || /https?:\/\//i.test(headline)
+          || /^(출처|요약|핵심)/i.test(headline)
+          || /(니다\.|습니다\.|다\.|요\.|[?!.])$/.test(headline)) {
+          return `${prefix}${normalizedLead}${normalizedBody}`;
+        }
+
+        return `${prefix}${normalizedLead}**${normalizedBody}**`;
+      }
+    );
+    return text;
   }
 
   function normalizeMarkdownSource(value) {
@@ -718,6 +976,7 @@
         .replace(/\\t/g, "  ");
     }
 
+    text = normalizeStructuredMarkdownArtifacts(text);
     text = normalizeMarkdownTableSeparators(text);
     text = normalizeMarkdownTableBlocks(text);
     text = collapseMarkdownTableBlankLines(text);
@@ -1763,6 +2022,9 @@
     const [conversationDetails, setConversationDetails] = useState({});
     const [expandedFoldersByKey, setExpandedFoldersByKey] = useState({});
     const [conversationFilterByKey, setConversationFilterByKey] = useState({});
+    const [selectionModeByKey, setSelectionModeByKey] = useState({});
+    const [selectedConversationIdsByKey, setSelectedConversationIdsByKey] = useState({});
+    const [selectedFoldersByKey, setSelectedFoldersByKey] = useState({});
     const [memoryNotes, setMemoryNotes] = useState([]);
     const [selectedMemoryByConversation, setSelectedMemoryByConversation] = useState({});
     const [metaTitle, setMetaTitle] = useState("");
@@ -1772,6 +2034,7 @@
     const [codingResultByConversation, setCodingResultByConversation] = useState({});
     const [memoryPreview, setMemoryPreview] = useState({ open: false, name: "", content: "" });
     const [memoryPickerOpen, setMemoryPickerOpen] = useState(false);
+    const [threadInfoOpenByScope, setThreadInfoOpenByScope] = useState({ chat: false, coding: false });
 
     const [pendingByKey, setPendingByKey] = useState({});
     const [errorByKey, setErrorByKey] = useState({});
@@ -1780,8 +2043,8 @@
     const [filePreviewByConversation, setFilePreviewByConversation] = useState({});
     const [showExecutionLogsByConversation, setShowExecutionLogsByConversation] = useState({});
     const [attachmentsByKey, setAttachmentsByKey] = useState({});
-    const [webUrlsByKey, setWebUrlsByKey] = useState({});
-    const [webSearchByKey, setWebSearchByKey] = useState({});
+    const [attachmentPanelOpenByKey, setAttachmentPanelOpenByKey] = useState({});
+    const [attachmentDragActiveByKey, setAttachmentDragActiveByKey] = useState({});
     const [clockTick, setClockTick] = useState(Date.now());
 
     const [chatInputSingle, setChatInputSingle] = useState("");
@@ -1869,7 +2132,8 @@
     const [opsDomainFilter, setOpsDomainFilter] = useState("all");
     const [selectedToolResultId, setSelectedToolResultId] = useState("");
     const [routines, setRoutines] = useState([]);
-    const [routineRequestInput, setRoutineRequestInput] = useState("");
+    const [routineCreateForm, setRoutineCreateForm] = useState(() => createRoutineFormState());
+    const [routineEditForm, setRoutineEditForm] = useState(() => createRoutineFormState());
     const [routineSelectedId, setRoutineSelectedId] = useState("");
     const [groqUsageWindowBaseByModel, setGroqUsageWindowBaseByModel] = useState({});
 
@@ -1880,6 +2144,9 @@
     const messageListRef = useRef(null);
     const outboundQueueRef = useRef([]);
     const hasOpenedSocketRef = useRef(false);
+    const autoCreateConversationRef = useRef({});
+    const attachmentDragDepthRef = useRef(0);
+    const currentKeyRef = useRef("");
     const groqAutoRefreshWindowRef = useRef({ minute: "", hour: "", day: "" });
 
     const scope = rootTab === "coding" ? "coding" : "chat";
@@ -1897,11 +2164,20 @@
       .filter((note) => currentMemoryNotes.includes(note.name))
       .map((note) => note.name);
     const currentAttachments = attachmentsByKey[currentKey] || [];
-    const currentWebUrlDraft = webUrlsByKey[currentKey] || "";
-    const currentWebSearchEnabled = Object.prototype.hasOwnProperty.call(webSearchByKey, currentKey)
-      ? !!webSearchByKey[currentKey]
-      : true;
+    const attachmentPanelOpen = !!attachmentPanelOpenByKey[currentKey];
+    const attachmentDragActive = !!attachmentDragActiveByKey[currentKey];
+    const attachmentPanelVisible = attachmentPanelOpen || attachmentDragActive;
     const currentConversationFilter = conversationFilterByKey[currentKey] || "";
+    const selectionMode = !!selectionModeByKey[currentKey];
+    const currentSelectedConversationIds = Array.isArray(selectedConversationIdsByKey[currentKey])
+      ? selectedConversationIdsByKey[currentKey]
+      : [];
+    const currentSelectedFolders = Array.isArray(selectedFoldersByKey[currentKey])
+      ? selectedFoldersByKey[currentKey]
+      : [];
+    const attachmentFileInputId = `attachment-file-input-${currentKey.replace(/[^a-z0-9_-]/gi, "-")}`;
+    const threadInfoScopeKey = rootTab === "coding" ? "coding" : "chat";
+    const threadInfoOpen = !!threadInfoOpenByScope[threadInfoScopeKey];
     const groupedConversationList = useMemo(() => {
       const keyword = currentConversationFilter.trim().toLowerCase();
       const groups = {};
@@ -1936,6 +2212,113 @@
           items: groups[project].slice().sort((a, b) => (b.updatedUtc || "").localeCompare(a.updatedUtc || ""))
         }));
     }, [conversationDetails, currentConversationFilter, currentConversationList]);
+    const selectedDeleteConversationIds = useMemo(() => {
+      const ids = new Set();
+      currentSelectedConversationIds.forEach((id) => {
+        if (id) {
+          ids.add(id);
+        }
+      });
+
+      if (currentSelectedFolders.length > 0) {
+        currentConversationList.forEach((item) => {
+          const detail = conversationDetails[item.id] || null;
+          const project = (detail?.project ?? item.project ?? "기본").trim() || "기본";
+          if (currentSelectedFolders.includes(project)) {
+            ids.add(item.id);
+          }
+        });
+      }
+
+      return Array.from(ids);
+    }, [conversationDetails, currentConversationList, currentSelectedConversationIds, currentSelectedFolders]);
+
+    function toggleThreadInfoPanel() {
+      setThreadInfoOpenByScope((prev) => ({
+        ...prev,
+        [threadInfoScopeKey]: !prev[threadInfoScopeKey]
+      }));
+    }
+
+    function toggleAttachmentPanel() {
+      setAttachmentPanelOpenByKey((prev) => ({
+        ...prev,
+        [currentKey]: !prev[currentKey]
+      }));
+    }
+
+    function hasDraggedFiles(dataTransfer) {
+      if (!dataTransfer) {
+        return false;
+      }
+
+      const types = Array.from(dataTransfer.types || []);
+      return (dataTransfer.files && dataTransfer.files.length > 0)
+        || types.includes("Files")
+        || types.includes("application/x-moz-file");
+    }
+
+    function setAttachmentDragActive(key, active) {
+      const normalizedKey = `${key || currentKey}`.trim() || currentKey;
+      setAttachmentDragActiveByKey((prev) => {
+        const current = !!prev[normalizedKey];
+        if (current === !!active) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [normalizedKey]: !!active
+        };
+      });
+    }
+
+    function clearAttachmentDragState(key) {
+      attachmentDragDepthRef.current = 0;
+      setAttachmentDragActive(key || currentKeyRef.current || currentKey, false);
+    }
+
+    function formatConversationUpdatedLabel(updatedUtc) {
+      const raw = `${updatedUtc || ""}`.trim();
+      if (!raw) {
+        return "";
+      }
+
+      const parsed = new Date(raw);
+      if (Number.isNaN(parsed.getTime())) {
+        return "";
+      }
+
+      const now = new Date();
+      const sameDay = parsed.toDateString() === now.toDateString();
+      if (sameDay) {
+        return parsed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
+      }
+
+      const sameYear = parsed.getFullYear() === now.getFullYear();
+      return sameYear
+        ? parsed.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })
+        : parsed.toLocaleDateString("ko-KR", { year: "numeric", month: "numeric", day: "numeric" });
+    }
+
+    function buildConversationAvatarText(item) {
+      const seeds = [
+        item && item.title ? `${item.title}` : "",
+        item && item.project ? `${item.project}` : "",
+        item && item.category ? `${item.category}` : "",
+        "O"
+      ];
+
+      for (const seed of seeds) {
+        const chars = Array.from(seed.trim());
+        const hit = chars.find((char) => /[A-Za-z가-힣0-9]/.test(char));
+        if (hit) {
+          return hit.toUpperCase();
+        }
+      }
+
+      return "O";
+    }
     const toolResultStats = useMemo(() => {
       const byGroup = {};
       TOOL_RESULT_GROUPS.forEach((group) => {
@@ -2642,6 +3025,72 @@
     }, [scope, mode]);
 
     useEffect(() => {
+      currentKeyRef.current = currentKey;
+      attachmentDragDepthRef.current = 0;
+
+      function handleWindowDragEnter(event) {
+        if (!hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        attachmentDragDepthRef.current += 1;
+        setAttachmentDragActive(currentKey, true);
+      }
+
+      function handleWindowDragOver(event) {
+        if (!hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        if (event.dataTransfer) {
+          event.dataTransfer.dropEffect = "copy";
+        }
+
+        if (attachmentDragDepthRef.current <= 0) {
+          attachmentDragDepthRef.current = 1;
+        }
+        setAttachmentDragActive(currentKey, true);
+      }
+
+      function handleWindowDragLeave(event) {
+        if (!hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        attachmentDragDepthRef.current = Math.max(0, attachmentDragDepthRef.current - 1);
+        if (attachmentDragDepthRef.current === 0) {
+          setAttachmentDragActive(currentKey, false);
+        }
+      }
+
+      function handleWindowDrop(event) {
+        if (!hasDraggedFiles(event.dataTransfer)) {
+          return;
+        }
+
+        event.preventDefault();
+        clearAttachmentDragState(currentKey);
+      }
+
+      window.addEventListener("dragenter", handleWindowDragEnter);
+      window.addEventListener("dragover", handleWindowDragOver);
+      window.addEventListener("dragleave", handleWindowDragLeave);
+      window.addEventListener("drop", handleWindowDrop);
+
+      return () => {
+        window.removeEventListener("dragenter", handleWindowDragEnter);
+        window.removeEventListener("dragover", handleWindowDragOver);
+        window.removeEventListener("dragleave", handleWindowDragLeave);
+        window.removeEventListener("drop", handleWindowDrop);
+        attachmentDragDepthRef.current = 0;
+        setAttachmentDragActive(currentKey, false);
+      };
+    }, [currentKey]);
+
+    useEffect(() => {
       if (!currentConversation) {
         setMetaTitle("");
         setMetaProject("기본");
@@ -3082,7 +3531,7 @@
     }
 
     function createConversation(targetScope, targetMode, title, project, category, tags) {
-      send({
+      return send({
         type: "create_conversation",
         scope: targetScope,
         mode: targetMode,
@@ -3091,6 +3540,21 @@
         category: (category || "").trim() || undefined,
         tags: Array.isArray(tags) && tags.length > 0 ? tags : undefined
       });
+    }
+
+    function requestAutoCreateConversation(targetScope, targetMode, title, project, category, tags) {
+      const normalizedScope = targetScope || "chat";
+      const normalizedMode = targetMode || "single";
+      const key = `${normalizedScope}:${normalizedMode}`;
+      if (autoCreateConversationRef.current[key]) {
+        return;
+      }
+
+      autoCreateConversationRef.current[key] = true;
+      const sent = createConversation(normalizedScope, normalizedMode, title, project, category, tags);
+      if (!sent) {
+        autoCreateConversationRef.current[key] = false;
+      }
     }
 
     function saveConversationMeta() {
@@ -3156,16 +3620,36 @@
     }
 
     function deleteConversation() {
-      if (!currentConversationId) {
+      const targetIds = selectionMode
+        ? selectedDeleteConversationIds
+        : (currentConversationId ? [currentConversationId] : []);
+      if (targetIds.length === 0) {
         return;
       }
 
-      send({
-        type: "delete_conversation",
-        scope,
-        mode,
-        conversationId: currentConversationId
+      const folderCount = currentSelectedFolders.length;
+      const conversationCount = currentSelectedConversationIds.length;
+      const message = selectionMode
+        ? `선택한 항목을 삭제할까요?\n폴더 ${folderCount}개, 대화 ${conversationCount}개 선택됨\n실제 삭제 대상 대화 ${targetIds.length}개`
+        : "현재 대화를 삭제할까요?";
+      const confirmed = window.confirm(message);
+      if (!confirmed) {
+        return;
+      }
+
+      targetIds.forEach((conversationId) => {
+        send({
+          type: "delete_conversation",
+          scope,
+          mode,
+          conversationId
+        }, { silent: true, queueIfClosed: false });
       });
+
+      if (selectionMode) {
+        setSelectedConversationIdsByKey((prev) => ({ ...prev, [currentKey]: [] }));
+        setSelectedFoldersByKey((prev) => ({ ...prev, [currentKey]: [] }));
+      }
     }
 
     function clearScopeMemory(targetScope) {
@@ -3198,6 +3682,29 @@
       });
     }
 
+    function renameMemoryNote(noteName) {
+      const currentName = String(noteName || "").trim();
+      if (!currentName) {
+        return;
+      }
+
+      const nextName = window.prompt("새 메모리 노트 이름", currentName);
+      if (typeof nextName !== "string") {
+        return;
+      }
+
+      const trimmed = nextName.trim();
+      if (!trimmed || trimmed === currentName) {
+        return;
+      }
+
+      send({
+        type: "rename_memory_note",
+        noteName: currentName,
+        newName: trimmed
+      });
+    }
+
     function deleteSelectedMemoryNotes() {
       if (currentCheckedMemoryNotes.length === 0) {
         return;
@@ -3218,6 +3725,41 @@
       const key = `${item.scope}:${item.mode}`;
       setActiveConversationByKey((prev) => ({ ...prev, [key]: item.id }));
       requestConversationDetail(item.id);
+    }
+
+    function toggleSelectionMode() {
+      const nextValue = !selectionMode;
+      setSelectionModeByKey((prev) => ({ ...prev, [currentKey]: nextValue }));
+      if (!nextValue) {
+        setSelectedConversationIdsByKey((prev) => ({ ...prev, [currentKey]: [] }));
+        setSelectedFoldersByKey((prev) => ({ ...prev, [currentKey]: [] }));
+      }
+    }
+
+    function toggleFolderSelection(projectName) {
+      const normalized = (projectName || "기본").trim() || "기본";
+      setSelectedFoldersByKey((prev) => {
+        const base = Array.isArray(prev[currentKey]) ? prev[currentKey] : [];
+        const next = base.includes(normalized)
+          ? base.filter((item) => item !== normalized)
+          : base.concat([normalized]);
+        return { ...prev, [currentKey]: next };
+      });
+    }
+
+    function toggleConversationSelection(conversationId) {
+      const normalized = String(conversationId || "").trim();
+      if (!normalized) {
+        return;
+      }
+
+      setSelectedConversationIdsByKey((prev) => {
+        const base = Array.isArray(prev[currentKey]) ? prev[currentKey] : [];
+        const next = base.includes(normalized)
+          ? base.filter((item) => item !== normalized)
+          : base.concat([normalized]);
+        return { ...prev, [currentKey]: next };
+      });
     }
 
     function buildFolderKey(scopeModeKey, projectName) {
@@ -3249,7 +3791,7 @@
       }
 
       const text = chatInputSingle.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const effectiveText = text || (rich.attachments.length > 0 ? "첨부 파일을 분석해줘" : "");
       if (!effectiveText) {
         return;
@@ -3299,7 +3841,7 @@
       }
 
       const text = chatInputOrch.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const effectiveText = text || (rich.attachments.length > 0 ? "첨부 파일을 분석해줘" : "");
       if (!effectiveText) {
         return;
@@ -3358,7 +3900,7 @@
       }
 
       const text = chatInputMulti.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const effectiveText = text || (rich.attachments.length > 0 ? "첨부 파일을 분석해줘" : "");
       if (!effectiveText) {
         return;
@@ -3402,7 +3944,7 @@
       }
 
       const text = codingInputSingle.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const effectiveText = text || (rich.attachments.length > 0 ? "첨부 파일을 반영해 코딩해줘" : "");
       if (!effectiveText) {
         return;
@@ -3446,7 +3988,7 @@
       }
 
       const text = codingInputOrch.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const pendingLabel = text || (rich.attachments.length > 0 ? "첨부 파일 반영 코딩" : "(입력 없음) 워커 자동 역할 협의 모드");
 
       const aggregateModel = codingOrchProvider === "groq"
@@ -3501,7 +4043,7 @@
       }
 
       const text = codingInputMulti.trim();
-      const rich = getRichInputPayload();
+      const rich = getRichInputPayload(text);
       const effectiveText = text || (rich.attachments.length > 0 ? "첨부 파일을 반영해 코딩해줘" : "");
       if (!effectiveText) {
         return;
@@ -4210,7 +4752,30 @@
       if (msg.type === "conversations") {
         const list = Array.isArray(msg.items) ? msg.items : [];
         const key = `${msg.scope || "chat"}:${msg.mode || "single"}`;
+        if (list.length > 0) {
+          autoCreateConversationRef.current[key] = false;
+        }
 
+        setSelectedConversationIdsByKey((prev) => {
+          const base = Array.isArray(prev[key]) ? prev[key] : [];
+          if (base.length === 0) {
+            return prev;
+          }
+
+          const allowed = new Set(list.map((item) => item.id));
+          const next = base.filter((id) => allowed.has(id));
+          return next.length === base.length ? prev : { ...prev, [key]: next };
+        });
+        setSelectedFoldersByKey((prev) => {
+          const base = Array.isArray(prev[key]) ? prev[key] : [];
+          if (base.length === 0) {
+            return prev;
+          }
+
+          const allowed = new Set(list.map((item) => ((item.project || "기본").trim() || "기본")));
+          const next = base.filter((project) => allowed.has(project));
+          return next.length === base.length ? prev : { ...prev, [key]: next };
+        });
         setConversationLists((prev) => ({ ...prev, [key]: list }));
         setActiveConversationByKey((prev) => {
           const active = prev[key];
@@ -4223,7 +4788,7 @@
             return { ...prev, [key]: list[0].id };
           }
 
-          createConversation(msg.scope || "chat", msg.mode || "single");
+          requestAutoCreateConversation(msg.scope || "chat", msg.mode || "single");
           return prev;
         });
         return;
@@ -4236,6 +4801,7 @@
         }
 
         const key = `${conversation.scope}:${conversation.mode}`;
+        autoCreateConversationRef.current[key] = false;
         setConversationDetails((prev) => ({ ...prev, [conversation.id]: conversation }));
         setConversationLists((prev) => {
           const list = Array.isArray(prev[key]) ? prev[key] : [];
@@ -4280,6 +4846,23 @@
           return;
         }
 
+        setSelectedConversationIdsByKey((prev) => {
+          const next = {};
+          let changed = false;
+          Object.entries(prev).forEach(([key, ids]) => {
+            if (!Array.isArray(ids)) {
+              next[key] = ids;
+              return;
+            }
+
+            const filtered = ids.filter((id) => id !== conversationId);
+            next[key] = filtered;
+            if (filtered.length !== ids.length) {
+              changed = true;
+            }
+          });
+          return changed ? next : prev;
+        });
         setConversationDetails((prev) => {
           const next = { ...prev };
           delete next[conversationId];
@@ -4299,16 +4882,17 @@
         if (refreshScope === "all") {
           ["chat", "coding"].forEach((targetScope) => {
             ["single", "orchestration", "multi"].forEach((targetMode) => {
-              requestConversations(targetScope, targetMode);
+              const key = `${targetScope}:${targetMode}`;
+              autoCreateConversationRef.current[key] = false;
             });
           });
         } else if (refreshScope === "chat" || refreshScope === "coding") {
           ["single", "orchestration", "multi"].forEach((targetMode) => {
-            requestConversations(refreshScope, targetMode);
+            const key = `${refreshScope}:${targetMode}`;
+            autoCreateConversationRef.current[key] = false;
           });
         }
 
-        send({ type: "list_memory_notes" }, { silent: true, queueIfClosed: false });
         if (msg.message) {
           log(`[memory] ${msg.message}`, "info");
         }
@@ -4379,6 +4963,47 @@
           setMemoryPreview((prev) => (
             removedNames.includes(prev.name)
               ? { open: false, name: "", content: "" }
+              : prev
+          ));
+        }
+
+        if (msg.message) {
+          log(`[memory] ${msg.message}`, ok ? "info" : "error");
+        }
+        send({ type: "list_memory_notes" }, { silent: true, queueIfClosed: false });
+        return;
+      }
+
+      if (msg.type === "memory_note_renamed") {
+        const ok = !!msg.ok;
+        const oldName = typeof msg.oldName === "string" ? msg.oldName.trim() : "";
+        const newName = typeof msg.newName === "string" ? msg.newName.trim() : "";
+
+        if (ok && oldName && newName) {
+          setSelectedMemoryByConversation((prev) => {
+            const next = {};
+            Object.entries(prev).forEach(([conversationId, names]) => {
+              next[conversationId] = Array.isArray(names)
+                ? names.map((name) => name === oldName ? newName : name)
+                : names;
+            });
+            return next;
+          });
+          setConversationDetails((prev) => {
+            const next = {};
+            Object.entries(prev).forEach(([conversationId, detail]) => {
+              next[conversationId] = detail && Array.isArray(detail.linkedMemoryNotes)
+                ? {
+                    ...detail,
+                    linkedMemoryNotes: detail.linkedMemoryNotes.map((name) => name === oldName ? newName : name)
+                  }
+                : detail;
+            });
+            return next;
+          });
+          setMemoryPreview((prev) => (
+            prev.name === oldName
+              ? { ...prev, name: newName }
               : prev
           ));
         }
@@ -4537,7 +5162,10 @@
         }
 
         const key = `${conv.scope}:${conv.mode}`;
-        setConversationDetails((prev) => ({ ...prev, [conv.id]: conv }));
+        const normalizedConversation = msg.type === "llm_chat_result"
+          ? attachLatencyMetaToConversation(conv, msg)
+          : conv;
+        setConversationDetails((prev) => ({ ...prev, [conv.id]: normalizedConversation }));
         setActiveConversationByKey((prev) => {
           if (prev[key]) {
             return prev;
@@ -4546,7 +5174,7 @@
         });
         setSelectedMemoryByConversation((prev) => ({
           ...prev,
-          [conv.id]: conv.linkedMemoryNotes || prev[conv.id] || []
+          [conv.id]: normalizedConversation.linkedMemoryNotes || prev[conv.id] || []
         }));
         finishPendingRequest(key);
         setError(key, "");
@@ -4641,8 +5269,33 @@
       }
     }, [rootTab, authed]);
 
+    useEffect(() => {
+      const selected = routines.find((item) => item.id === routineSelectedId) || null;
+      setRoutineEditForm(hydrateRoutineFormFromRoutine(selected));
+    }, [routines, routineSelectedId]);
+
     function refreshRoutines() {
       send({ type: "get_routines" });
+    }
+
+    function patchRoutineForm(formType, patch) {
+      const setter = formType === "edit" ? setRoutineEditForm : setRoutineCreateForm;
+      setter((prev) => ({ ...prev, ...patch }));
+    }
+
+    function toggleRoutineWeekday(formType, weekday) {
+      const setter = formType === "edit" ? setRoutineEditForm : setRoutineCreateForm;
+      setter((prev) => {
+        const current = normalizeRoutineWeekdays(prev.weekdays || []);
+        const exists = current.includes(weekday);
+        const nextWeekdays = exists
+          ? current.filter((value) => value !== weekday)
+          : normalizeRoutineWeekdays([...current, weekday]);
+        return {
+          ...prev,
+          weekdays: nextWeekdays
+        };
+      });
     }
 
     function createRoutineFromUi() {
@@ -4650,17 +5303,40 @@
         return;
       }
 
-      const text = routineRequestInput.trim();
-      if (!text) {
+      const payload = buildRoutinePayloadFromForm(routineCreateForm);
+      if (!payload.text) {
         setError("routine:main", "루틴 요청을 입력하세요.");
         return;
       }
 
       setError("routine:main", "");
-      const ok = send({ type: "create_routine", text });
+      const ok = send({ type: "create_routine", ...payload });
       if (ok) {
-        setRoutineRequestInput("");
+        setRoutineCreateForm((prev) => createRoutineFormState({
+          scheduleKind: prev.scheduleKind,
+          scheduleTime: prev.scheduleTime,
+          dayOfMonth: prev.dayOfMonth,
+          weekdays: normalizeRoutineWeekdays(prev.weekdays || []),
+          timezoneId: prev.timezoneId || getRoutineLocalTimezone()
+        }));
       } else {
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function updateRoutineFromUi() {
+      if (!ensureAuthed() || !routineSelectedId) {
+        return;
+      }
+
+      const payload = buildRoutinePayloadFromForm(routineEditForm);
+      if (!payload.text) {
+        setError("routine:main", "루틴 요청을 입력하세요.");
+        return;
+      }
+
+      setError("routine:main", "");
+      if (!send({ type: "update_routine", routineId: routineSelectedId, ...payload })) {
         setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
       }
     }
@@ -4731,17 +5407,16 @@
         .slice(0, 3);
     }
 
-    function getRichInputPayload() {
+    function getRichInputPayload(inputText = "") {
       return {
         attachments: currentAttachments,
-        webUrls: parseWebUrls(currentWebUrlDraft),
-        webSearchEnabled: !!currentWebSearchEnabled
+        webUrls: parseWebUrls(inputText),
+        webSearchEnabled: true
       };
     }
 
     function clearRichInputDraft(key) {
       setAttachmentsByKey((prev) => ({ ...prev, [key]: [] }));
-      setWebUrlsByKey((prev) => ({ ...prev, [key]: "" }));
     }
 
     function removeAttachment(key, index) {
@@ -4781,18 +5456,18 @@
       });
     }
 
-    async function onAttachmentSelected(event) {
-      const fileList = event.target.files ? Array.from(event.target.files) : [];
-      if (fileList.length === 0) {
+    async function appendAttachmentsForKey(key, fileList) {
+      const normalizedKey = `${key || currentKey}`.trim() || currentKey;
+      const safeFileList = Array.isArray(fileList) ? fileList : [];
+      if (safeFileList.length === 0) {
         return;
       }
 
-      const key = currentKey;
-      const existing = attachmentsByKey[key] || [];
+      const existing = attachmentsByKey[normalizedKey] || [];
       const maxCount = 6;
       const maxBytes = 15 * 1024 * 1024;
       const next = [...existing];
-      for (const file of fileList) {
+      for (const file of safeFileList) {
         if (next.length >= maxCount) {
           log(`첨부는 최대 ${maxCount}개까지 가능합니다.`, "error");
           break;
@@ -4822,8 +5497,47 @@
         }
       }
 
-      setAttachmentsByKey((prev) => ({ ...prev, [key]: next }));
+      setAttachmentsByKey((prev) => ({ ...prev, [normalizedKey]: next }));
+    }
+
+    async function onAttachmentSelected(event) {
+      const fileList = event.target.files ? Array.from(event.target.files) : [];
+      if (fileList.length === 0) {
+        return;
+      }
+
+      await appendAttachmentsForKey(currentKey, fileList);
       event.target.value = "";
+    }
+
+    function handleAttachmentDragOver(event) {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+      }
+    }
+
+    async function handleAttachmentDrop(event) {
+      if (!hasDraggedFiles(event.dataTransfer)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      const fileList = event.dataTransfer && event.dataTransfer.files
+        ? Array.from(event.dataTransfer.files)
+        : [];
+      clearAttachmentDragState(currentKey);
+      if (fileList.length === 0) {
+        return;
+      }
+
+      await appendAttachmentsForKey(currentKey, fileList);
     }
 
     function normalizeModelChoice(value, fallback) {
@@ -5056,14 +5770,10 @@
         "section",
         { className: "conversation-panel" },
         e("div", { className: "conversation-head" },
-          e("strong", null, `${scope.toUpperCase()} · ${mode}`),
-          e("div", { className: "conversation-actions" },
-            e("button", {
-              className: "btn ghost",
-              onClick: () => createConversation(scope, mode, "", metaProject, metaCategory, parseTags(metaTags))
-            }, "새 대화"),
-            e("button", { className: "btn ghost", disabled: !currentConversationId, onClick: deleteConversation }, "삭제"),
-            e("button", { className: "btn ghost", onClick: () => clearScopeMemory(scope) }, "메모리 초기화")
+          e("div", { className: "conversation-head-copy" },
+            e("div", { className: "conversation-head-kicker" }, rootTab === "coding" ? "코딩 워크스페이스" : "메시지 보관함"),
+            e("strong", null, `${scope.toUpperCase()} · ${mode}`),
+            e("div", { className: "conversation-head-count" }, `${currentConversationList.length}개 대화`)
           )
         ),
         e("div", { className: "conversation-search" },
@@ -5079,43 +5789,95 @@
             ? e("div", { className: "empty" }, "대화가 없습니다.")
             : groupedConversationList.map((group) => {
               const expanded = keyword.length > 0 || isFolderExpanded(currentKey, group.project);
+              const folderSelected = currentSelectedFolders.includes(group.project);
               return e(
                 "div",
                 { key: `group-${group.project}`, className: "conversation-group" },
-                e("button", {
-                  type: "button",
-                  className: `group-title folder-title folder-toggle ${expanded ? "expanded" : ""}`,
-                  onClick: () => toggleFolder(currentKey, group.project),
-                  "aria-expanded": expanded ? "true" : "false"
-                },
-                e("span", { className: "folder-chevron" }, "▸"),
-                e("span", { className: "folder-badge" }, "폴더"),
-                e("span", { className: "folder-name" }, group.project),
-                e("span", { className: "folder-count" }, `${group.items.length}`)
+                e("div", { className: `folder-header-shell ${selectionMode ? "selection-mode" : ""}` },
+                  selectionMode
+                    ? e("button", {
+                      type: "button",
+                      className: `selection-toggle ${folderSelected ? "active" : ""}`,
+                      onClick: () => toggleFolderSelection(group.project),
+                      "aria-pressed": folderSelected ? "true" : "false"
+                    }, folderSelected ? "✓" : "")
+                    : null,
+                  e("button", {
+                    type: "button",
+                    className: `group-title folder-title folder-toggle ${expanded ? "expanded" : ""} ${folderSelected ? "selected" : ""}`,
+                    onClick: () => toggleFolder(currentKey, group.project),
+                    "aria-expanded": expanded ? "true" : "false"
+                  },
+                  e("span", { className: "folder-chevron" }, "▸"),
+                  e("span", { className: "folder-badge" }, "폴더"),
+                  e("span", { className: "folder-name" }, group.project),
+                  e("span", { className: "folder-count" }, `${group.items.length}`)
+                  )
                 ),
                 e("div", { className: `folder-children ${expanded ? "expanded" : "collapsed"}` },
                   expanded
-                    ? group.items.map((item) => e(
-                      "button",
-                      {
-                        key: item.id,
-                        className: `conversation-item ${currentConversationId === item.id ? "active" : ""}`,
-                        onClick: () => selectConversation({ ...item, scope, mode })
-                      },
-                      e("div", { className: "item-title" }, item.title || "제목 없음"),
-                      e("div", { className: "item-preview" }, item.preview || ""),
-                      e("div", { className: "item-meta" },
-                        e("span", { className: `meta-chip category-${toneForCategory(item.category || "일반")}` }, item.category || "일반"),
-                        e("span", { className: "meta-chip neutral" }, `${item.messageCount || 0} msgs`)
-                      ),
-                      Array.isArray(item.tags) && item.tags.length > 0
-                        ? e("div", { className: "item-tags" }, item.tags.slice(0, 3).map((tag) => e("span", { key: `${item.id}-${tag}`, className: "tag-chip" }, `#${tag}`)))
-                        : null
-                    ))
+                    ? group.items.map((item) => {
+                      const itemSelected = currentSelectedConversationIds.includes(item.id);
+                      return e(
+                        "div",
+                        { key: item.id, className: `conversation-item-shell ${selectionMode ? "selection-mode" : ""}` },
+                        selectionMode
+                          ? e("button", {
+                            type: "button",
+                            className: `selection-toggle ${itemSelected ? "active" : ""}`,
+                            onClick: () => toggleConversationSelection(item.id),
+                            "aria-pressed": itemSelected ? "true" : "false"
+                          }, itemSelected ? "✓" : "")
+                          : null,
+                        e(
+                          "button",
+                          {
+                            className: `conversation-item ${currentConversationId === item.id ? "active" : ""} ${itemSelected ? "selected" : ""}`,
+                            onClick: () => selectConversation({ ...item, scope, mode })
+                          },
+                          e("div", { className: `item-avatar category-${toneForCategory(item.category || "일반")}` }, buildConversationAvatarText(item)),
+                          e("div", { className: "item-content" },
+                            e("div", { className: "item-row" },
+                              e("div", { className: "item-title" }, item.title || "제목 없음"),
+                              e("div", { className: "item-time" }, formatConversationUpdatedLabel(item.updatedUtc))
+                            ),
+                            e("div", { className: "item-preview" }, item.preview || ""),
+                            e("div", { className: "item-meta" },
+                              e("span", { className: `meta-chip category-${toneForCategory(item.category || "일반")}` }, item.category || "일반"),
+                              e("span", { className: "meta-chip neutral item-count-chip" }, `${item.messageCount || 0} msgs`)
+                            ),
+                            Array.isArray(item.tags) && item.tags.length > 0
+                              ? e("div", { className: "item-tags" }, item.tags.slice(0, 3).map((tag) => e("span", { key: `${item.id}-${tag}`, className: "tag-chip" }, `#${tag}`)))
+                              : null
+                          ),
+                        )
+                      );
+                    })
                     : null
                 )
               );
             })
+        ),
+        e("div", { className: "conversation-bottom-actions" },
+          e("button", {
+            className: "btn primary conversation-new-btn conversation-bottom-new-btn",
+            onClick: () => createConversation(scope, mode, "", metaProject, metaCategory, parseTags(metaTags))
+          }, "새 대화"),
+          e("div", { className: "conversation-actions conversation-actions-bottom-row" },
+            e("button", {
+              className: `btn action-select-btn ${selectionMode ? "active" : ""}`,
+              onClick: toggleSelectionMode
+            }, selectionMode ? "선택 종료" : "선택"),
+            e("button", {
+              className: "btn action-memory-btn",
+              onClick: () => clearScopeMemory(scope)
+            }, "메모리 초기화"),
+            e("button", {
+              className: "btn action-delete-btn",
+              disabled: selectionMode ? selectedDeleteConversationIds.length === 0 : !currentConversationId,
+              onClick: deleteConversation
+            }, "삭제")
+          )
         )
       );
     }
@@ -5138,7 +5900,7 @@
 
       return e(
         "section",
-        { className: "memory-dock" },
+        { className: "memory-dock support-card" },
         e("div", { className: "memory-dock-head" },
           e("strong", null, "공유 메모리 노트"),
           e("div", { className: "memory-dock-actions" },
@@ -5170,89 +5932,138 @@
                   onChange: (event) => toggleMemoryNote(note.name, event.target.checked)
                 }),
                 e("span", { className: "memory-dock-name" }, note.name),
-                e("button", {
-                  className: "link-btn",
-                  onClick: (event) => {
-                    event.preventDefault();
-                    send({ type: "read_memory_note", noteName: note.name });
-                  }
-                }, "보기")
+                e("div", { className: "memory-dock-item-actions" },
+                  e("button", {
+                    className: "link-btn",
+                    onClick: (event) => {
+                      event.preventDefault();
+                      renameMemoryNote(note.name);
+                    }
+                  }, "수정"),
+                  e("button", {
+                    className: "link-btn",
+                    onClick: (event) => {
+                      event.preventDefault();
+                      send({ type: "read_memory_note", noteName: note.name });
+                    }
+                  }, "보기")
+                )
               );
             })
         )
       );
     }
 
-    function renderChatHeader() {
+    function renderThreadHeader() {
       const previewTags = parseTags(metaTags).slice(0, 6);
       const previewProject = metaProject.trim() || "기본";
       const previewCategory = metaCategory.trim() || "일반";
+      const summaryTokens = [
+        previewProject,
+        previewCategory,
+        `연결된 메모리 ${currentMemoryNotes.length}개`
+      ];
       return e(
         "div",
-        { className: "chat-header" },
-        e("div", { className: "chat-header-text" },
-          e("div", { className: "chat-header-title" }, currentConversationTitle),
-          e("div", { className: "chat-header-sub" }, `${scope.toUpperCase()} · ${mode} · 연결된 메모리 ${currentMemoryNotes.length}개`)
-        ),
-        e("div", { className: "chat-header-actions" },
-          e("div", { className: "meta-editor" },
-            e("label", { className: "meta-field" },
-              e("span", { className: "meta-label" }, "대화방 이름"),
-              e("input", {
-                className: "input compact",
-                value: metaTitle,
-                onChange: (event) => setMetaTitle(event.target.value),
-                placeholder: "대화방 이름"
-              })
-            ),
-            e("label", { className: "meta-field" },
-              e("span", { className: "meta-label" }, "프로젝트 폴더"),
-              e("input", {
-                className: "input compact",
-                value: metaProject,
-                onChange: (event) => setMetaProject(event.target.value),
-                placeholder: "예: Omni-node 운영"
-              })
-            ),
-            e("label", { className: "meta-field" },
-              e("span", { className: "meta-label" }, "카테고리"),
-              e("input", {
-                className: "input compact",
-                value: metaCategory,
-                onChange: (event) => setMetaCategory(event.target.value),
-                placeholder: "예: 설계, 버그, 문서"
-              })
-            ),
-            e("label", { className: "meta-field wide" },
-              e("span", { className: "meta-label" }, "태그"),
-              e("input", {
-                className: "input compact wide",
-                value: metaTags,
-                onChange: (event) => setMetaTags(event.target.value),
-                placeholder: "예: backend,urgent,release"
-              })
+        { className: "thread-header-shell" },
+        e("div", { className: "thread-topbar" },
+          e("div", { className: "thread-identity" },
+            e("div", { className: `thread-avatar ${rootTab === "coding" ? "coding" : "chat"} ${currentConversationId ? "active" : "idle"}` }, rootTab === "coding" ? "</>" : "AI"),
+            e("div", { className: "thread-copy" },
+              e("div", { className: "thread-title-row" },
+                e("div", { className: "thread-title" }, currentConversationTitle),
+                currentConversationId
+                  ? e("span", { className: `thread-context-badge ${rootTab === "coding" ? "coding" : "chat"}` }, `${scope.toUpperCase()} · ${mode}`)
+                  : null
+              ),
+              e("div", { className: "thread-subline" }, summaryTokens.join(" · ")),
+              e("div", { className: "thread-chip-row" },
+                e("span", { className: "folder-pill" }, `폴더 · ${previewProject}`),
+                e("span", { className: `meta-chip category-${toneForCategory(previewCategory)}` }, previewCategory),
+                previewTags.length > 0
+                  ? previewTags.map((tag) => e("span", { key: `preview-${tag}`, className: "tag-chip" }, `#${tag}`))
+                  : e("span", { className: "meta-chip neutral" }, "태그 없음")
+              )
             )
           ),
-          e("div", { className: "meta-preview-row" },
-            e("span", { className: "folder-pill" }, `폴더 · ${previewProject}`),
-            e("span", { className: `meta-chip category-${toneForCategory(previewCategory)}` }, previewCategory),
-            previewTags.length > 0
-              ? previewTags.map((tag) => e("span", { key: `preview-${tag}`, className: "tag-chip" }, `#${tag}`))
-              : e("span", { className: "meta-chip neutral" }, "태그 없음")
-          ),
-          e("div", { className: "header-btn-row" },
+          e("div", { className: "thread-actions" },
             e("button", {
-              className: "btn ghost",
+              className: `btn ghost thread-action-btn ${threadInfoOpen ? "active" : ""}`,
               disabled: !currentConversationId,
-              onClick: saveConversationMeta
-            }, "메타 저장"),
+              onClick: toggleThreadInfoPanel
+            }, threadInfoOpen ? "정보 닫기" : "정보"),
             e("button", {
-              className: "btn ghost",
+              className: "btn ghost thread-action-btn",
               disabled: !currentConversationId,
               onClick: () => setMemoryPickerOpen((prev) => !prev)
-            }, memoryPickerOpen ? "메모리 닫기" : "메모리 열기")
+            }, memoryPickerOpen ? "메모리 닫기" : "메모리")
           )
-        )
+        ),
+        e("div", { className: "thread-modebar" },
+          e("div", { className: "thread-modebar-copy" },
+            e("div", { className: "thread-mode-kicker" }, rootTab === "coding" ? "코딩 워크플로" : "응답 전략"),
+            e("div", { className: "thread-mode-hint" }, rootTab === "coding"
+              ? "단일 실행부터 오케스트레이션, 다중 코딩까지 한 흐름으로 관리합니다."
+              : "단일 답변, 오케스트레이션, 다중 LLM을 대화 흐름 안에서 전환합니다.")
+          ),
+          renderModeTabs()
+        ),
+        threadInfoOpen
+          ? e("div", { className: "thread-info-panel" },
+            e("div", { className: "thread-info-grid" },
+              e("label", { className: "meta-field" },
+                e("span", { className: "meta-label" }, "대화방 이름"),
+                e("input", {
+                  className: "input compact",
+                  value: metaTitle,
+                  onChange: (event) => setMetaTitle(event.target.value),
+                  placeholder: "대화방 이름"
+                })
+              ),
+              e("label", { className: "meta-field" },
+                e("span", { className: "meta-label" }, "프로젝트 폴더"),
+                e("input", {
+                  className: "input compact",
+                  value: metaProject,
+                  onChange: (event) => setMetaProject(event.target.value),
+                  placeholder: "예: Omni-node 운영"
+                })
+              ),
+              e("label", { className: "meta-field" },
+                e("span", { className: "meta-label" }, "카테고리"),
+                e("input", {
+                  className: "input compact",
+                  value: metaCategory,
+                  onChange: (event) => setMetaCategory(event.target.value),
+                  placeholder: "예: 설계, 버그, 문서"
+                })
+              ),
+              e("label", { className: "meta-field" },
+                e("span", { className: "meta-label" }, "태그"),
+                e("input", {
+                  className: "input compact",
+                  value: metaTags,
+                  onChange: (event) => setMetaTags(event.target.value),
+                  placeholder: "예: backend,urgent,release"
+                })
+              )
+            ),
+            e("div", { className: "thread-info-footer" },
+              e("div", { className: "meta-preview-row" },
+                e("span", { className: "folder-pill" }, `폴더 · ${previewProject}`),
+                e("span", { className: `meta-chip category-${toneForCategory(previewCategory)}` }, previewCategory),
+                previewTags.length > 0
+                  ? previewTags.map((tag) => e("span", { key: `info-${tag}`, className: "tag-chip" }, `#${tag}`))
+                  : e("span", { className: "meta-chip neutral" }, "태그 없음")
+              ),
+              e("button", {
+                className: "btn primary thread-save-btn",
+                disabled: !currentConversationId,
+                onClick: saveConversationMeta
+              }, "메타 저장")
+            )
+          )
+          : null
       );
     }
 
@@ -5276,51 +6087,72 @@
             const bubbleText = isCodingScope && item.role === "assistant"
               ? sanitizeCodingAssistantText(item.text || "")
               : (item.text || "");
+            const isUser = item.role === "user";
             return e(
               "div",
-              { key: `${item.createdUtc || index}-${index}`, className: `bubble ${item.role === "user" ? "user" : "assistant"}` },
-              item.meta ? e("div", { className: "bubble-meta" }, item.meta) : null,
-              e(MarkdownBubbleText, { text: bubbleText })
+              { key: `${item.createdUtc || index}-${index}`, className: `message-row ${isUser ? "user" : "assistant"}` },
+              !isUser
+                ? e("div", { className: `message-avatar ${isCodingScope ? "coding" : "assistant"}` }, isCodingScope ? "DEV" : "AI")
+                : null,
+              e(
+                "div",
+                { className: `bubble ${isUser ? "user" : "assistant"}` },
+                item.meta ? e("div", { className: "bubble-meta" }, item.meta) : null,
+                e(MarkdownBubbleText, { text: bubbleText })
+              ),
+              isUser
+                ? e("div", { className: "message-avatar self" }, "ME")
+                : null
             );
           }),
         optimisticUser
           ? e(
             "div",
-            { className: "bubble user pending-user" },
-            e("div", { className: "bubble-meta" }, "사용자 (전송됨)"),
-            e(MarkdownBubbleText, { text: optimisticUser.text || "" })
+            { className: "message-row user pending-user-row" },
+            e(
+              "div",
+              { className: "bubble user pending-user" },
+              e("div", { className: "bubble-meta" }, "사용자 (전송됨)"),
+              e(MarkdownBubbleText, { text: optimisticUser.text || "" })
+            ),
+            e("div", { className: "message-avatar self" }, "ME")
           )
           : null,
         isPendingVisible
           ? e(
             "div",
-            { className: "bubble assistant pending-bubble" },
-            e("div", { className: "bubble-meta" }, "assistant"),
-            e("div", { className: "pending" }, "작성중..."),
-            !isCodingScope && pending?.provider
-              ? e("div", { className: "pending-route" }, `${pending.provider || "-"}:${pending.model || "-"}${pending.route ? ` · ${pending.route}` : ""}`)
-              : null,
-            !isCodingScope && pending?.draftText
-              ? e(MarkdownBubbleText, { text: pending.draftText })
-              : null,
-            isCodingScope
-              ? e("div", { className: "pending-details" },
-                e("div", { className: "pending-meta-row" },
-                  e("span", { className: "pending-phase" }, progress?.phase || "processing"),
-                  e("span", { className: "pending-time" }, `${elapsed}s`)
-                ),
-                progress?.message ? e("div", { className: "pending-message" }, progress.message) : null,
-                progress?.provider || progress?.model
-                  ? e("div", { className: "pending-route" }, `${progress.provider || "-"}:${progress.model || "-"}`)
-                  : null,
-                progress?.maxIterations > 0
-                  ? e("div", { className: "pending-iteration" }, `${progress.iteration || 0}/${progress.maxIterations}`)
-                  : null,
-                e("div", { className: "progress-track" },
-                  e("div", { className: "progress-fill", style: { width: `${percent}%` } })
+            { className: "message-row assistant pending-assistant-row" },
+            e("div", { className: `message-avatar ${isCodingScope ? "coding" : "assistant"}` }, isCodingScope ? "DEV" : "AI"),
+            e(
+              "div",
+              { className: "bubble assistant pending-bubble" },
+              e("div", { className: "bubble-meta" }, "assistant"),
+              e("div", { className: "pending" }, "작성중..."),
+              !isCodingScope && pending?.provider
+                ? e("div", { className: "pending-route" }, `${pending.provider || "-"}:${pending.model || "-"}${pending.route ? ` · ${pending.route}` : ""}`)
+                : null,
+              !isCodingScope && pending?.draftText
+                ? e(MarkdownBubbleText, { text: pending.draftText })
+                : null,
+              isCodingScope
+                ? e("div", { className: "pending-details" },
+                  e("div", { className: "pending-meta-row" },
+                    e("span", { className: "pending-phase" }, progress?.phase || "processing"),
+                    e("span", { className: "pending-time" }, `${elapsed}s`)
+                  ),
+                  progress?.message ? e("div", { className: "pending-message" }, progress.message) : null,
+                  progress?.provider || progress?.model
+                    ? e("div", { className: "pending-route" }, `${progress.provider || "-"}:${progress.model || "-"}`)
+                    : null,
+                  progress?.maxIterations > 0
+                    ? e("div", { className: "pending-iteration" }, `${progress.iteration || 0}/${progress.maxIterations}`)
+                    : null,
+                  e("div", { className: "progress-track" },
+                    e("div", { className: "progress-fill", style: { width: `${percent}%` } })
+                  )
                 )
-              )
-              : null
+                : null
+            )
           )
           : null
       );
@@ -5344,7 +6176,7 @@
 
       return e(
         "section",
-        { className: "coding-result" },
+        { className: "coding-result support-card" },
         e("div", { className: "coding-result-head" },
           e("strong", null, "최근 코딩 결과"),
           e("span", null, `${result.provider || "-"}/${result.model || "-"} · ${result.language || "-"}`)
@@ -5419,7 +6251,7 @@
 
       return e(
         "section",
-        { className: "coding-result" },
+        { className: "coding-result support-card" },
         e("div", { className: "coding-result-head" },
           e("strong", null, "다중 LLM 상세 결과"),
           e("span", null, result.updatedUtc || "-")
@@ -5433,48 +6265,142 @@
       return e(
         "div",
         { className: "rich-input messenger-rich-input" },
-        e("div", { className: "toolbar" },
-          e("input", {
-            className: "input",
-            value: currentWebUrlDraft,
-            onChange: (event) => setWebUrlsByKey((prev) => ({ ...prev, [currentKey]: event.target.value })),
-            placeholder: "참조할 웹 주소 입력 (쉼표/줄바꿈 구분)"
-          }),
-          e("label", { className: "toggle-inline" },
-            e("input", {
-              type: "checkbox",
-              checked: !!currentWebSearchEnabled,
-              onChange: (event) => setWebSearchByKey((prev) => ({ ...prev, [currentKey]: !!event.target.checked }))
-            }),
-            e("span", null, "URL 웹 참조 사용")
-          )
-        ),
-        e("div", { className: "toolbar" },
-          e("label", { className: "btn ghost file-upload-label" },
-            "이미지/파일 첨부",
-            e("input", {
-              type: "file",
-              className: "file-upload-input",
-              onChange: onAttachmentSelected,
-              multiple: true,
-              accept: "image/*,.pdf,.txt,.md,.json,.csv,.log,.py,.js,.ts,.java,.kt,.c,.cpp,.cs,.html,.css,.sh,.yaml,.yml,.xml"
-            })
-          ),
-          attachments.length > 0
-            ? e("button", { className: "btn ghost", onClick: () => setAttachmentsByKey((prev) => ({ ...prev, [currentKey]: [] })) }, "첨부 비우기")
-            : null
-        ),
-        attachments.length > 0
-          ? e("div", { className: "attachment-list" },
-            attachments.map((item, index) => e(
-              "div",
-              { key: `${item.name}-${index}`, className: "attachment-chip" },
-              e("span", { className: "attachment-name" }, `${item.name} (${formatBytes(item.sizeBytes)})`),
-              e("button", { className: "attachment-remove", onClick: () => removeAttachment(currentKey, index) }, "x")
-            ))
-          )
-          : e("div", { className: "hint" }, "첨부는 최대 6개/파일당 15MB. 멀티모달 모델은 이미지/파일을 해석하고, 미지원 모델은 안내 메시지를 반환합니다.")
+        e(
+          "div",
+          {
+            className: `rich-input-row compact-attachment-row ${attachmentDragActive ? "drag-active" : ""}`,
+            onDragOver: handleAttachmentDragOver,
+            onDrop: handleAttachmentDrop
+          },
+          attachmentDragActive
+            ? e("div", { className: "attachment-drop-message" }, "여기에 파일 추가")
+            : [
+                e("input", {
+                  key: "file-input",
+                  id: attachmentFileInputId,
+                  type: "file",
+                  className: "file-upload-input",
+                  onChange: onAttachmentSelected,
+                  multiple: true,
+                  tabIndex: -1,
+                  "aria-hidden": "true",
+                  accept: "image/*,.pdf,.txt,.md,.json,.csv,.log,.py,.js,.ts,.java,.kt,.c,.cpp,.cs,.html,.css,.sh,.yaml,.yml,.xml"
+                }),
+                e("label", {
+                  key: "file-button",
+                  className: "btn ghost file-upload-label",
+                  htmlFor: attachmentFileInputId
+                }, "파일 추가"),
+                attachments.length > 0
+                  ? e("div", { key: "summary", className: "attachment-compact-summary" }, `첨부 ${attachments.length}개`)
+                  : e("div", { key: "summary-empty", className: "attachment-compact-summary empty" }, "첨부 없음"),
+                attachments.length > 0
+                  ? e("button", {
+                      key: "clear",
+                      className: "btn ghost attachment-clear-btn",
+                      onClick: () => setAttachmentsByKey((prev) => ({ ...prev, [currentKey]: [] }))
+                    }, "비우기")
+                  : null
+              ]
+        )
       );
+    }
+
+    function renderPaperclipIcon() {
+      return e(
+        "svg",
+        { viewBox: "0 0 24 24", className: "icon-svg", "aria-hidden": "true" },
+        e("path", {
+          d: "M9.5 19.5 17 12a4.5 4.5 0 1 0-6.364-6.364L3.5 12.772a6.5 6.5 0 0 0 9.192 9.192L19 15.656",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.9",
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        })
+      );
+    }
+
+    function renderSendIcon() {
+      return e(
+        "svg",
+        { viewBox: "0 0 24 24", className: "icon-svg", "aria-hidden": "true" },
+        e("path", {
+          d: "M21 3 10 14",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.9",
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        }),
+        e("path", {
+          d: "m21 3-7 18-4-7-7-4 18-7Z",
+          fill: "none",
+          stroke: "currentColor",
+          strokeWidth: "1.9",
+          strokeLinecap: "round",
+          strokeLinejoin: "round"
+        })
+      );
+    }
+
+    function renderComposerInputBar({ value, onChange, onSend, pendingKey, placeholder }) {
+      const pending = isRequestPending(pendingKey);
+      return e(
+        "div",
+        { className: "composer-message-stack" },
+        e("div", { className: "composer-input-shell" },
+          e("textarea", {
+            className: "textarea composer-main-input",
+            rows: 1,
+            value,
+            ref: (node) => autoResizeComposerTextarea(node),
+            onInput: (event) => autoResizeComposerTextarea(event.target),
+            onChange,
+            onKeyDown: (event) => onInputKeyDown(event, onSend),
+            placeholder
+          }),
+          e("div", { className: "composer-side-actions" },
+            e("button", {
+              type: "button",
+              className: `composer-icon-btn attach ${attachmentPanelVisible ? "active" : ""}`,
+              title: attachmentPanelVisible ? "첨부 패널 닫기" : "첨부 패널 열기",
+              onClick: toggleAttachmentPanel
+            }, renderPaperclipIcon()),
+            e("button", {
+              type: "button",
+              className: "composer-icon-btn send",
+              title: "전송",
+              onClick: onSend,
+              disabled: pending
+            }, renderSendIcon())
+          )
+        ),
+        attachmentPanelVisible ? renderRichInputControls() : null
+      );
+    }
+
+    function renderThreadSupportStack() {
+      const slots = [];
+      const multiResult = renderChatMultiResult();
+      if (multiResult) {
+        slots.push(e("div", { key: "support-multi", className: "thread-support-slot" }, multiResult));
+      }
+
+      const codingResult = renderCodingResult();
+      if (codingResult) {
+        slots.push(e("div", { key: "support-coding", className: "thread-support-slot" }, codingResult));
+      }
+
+      if (memoryPickerOpen) {
+        slots.push(e("div", { key: "support-memory", className: "thread-support-slot" }, renderMemoryPicker()));
+      }
+
+      if (slots.length === 0) {
+        return null;
+      }
+
+      return e("div", { className: "thread-support-stack" }, slots);
     }
 
     function renderChatComposer() {
@@ -5532,15 +6458,13 @@
                   onChange: (event) => setChatSingleModel(event.target.value)
                 }, geminiModelOptions)
           ),
-          e("textarea", {
-            className: "textarea",
+          renderComposerInputBar({
             value: chatInputSingle,
             onChange: (event) => setChatInputSingle(event.target.value),
-            onKeyDown: (event) => onInputKeyDown(event, sendChatSingle),
+            onSend: sendChatSingle,
+            pendingKey: "chat:single",
             placeholder: "질문 입력"
-          }),
-          renderRichInputControls(),
-          e("button", { className: "btn primary", onClick: sendChatSingle, disabled: isRequestPending("chat:single") }, "전송")
+          })
         );
       }
 
@@ -5633,15 +6557,13 @@
               onChange: (event) => setChatOrchCopilotModel(event.target.value)
             }, copilotWorkerModelOptions)
           ),
-          e("textarea", {
-            className: "textarea",
+          renderComposerInputBar({
             value: chatInputOrch,
             onChange: (event) => setChatInputOrch(event.target.value),
-            onKeyDown: (event) => onInputKeyDown(event, sendChatOrchestration),
+            onSend: sendChatOrchestration,
+            pendingKey: "chat:orchestration",
             placeholder: "병렬 통합 질문 입력"
-          }),
-          renderRichInputControls(),
-          e("button", { className: "btn primary", onClick: sendChatOrchestration, disabled: isRequestPending("chat:orchestration") }, "전송")
+          })
         );
       }
 
@@ -5686,15 +6608,13 @@
           e("option", { value: "cerebras" }, "요약: Cerebras"),
           e("option", { value: "copilot" }, "요약: Copilot"))
         ),
-        e("textarea", {
-          className: "textarea",
+        renderComposerInputBar({
           value: chatInputMulti,
           onChange: (event) => setChatInputMulti(event.target.value),
-          onKeyDown: (event) => onInputKeyDown(event, sendChatMulti),
+          onSend: sendChatMulti,
+          pendingKey: "chat:multi",
           placeholder: "다중 LLM 비교 질문 입력"
-        }),
-        renderRichInputControls(),
-        e("button", { className: "btn primary", onClick: sendChatMulti, disabled: isRequestPending("chat:multi") }, "전송")
+        })
       );
     }
 
@@ -5761,15 +6681,13 @@
               onChange: (event) => setCodingSingleLanguage(event.target.value)
             }, CODING_LANGUAGES.map((item) => e("option", { key: item[0], value: item[0] }, item[1])))
           ),
-          e("textarea", {
-            className: "textarea",
+          renderComposerInputBar({
             value: codingInputSingle,
             onChange: (event) => setCodingInputSingle(event.target.value),
-            onKeyDown: (event) => onInputKeyDown(event, sendCodingSingle),
+            onSend: sendCodingSingle,
+            pendingKey: "coding:single",
             placeholder: "요구사항 입력 시 코드 생성/실행"
-          }),
-          renderRichInputControls(),
-          e("button", { className: "btn primary", onClick: sendCodingSingle, disabled: isRequestPending("coding:single") }, "코딩 실행")
+          })
         );
       }
 
@@ -5867,15 +6785,13 @@
               onChange: (event) => setCodingOrchCopilotModel(event.target.value)
             }, copilotWorkerModelOptions)
           ),
-          e("textarea", {
-            className: "textarea",
+          renderComposerInputBar({
             value: codingInputOrch,
             onChange: (event) => setCodingInputOrch(event.target.value),
-            onKeyDown: (event) => onInputKeyDown(event, sendCodingOrchestration),
+            onSend: sendCodingOrchestration,
+            pendingKey: "coding:orchestration",
             placeholder: "모델별 역할 분배 병렬 코딩"
-          }),
-          renderRichInputControls(),
-          e("button", { className: "btn primary", onClick: sendCodingOrchestration, disabled: isRequestPending("coding:orchestration") }, "오케스트레이션 실행")
+          })
         );
       }
 
@@ -5969,15 +6885,13 @@
             onChange: (event) => setCodingMultiCopilotModel(event.target.value)
           }, copilotWorkerModelOptions)
         ),
-        e("textarea", {
-          className: "textarea",
+        renderComposerInputBar({
           value: codingInputMulti,
           onChange: (event) => setCodingInputMulti(event.target.value),
-          onKeyDown: (event) => onInputKeyDown(event, sendCodingMulti),
+          onSend: sendCodingMulti,
+          pendingKey: "coding:multi",
           placeholder: "여러 모델별 코드 생성/실행 + 공통점 요약"
-        }),
-        renderRichInputControls(),
-        e("button", { className: "btn primary", onClick: sendCodingMulti, disabled: isRequestPending("coding:multi") }, "다중 실행")
+        })
       );
     }
 
@@ -5989,84 +6903,258 @@
         e(
           "section",
           { className: "chat-panel" },
-          renderModeTabs(),
-          renderChatHeader(),
+          renderThreadHeader(),
           errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
           renderMessages(),
-          renderChatMultiResult(),
-          renderCodingResult(),
-          memoryPickerOpen ? renderMemoryPicker() : null,
+          renderThreadSupportStack(),
           rootTab === "chat" ? renderChatComposer() : renderCodingComposer()
         )
       );
     }
 
+    function renderRoutineScheduleBuilder(form, formType) {
+      const scheduleKind = form.scheduleKind || "daily";
+      return e(
+        "div",
+        { className: "routine-editor-card routine-schedule-editor" },
+        e("div", { className: "routine-editor-section-head" },
+          e("div", { className: "routine-editor-title" }, "스케줄"),
+          e("div", { className: "routine-editor-subtitle" }, formatRoutineSchedulePreview(form))
+        ),
+        e("div", { className: "routine-segmented-control" },
+          ["daily", "weekly", "monthly"].map((kind) => e("button", {
+            key: `${formType}-${kind}`,
+            type: "button",
+            className: `routine-segment-btn ${scheduleKind === kind ? "active" : ""}`,
+            onClick: () => patchRoutineForm(formType, { scheduleKind: kind })
+          }, kind === "daily" ? "매일" : kind === "weekly" ? "주간" : "월간"))
+        ),
+        e("div", { className: "routine-form-grid routine-form-grid-tight" },
+          e("label", { className: "routine-field" },
+            e("span", { className: "routine-field-label" }, "실행 시간"),
+            e("input", {
+              className: "input",
+              type: "time",
+              value: form.scheduleTime || "08:00",
+              onChange: (event) => patchRoutineForm(formType, { scheduleTime: event.target.value })
+            })
+          ),
+          e("label", { className: "routine-field" },
+            e("span", { className: "routine-field-label" }, "시간대"),
+            e("input", {
+              className: "input",
+              value: form.timezoneId || getRoutineLocalTimezone(),
+              onChange: (event) => patchRoutineForm(formType, { timezoneId: event.target.value })
+            })
+          )
+        ),
+        scheduleKind === "weekly"
+          ? e("div", { className: "routine-weekday-picker" },
+            ROUTINE_WEEKDAY_OPTIONS.map((item) => {
+              const active = normalizeRoutineWeekdays(form.weekdays || []).includes(item.value);
+              return e("button", {
+                key: `${formType}-weekday-${item.value}`,
+                type: "button",
+                className: `routine-weekday-btn ${active ? "active" : ""}`,
+                onClick: () => toggleRoutineWeekday(formType, item.value)
+              }, item.label);
+            })
+          )
+          : null,
+        scheduleKind === "monthly"
+          ? e("label", { className: "routine-field" },
+            e("span", { className: "routine-field-label" }, "실행 날짜"),
+            e("select", {
+              className: "input",
+              value: `${Math.min(31, Math.max(1, Number(form.dayOfMonth || 1) || 1))}`,
+              onChange: (event) => patchRoutineForm(formType, { dayOfMonth: Number(event.target.value) || 1 })
+            }, Array.from({ length: 31 }, (_, index) => index + 1).map((value) =>
+              e("option", { key: `${formType}-dom-${value}`, value }, `${value}일`)
+            ))
+          )
+          : null
+      );
+    }
+
+    function renderRoutineRunHistory(runs) {
+      if (!Array.isArray(runs) || runs.length === 0) {
+        return e("div", { className: "empty routine-history-empty" }, "실행 이력이 아직 없습니다.");
+      }
+
+      return e("div", { className: "routine-history-list" },
+        runs.map((run) => e("article", { key: `${run.ts}-${run.runAtLocal}`, className: "routine-run-item" },
+          e("div", { className: "routine-run-head" },
+            e("div", { className: "routine-run-main" },
+              e("span", { className: `meta-chip ${run.status === "error" ? "error" : run.status === "success" ? "ok" : "neutral"}` }, run.status || "-"),
+              e("strong", null, run.runAtLocal || "-")
+            ),
+            e("div", { className: "routine-run-meta" }, run.durationText || "-")
+          ),
+          e("div", { className: "routine-run-summary" }, run.summary || "요약 없음"),
+          run.error ? e("div", { className: "routine-run-error" }, run.error) : null,
+          run.nextRunLocal ? e("div", { className: "routine-run-next" }, `다음 실행 ${run.nextRunLocal}`) : null
+        ))
+      );
+    }
+
     function renderRoutine() {
       const selected = routines.find((item) => item.id === routineSelectedId) || null;
+      const selectedRuns = Array.isArray(selected?.runs) ? selected.runs : [];
       return e(
         "section",
         { className: "routine-tab" },
+        e("div", { className: "routine-hero" },
+          e("div", { className: "routine-hero-kicker" }, "Routine Studio"),
+          e("h2", null, "반복 작업을 일정, 코드, 실행 이력까지 한 화면에서 관리합니다."),
+          e("p", null, "루틴은 생성 즉시 1회 실행되고, 이후에는 매일/주간/월간 스케줄대로 자동 실행됩니다.")
+        ),
         e("div", { className: "routine-layout" },
-          e("section", { className: "routine-list-panel" },
-            e("div", { className: "routine-head" },
-              e("h2", null, "루틴 자동화"),
-              e("button", { className: "btn", onClick: refreshRoutines }, "새로고침")
-            ),
-            e("p", { className: "hint" }, "요청을 입력하면 계획 → 코드 생성 → 저장 → 즉시 1회 실행까지 진행됩니다."),
-            errorByKey["routine:main"] ? e("div", { className: "error-banner" }, errorByKey["routine:main"]) : null,
-            e("textarea", {
-              className: "textarea routine-input",
-              value: routineRequestInput,
-              onChange: (event) => setRoutineRequestInput(event.target.value),
-              onKeyDown: (event) => onInputKeyDown(event, createRoutineFromUi),
-              placeholder: "예: 매일 아침 8시에 네이버 뉴스 핵심 기사 요약 정리 해줘"
-            }),
-            e("button", { className: "btn primary", onClick: createRoutineFromUi }, "루틴 생성"),
-            e("div", { className: "routine-list" },
-              routines.length === 0
-                ? e("div", { className: "empty" }, "등록된 루틴이 없습니다.")
-                : routines.map((item) => e(
-                  "button",
-                  {
-                    key: item.id,
-                    className: `routine-item ${routineSelectedId === item.id ? "active" : ""}`,
-                    onClick: () => setRoutineSelectedId(item.id)
-                  },
-                  e("div", { className: "routine-item-title" }, item.title || item.id),
-                  e("div", { className: "routine-item-meta" },
-                    e("span", { className: `meta-chip ${item.enabled ? "ok" : "neutral"}` }, item.enabled ? "ON" : "OFF"),
-                    e("span", { className: "meta-chip neutral" }, item.scheduleText || "-")
+          e("div", { className: "routine-left-column" },
+            e("section", { className: "routine-list-panel routine-create-panel" },
+              e("div", { className: "routine-head" },
+                e("div", null,
+                  e("div", { className: "routine-head-kicker" }, "새 루틴"),
+                  e("h2", null, "자동화 생성")
+                ),
+                e("button", { className: "btn", onClick: refreshRoutines }, "새로고침")
+              ),
+              e("p", { className: "hint" }, "요청을 입력하면 계획 생성, 코드 저장, 즉시 1회 실행까지 이어집니다."),
+              errorByKey["routine:main"] ? e("div", { className: "error-banner" }, errorByKey["routine:main"]) : null,
+              e("div", { className: "routine-editor-card" },
+                e("div", { className: "routine-form-grid" },
+                  e("label", { className: "routine-field" },
+                    e("span", { className: "routine-field-label" }, "루틴 이름"),
+                    e("input", {
+                      className: "input",
+                      value: routineCreateForm.title,
+                      onChange: (event) => patchRoutineForm("create", { title: event.target.value }),
+                      placeholder: "비워두면 요청 기반으로 자동 생성"
+                    })
                   ),
-                  e("div", { className: "item-preview" }, item.request || "")
-                ))
+                  e("label", { className: "routine-field routine-field-full" },
+                    e("span", { className: "routine-field-label" }, "요청 원문"),
+                    e("textarea", {
+                      className: "textarea routine-input",
+                      value: routineCreateForm.request,
+                      onChange: (event) => patchRoutineForm("create", { request: event.target.value }),
+                      onKeyDown: (event) => onInputKeyDown(event, createRoutineFromUi),
+                      placeholder: "예: 매일 오전 8시에 주요 기사와 서버 상태를 요약해줘"
+                    })
+                  )
+                )
+              ),
+              renderRoutineScheduleBuilder(routineCreateForm, "create"),
+              e("div", { className: "routine-submit-row" },
+                e("button", { className: "btn primary routine-submit-btn", onClick: createRoutineFromUi }, "루틴 생성")
+              )
+            ),
+            e("section", { className: "routine-list-panel routine-library-panel" },
+              e("div", { className: "routine-head" },
+                e("div", null,
+                  e("div", { className: "routine-head-kicker" }, "등록 목록"),
+                  e("h2", null, `${routines.length}개 루틴`)
+                )
+              ),
+              e("div", { className: "routine-list" },
+                routines.length === 0
+                  ? e("div", { className: "empty" }, "등록된 루틴이 없습니다.")
+                  : routines.map((item) => e(
+                    "button",
+                    {
+                      key: item.id,
+                      className: `routine-item ${routineSelectedId === item.id ? "active" : ""}`,
+                      onClick: () => setRoutineSelectedId(item.id)
+                    },
+                    e("div", { className: "routine-item-head" },
+                      e("div", { className: "routine-item-title" }, item.title || item.id),
+                      e("span", { className: `meta-chip ${item.enabled ? "ok" : "neutral"}` }, item.enabled ? "ON" : "OFF")
+                    ),
+                    e("div", { className: "routine-item-meta" },
+                      e("span", { className: "meta-chip neutral" }, item.scheduleText || "-"),
+                      e("span", { className: "meta-chip neutral" }, item.lastRunLocal ? `최근 ${item.lastRunLocal}` : "실행 전")
+                    ),
+                    e("div", { className: "item-preview" }, item.request || "")
+                  ))
+              )
             )
           ),
           e("section", { className: "routine-detail-panel" },
             !selected
-              ? e("div", { className: "empty" }, "루틴을 선택하세요.")
+              ? e("div", { className: "empty routine-empty-state" }, "왼쪽 목록에서 루틴을 선택하면 수정, 실행, 이력 확인이 가능합니다.")
               : e(
                 React.Fragment,
                 null,
                 e("div", { className: "routine-detail-head" },
-                  e("strong", null, selected.title || selected.id),
-                  e("div", { className: "row" },
+                  e("div", { className: "routine-detail-copy" },
+                    e("div", { className: "routine-head-kicker" }, "선택된 루틴"),
+                    e("strong", null, selected.title || selected.id),
+                    e("div", { className: "routine-item-meta" },
+                      e("span", { className: `meta-chip ${selected.enabled ? "ok" : "neutral"}` }, selected.enabled ? "활성" : "비활성"),
+                      e("span", { className: "meta-chip neutral" }, selected.scheduleText || "-"),
+                      e("span", { className: "meta-chip neutral" }, selected.language || "-")
+                    )
+                  ),
+                  e("div", { className: "routine-action-row" },
                     e("button", { className: "btn primary", onClick: () => runRoutineNow(selected.id) }, "지금 실행"),
                     e("button", { className: "btn", onClick: () => setRoutineEnabled(selected.id, !selected.enabled) }, selected.enabled ? "비활성화" : "활성화"),
                     e("button", { className: "btn ghost", onClick: () => deleteRoutineById(selected.id) }, "삭제")
                   )
                 ),
+                e("div", { className: "routine-stats-grid" },
+                  e("div", { className: "routine-stat-card" },
+                    e("span", { className: "routine-stat-label" }, "다음 실행"),
+                    e("strong", null, selected.nextRunLocal || "-")
+                  ),
+                  e("div", { className: "routine-stat-card" },
+                    e("span", { className: "routine-stat-label" }, "마지막 실행"),
+                    e("strong", null, selected.lastRunLocal || "-")
+                  ),
+                  e("div", { className: "routine-stat-card" },
+                    e("span", { className: "routine-stat-label" }, "상태"),
+                    e("strong", null, selected.lastStatus || "-")
+                  ),
+                  e("div", { className: "routine-stat-card" },
+                    e("span", { className: "routine-stat-label" }, "생성 모델"),
+                    e("strong", null, selected.coderModel || "-")
+                  )
+                ),
+                e("div", { className: "routine-editor-card" },
+                  e("div", { className: "routine-editor-section-head" },
+                    e("div", { className: "routine-editor-title" }, "루틴 수정"),
+                    e("div", { className: "routine-editor-subtitle" }, "요청과 스케줄을 바꾸면 코드가 다시 생성됩니다.")
+                  ),
+                  e("div", { className: "routine-form-grid" },
+                    e("label", { className: "routine-field" },
+                      e("span", { className: "routine-field-label" }, "루틴 이름"),
+                      e("input", {
+                        className: "input",
+                        value: routineEditForm.title,
+                        onChange: (event) => patchRoutineForm("edit", { title: event.target.value })
+                      })
+                    ),
+                    e("label", { className: "routine-field routine-field-full" },
+                      e("span", { className: "routine-field-label" }, "요청 원문"),
+                      e("textarea", {
+                        className: "textarea routine-input routine-input-compact",
+                        value: routineEditForm.request,
+                        onChange: (event) => patchRoutineForm("edit", { request: event.target.value }),
+                        onKeyDown: (event) => onInputKeyDown(event, updateRoutineFromUi)
+                      })
+                    )
+                  ),
+                  renderRoutineScheduleBuilder(routineEditForm, "edit"),
+                  e("div", { className: "routine-submit-row" },
+                    e("button", { className: "btn primary routine-submit-btn", onClick: updateRoutineFromUi }, "루틴 수정 저장")
+                  )
+                ),
+                e("div", { className: "routine-subtitle" }, "실행 이력"),
+                renderRoutineRunHistory(selectedRuns),
                 e("div", { className: "routine-kv" },
                   e("div", null, `ID: ${selected.id}`),
-                  e("div", null, `스케줄: ${selected.scheduleText || "-"}`),
-                  e("div", null, `다음 실행: ${selected.nextRunLocal || "-"}`),
-                  e("div", null, `마지막 실행: ${selected.lastRunLocal || "-"}`),
-                  e("div", null, `상태: ${selected.lastStatus || "-"}`),
+                  e("div", null, `스크립트: ${selected.scriptPath || "-"}`),
                   e("div", null, `언어: ${selected.language || "-"}`),
-                  e("div", null, `모델: ${selected.coderModel || "-"}`),
-                  e("div", null, `스크립트: ${selected.scriptPath || "-"}`)
+                  e("div", null, `시간대: ${selected.timezoneId || "-"}`)
                 ),
-                e("div", { className: "routine-subtitle" }, "요청 원문"),
-                e("pre", { className: "routine-output" }, selected.request || ""),
                 e("div", { className: "routine-subtitle" }, "최근 실행 출력"),
                 e("pre", { className: "routine-output" }, selected.lastOutput || "출력 없음")
               )

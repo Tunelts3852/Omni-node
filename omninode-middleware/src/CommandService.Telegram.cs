@@ -1242,6 +1242,40 @@ public sealed partial class CommandService
         }
 
         var snapshotSingleModel = ResolveModel(snapshotSingleProvider, snapshot.SingleModel);
+        var resolvedWebUrls = ResolveWebUrls(text, webUrls, webSearchEnabled);
+        if (resolvedWebUrls.Count > 0 && snapshot.Mode == "single" && _llmRouter.HasGeminiApiKey())
+        {
+            var allowMarkdownTable = LooksLikeTableRenderRequest(text);
+            var memoryHint = BuildSafeWebMemoryPreferenceHint(
+                session.SessionId,
+                text,
+                session.LinkedMemoryNotes
+            );
+            var urlSingle = await GenerateGeminiUrlContextAnswerDetailedAsync(
+                text,
+                resolvedWebUrls,
+                memoryHint,
+                allowMarkdownTable,
+                enforceTelegramOutputStyle: true,
+                streamCallback: null,
+                scope: session.Scope,
+                mode: session.Mode,
+                conversationId: session.Thread.Id,
+                decisionPath: "heuristic_url_context",
+                decisionMs: 0,
+                cancellationToken
+            );
+            var urlResponseText = $"[Single {urlSingle.Response.Provider}:{urlSingle.Response.Model}]\n{FormatTelegramResponse(urlSingle.Response.Text, TelegramMaxResponseChars)}";
+            var urlAssistantMeta = $"telegram-single:{urlSingle.Response.Provider}:{urlSingle.Response.Model}:gemini-url-single";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", urlResponseText, urlAssistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, urlSingle.Response.Provider, urlSingle.Response.Model, cancellationToken);
+            _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", urlSingle.Response.Provider, urlSingle.Response.Model, cancellationToken);
+            _auditLogger.Log("telegram", "telegram_guard_meta", "ok", $"route={urlAssistantMeta} guardCategory=- guardReason=- guardDetail=-");
+            SetCurrentTelegramExecutionMetadata(null, 0, 0, "-");
+            return urlResponseText;
+        }
+
         if (webSearchEnabled && snapshot.Mode == "single")
         {
             var webDecision = await DecideNeedWebBySelectedProviderAsync(
@@ -1284,7 +1318,7 @@ public sealed partial class CommandService
         var sharedPrepared = await PrepareSharedInputAsync(
             text,
             normalizedAttachments,
-            webUrls,
+            resolvedWebUrls,
             effectiveWebSearchEnabled,
             cancellationToken,
             "telegram",
@@ -1505,7 +1539,7 @@ public sealed partial class CommandService
             snapshot.SingleProvider,
             singleModel,
             normalizedAttachments,
-            webUrls,
+            resolvedWebUrls,
             effectiveWebSearchEnabled,
             false,
             cancellationToken
@@ -2001,18 +2035,19 @@ public sealed partial class CommandService
         normalized = ConvertMarkdownToTelegramPlainText(normalized, keepMarkdownTables);
         normalized = ImproveTelegramReadability(normalized, keepMarkdownTables);
         normalized = CollapseTokenizedNumberedList(normalized);
+        if (LooksLikeNumberedListResponse(normalized))
+        {
+            normalized = NormalizeGeminiWebNumberedListResponse(normalized);
+        }
+        normalized = NormalizeStructuredLabelBlocks(normalized);
+        normalized = MergeDetachedTelegramNumberLines(normalized);
         normalized = AddTelegramClaimSpacing(normalized);
+        var safeMaxChars = Math.Max(0, maxChars);
         var lines = normalized
             .Split('\n')
-            .Take(200)
+            .Take(safeMaxChars == 0 ? 200 : Math.Clamp(safeMaxChars / 16, 200, 400))
             .ToArray();
-        var merged = lines.Length == 0 ? normalized : string.Join('\n', lines).Trim();
-        if (merged.Length <= maxChars)
-        {
-            return merged;
-        }
-
-        return merged[..maxChars] + "...(생략)";
+        return lines.Length == 0 ? normalized : string.Join('\n', lines).Trim();
     }
 
     private static string ConvertMarkdownToTelegramPlainText(string text, bool keepMarkdownTables = false)
@@ -2552,6 +2587,62 @@ public sealed partial class CommandService
         return Regex.Replace(merged, @"\n{3,}", "\n\n");
     }
 
+    private static string MergeDetachedTelegramNumberLines(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            var current = (lines[i] ?? string.Empty).Trim();
+            if (!Regex.IsMatch(current, @"^\d+\.$", RegexOptions.CultureInvariant))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            if (i + 1 >= lines.Length)
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var nextIndex = i + 1;
+            while (nextIndex < lines.Length && string.IsNullOrWhiteSpace(lines[nextIndex]))
+            {
+                nextIndex += 1;
+            }
+
+            if (nextIndex >= lines.Length)
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var next = (lines[nextIndex] ?? string.Empty).Trim();
+            if (next.Length == 0
+                || Regex.IsMatch(next, @"^\d+\.$", RegexOptions.CultureInvariant)
+                || next.StartsWith("```", StringComparison.Ordinal)
+                || IsMarkdownTableRow(next))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            output.Add($"{current} {next}");
+            i = nextIndex;
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
     private static string AddTelegramClaimSpacing(string text)
     {
         var normalized = (text ?? string.Empty)
@@ -2638,9 +2729,15 @@ public sealed partial class CommandService
             return false;
         }
 
-        return trimmed.StartsWith("- ", StringComparison.Ordinal)
+        return IsStandaloneNumberedHeadlineLine(trimmed)
+            || trimmed.StartsWith("- ", StringComparison.Ordinal)
             || Regex.IsMatch(trimmed, @"^\d+\.\s+", RegexOptions.CultureInvariant)
             || Regex.IsMatch(trimmed, @"^[■□▪●◆▶▷]\s+", RegexOptions.CultureInvariant)
+            || Regex.IsMatch(
+                trimmed,
+                @"^(?:(?:No\.\d+|\d+[.)])\s*)?\*\*[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}\s*[:：]\*\*",
+                RegexOptions.CultureInvariant
+            )
             || Regex.IsMatch(
                 trimmed,
                 @"^(?:(?:No\.\d+|\d+[.)])\s*)?(제목|내용)\s*[:：]",
@@ -2650,7 +2747,11 @@ public sealed partial class CommandService
 
     private static bool IsTelegramSourceLine(string line)
     {
-        return (line ?? string.Empty).Trim().StartsWith("출처:", StringComparison.OrdinalIgnoreCase);
+        return Regex.IsMatch(
+            (line ?? string.Empty).Trim(),
+            @"^(?:\*\*)?\s*출처\s*[:：](?:\*\*)?",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
     }
 
     private static bool IsTelegramTitleLine(string line)
@@ -2661,7 +2762,8 @@ public sealed partial class CommandService
             return false;
         }
 
-        return Regex.IsMatch(
+        return IsStandaloneNumberedHeadlineLine(trimmed)
+            || Regex.IsMatch(
             trimmed,
             @"^(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?제목\s*[:：]",
             RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
@@ -2684,7 +2786,7 @@ public sealed partial class CommandService
 
         var match = Regex.Match(
             trimmed,
-            @"^(?:[-•▪]\s*)?(?<label>[A-Za-z가-힣0-9().&+\- ]{1,24})\s*[:：]\s*(?<value>.+)$",
+            @"^(?:[-•▪]\s*)?(?<label>[A-Za-z가-힣0-9()'‘’,.&+\- ]{1,24})\s*[:：]\s*(?<value>.+)$",
             RegexOptions.CultureInvariant
         );
         if (!match.Success)

@@ -405,8 +405,148 @@ public sealed class TelegramClient : IDisposable
 
     private static string NormalizeTelegramText(string text)
     {
-        var normalized = (text ?? string.Empty).Replace("\r\n", "\n", StringComparison.Ordinal).Replace("\r", "\n", StringComparison.Ordinal).Trim();
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        normalized = NormalizeTelegramMarkdownTableSource(normalized);
         return string.IsNullOrWhiteSpace(normalized) ? "응답이 비어 있습니다." : normalized;
+    }
+
+    private static string NormalizeTelegramMarkdownTableSource(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0 || !LooksLikeTelegramMarkdownTableText(normalized))
+        {
+            return normalized;
+        }
+
+        normalized = Regex.Replace(normalized, @"\|\s+\|", "|\n|", RegexOptions.CultureInvariant);
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        foreach (var rawLine in lines)
+        {
+            var separatorLine = CanonicalizeTelegramMarkdownTableSeparatorLine(rawLine);
+            if (separatorLine.Length > 0)
+            {
+                output.Add(separatorLine);
+                continue;
+            }
+
+            var rowLine = CanonicalizeTelegramMarkdownTableRow(rawLine);
+            if (rowLine.Length > 0)
+            {
+                output.Add(rowLine);
+                continue;
+            }
+
+            output.Add(rawLine ?? string.Empty);
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static bool LooksLikeTelegramMarkdownTableText(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0 || !normalized.Contains("|", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(
+                normalized,
+                @"\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]{2,}\s*(\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]{2,}\s*)+\|",
+                RegexOptions.CultureInvariant))
+        {
+            return true;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return lines.Count(line => line.Count(ch => ch == '|') >= 3) >= 2;
+    }
+
+    private static string CanonicalizeTelegramMarkdownTableRow(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (!trimmed.Contains("|", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        var candidate = trimmed;
+        if (!candidate.StartsWith("|", StringComparison.Ordinal))
+        {
+            candidate = $"|{candidate}";
+        }
+
+        if (!candidate.EndsWith("|", StringComparison.Ordinal))
+        {
+            candidate = $"{candidate}|";
+        }
+
+        var cells = candidate
+            .Trim('|')
+            .Split('|', StringSplitOptions.TrimEntries)
+            .Select(cell => (cell ?? string.Empty).Trim())
+            .ToArray();
+        if (cells.Length < 2)
+        {
+            return string.Empty;
+        }
+
+        return "| " + string.Join(" | ", cells) + " |";
+    }
+
+    private static string CanonicalizeTelegramMarkdownTableSeparatorLine(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (!trimmed.Contains("|", StringComparison.Ordinal))
+        {
+            return string.Empty;
+        }
+
+        var candidate = trimmed;
+        if (!candidate.StartsWith("|", StringComparison.Ordinal))
+        {
+            candidate = $"|{candidate}";
+        }
+
+        if (!candidate.EndsWith("|", StringComparison.Ordinal))
+        {
+            candidate = $"{candidate}|";
+        }
+
+        var rawCells = candidate
+            .Trim('|')
+            .Split('|', StringSplitOptions.TrimEntries)
+            .Select(cell => (cell ?? string.Empty).Trim())
+            .ToArray();
+        if (rawCells.Length < 2)
+        {
+            return string.Empty;
+        }
+
+        var normalizedCells = new List<string>(rawCells.Length);
+        foreach (var rawCell in rawCells)
+        {
+            var compact = Regex.Replace(rawCell, @"\s+", string.Empty, RegexOptions.CultureInvariant);
+            compact = Regex.Replace(compact, @"[\u2014\u2013\u2011\u2212\u2500\u2012]", "-", RegexOptions.CultureInvariant);
+            if (!Regex.IsMatch(compact, @"^:?-+:?$", RegexOptions.CultureInvariant))
+            {
+                return string.Empty;
+            }
+
+            var leadingColon = compact.StartsWith(":", StringComparison.Ordinal) ? ":" : string.Empty;
+            var trailingColon = compact.EndsWith(":", StringComparison.Ordinal) ? ":" : string.Empty;
+            var dashCount = Math.Max(3, compact.Count(ch => ch == '-'));
+            normalizedCells.Add($"{leadingColon}{new string('-', dashCount)}{trailingColon}");
+        }
+
+        return "| " + string.Join(" | ", normalizedCells) + " |";
     }
 
     private static IReadOnlyList<string> SplitTelegramMessage(string text, int maxChars)
@@ -712,7 +852,7 @@ public sealed class TelegramClient : IDisposable
                 continue;
             }
 
-            AppendEscapedTelegramLines(builder, lines, cursor, table.StartLine);
+            AppendRenderedTelegramLines(builder, lines, cursor, table.StartLine);
             if (builder.Length > 0 && builder[^1] != '\n')
             {
                 builder.Append('\n');
@@ -721,7 +861,7 @@ public sealed class TelegramClient : IDisposable
             var renderedTableHtml = BuildTelegramRenderedTableHtml(table.Rows);
             if (string.IsNullOrWhiteSpace(renderedTableHtml))
             {
-                AppendEscapedTelegramLines(builder, lines, table.StartLine, Math.Min(lines.Length, table.EndLine + 1));
+                AppendRenderedTelegramLines(builder, lines, table.StartLine, Math.Min(lines.Length, table.EndLine + 1));
             }
             else
             {
@@ -735,58 +875,13 @@ public sealed class TelegramClient : IDisposable
             cursor = Math.Min(lines.Length, table.EndLine + 1);
         }
 
-        AppendEscapedTelegramLines(builder, lines, cursor, lines.Length);
+        AppendRenderedTelegramLines(builder, lines, cursor, lines.Length);
         return builder.ToString().Trim();
     }
 
     private static string BuildTelegramHtmlWithLabelStyling(string text)
     {
-        var normalized = (text ?? string.Empty)
-            .Replace("\r\n", "\n", StringComparison.Ordinal)
-            .Replace("\r", "\n", StringComparison.Ordinal)
-            .Trim();
-        if (normalized.Length == 0)
-        {
-            return string.Empty;
-        }
-
-        var lines = normalized.Split('\n', StringSplitOptions.None);
-        var builder = new StringBuilder(normalized.Length + 128);
-        var styled = false;
-
-        for (var i = 0; i < lines.Length; i += 1)
-        {
-            if (i > 0)
-            {
-                builder.Append('\n');
-            }
-
-            var line = (lines[i] ?? string.Empty).Trim();
-            if (line.Length == 0)
-            {
-                continue;
-            }
-
-            if (TryFormatTelegramStyledLabelLine(line, out var formatted))
-            {
-                EnsureBlankLineBeforeStyledLine(builder);
-                builder.Append(formatted);
-                styled = true;
-                continue;
-            }
-
-            if (TryFormatTelegramStyledCategoryLine(line, out var categoryFormatted))
-            {
-                EnsureBlankLineBeforeStyledLine(builder);
-                builder.Append(categoryFormatted);
-                styled = true;
-                continue;
-            }
-
-            builder.Append(EscapeHtmlForTelegram(line));
-        }
-
-        return styled ? builder.ToString().Trim() : string.Empty;
+        return BuildTelegramHtmlSegment(text);
     }
 
     private static void EnsureBlankLineBeforeStyledLine(StringBuilder builder)
@@ -810,43 +905,54 @@ public sealed class TelegramClient : IDisposable
     private static bool TryFormatTelegramStyledLabelLine(string line, out string formatted)
     {
         formatted = string.Empty;
-        var normalized = (line ?? string.Empty).Trim();
-        if (normalized.Length == 0)
+        if (!TryParseTelegramStructuredLabelLine(
+                line,
+                out var lead,
+                out var prefix,
+                out var label,
+                out var value))
         {
             return false;
         }
-
-        var match = Regex.Match(
-            normalized,
-            @"^(?<lead>(?:[-•▪]\s+)?)\s*(?<prefix>(?:No\.\d+|\d+[.)])\s*)?(?<label>제목|내용|출처)\s*[:：]\s*(?<value>.*)$",
-            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
-        );
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        var lead = EscapeHtmlForTelegram(match.Groups["lead"].Value);
-        var prefix = EscapeHtmlForTelegram(match.Groups["prefix"].Value);
-        var label = match.Groups["label"].Value.Trim();
-        var value = match.Groups["value"].Value.Trim();
         var escapedValue = EscapeHtmlForTelegram(value);
 
-        if (label.Equals("제목", StringComparison.Ordinal))
+        if (label.Equals("제목", StringComparison.OrdinalIgnoreCase))
         {
-            formatted = $"{lead}{prefix}<b>제목:</b> <b>{escapedValue}</b>";
+            formatted = value.Length == 0
+                ? $"{lead}{prefix}<b>제목:</b>"
+                : $"{lead}{prefix}<b>제목:</b> <b>{escapedValue}</b>";
             return true;
         }
 
-        if (label.Equals("내용", StringComparison.Ordinal))
+        if (label.Equals("내용", StringComparison.OrdinalIgnoreCase))
         {
-            formatted = $"{lead}{prefix}<b>내용:</b> {escapedValue}";
+            formatted = value.Length == 0
+                ? $"{lead}{prefix}<b>내용:</b>"
+                : $"{lead}{prefix}<b>내용:</b> {escapedValue}";
             return true;
         }
 
-        if (label.Equals("출처", StringComparison.Ordinal))
+        if (label.Equals("요약", StringComparison.OrdinalIgnoreCase))
         {
-            formatted = $"{lead}{prefix}<b>출처:</b> {escapedValue}";
+            formatted = value.Length == 0
+                ? $"{lead}{prefix}<b>요약:</b>"
+                : $"{lead}{prefix}<b>요약:</b> {escapedValue}";
+            return true;
+        }
+
+        if (label.Equals("핵심", StringComparison.OrdinalIgnoreCase))
+        {
+            formatted = value.Length == 0
+                ? $"{lead}{prefix}<b>핵심:</b>"
+                : $"{lead}{prefix}<b>핵심:</b> {escapedValue}";
+            return true;
+        }
+
+        if (label.Equals("출처", StringComparison.OrdinalIgnoreCase))
+        {
+            formatted = value.Length == 0
+                ? $"{lead}{prefix}<b>출처:</b>"
+                : $"{lead}{prefix}<b>출처:</b> {escapedValue}";
             return true;
         }
 
@@ -856,37 +962,20 @@ public sealed class TelegramClient : IDisposable
     private static bool TryFormatTelegramStyledCategoryLine(string line, out string formatted)
     {
         formatted = string.Empty;
-        var normalized = (line ?? string.Empty).Trim();
-        if (normalized.Length == 0)
-        {
-            return false;
-        }
-
-        if (normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
-            || normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-        {
-            return false;
-        }
-
-        var match = Regex.Match(
-            normalized,
-            @"^(?<lead>(?:[-•▪]\s+)?)\s*(?<label>[A-Za-z가-힣0-9().&+_\-/\s]{1,120})\s*[:：]\s*(?<value>.+)$",
-            RegexOptions.CultureInvariant
-        );
-        if (!match.Success)
-        {
-            return false;
-        }
-
-        var label = match.Groups["label"].Value.Trim();
-        var value = match.Groups["value"].Value.Trim();
-        if (label.Length == 0 || value.Length == 0)
+        if (!TryParseTelegramStructuredLabelLine(
+                line,
+                out var lead,
+                out var prefix,
+                out var label,
+                out var value))
         {
             return false;
         }
 
         if (label.Equals("제목", StringComparison.OrdinalIgnoreCase)
             || label.Equals("내용", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("요약", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("핵심", StringComparison.OrdinalIgnoreCase)
             || label.Equals("출처", StringComparison.OrdinalIgnoreCase)
             || label.Equals("출처링크", StringComparison.OrdinalIgnoreCase)
             || label.Equals("http", StringComparison.OrdinalIgnoreCase)
@@ -895,8 +984,57 @@ public sealed class TelegramClient : IDisposable
             return false;
         }
 
-        var lead = EscapeHtmlForTelegram(match.Groups["lead"].Value);
-        formatted = $"{lead}<b>{EscapeHtmlForTelegram(label)}:</b> {EscapeHtmlForTelegram(value)}";
+        var escapedLabel = EscapeHtmlForTelegram(label);
+        var escapedValue = EscapeHtmlForTelegram(value);
+        formatted = value.Length == 0
+            ? $"{lead}{prefix}<b>{escapedLabel}:</b>"
+            : $"{lead}{prefix}<b>{escapedLabel}:</b> {escapedValue}";
+        return true;
+    }
+
+    private static bool TryParseTelegramStructuredLabelLine(
+        string line,
+        out string lead,
+        out string prefix,
+        out string label,
+        out string value)
+    {
+        lead = string.Empty;
+        prefix = string.Empty;
+        label = string.Empty;
+        value = string.Empty;
+
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0
+            || normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            normalized,
+            @"^(?<lead>(?:[-•▪]\s+)?)\s*(?<prefix>(?:No\.\d+|\d+[.)])\s*)?(?:(?:\*\*(?<labelMd>[A-Za-z가-힣0-9()'‘’,.&+_\-/\s]{1,120})\s*[:：]\*\*)|(?<labelPlain>[A-Za-z가-힣0-9()'‘’,.&+_\-/\s]{1,120})\s*[:：])\s*(?<value>.*)$",
+            RegexOptions.CultureInvariant
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var parsedLabel = match.Groups["labelMd"].Success
+            ? match.Groups["labelMd"].Value
+            : match.Groups["labelPlain"].Value;
+        parsedLabel = Regex.Replace(parsedLabel, @"\s{2,}", " ").Trim();
+        if (parsedLabel.Length == 0)
+        {
+            return false;
+        }
+
+        lead = EscapeHtmlForTelegram(match.Groups["lead"].Value);
+        prefix = EscapeHtmlForTelegram(match.Groups["prefix"].Value);
+        label = parsedLabel;
+        value = NormalizeTelegramStructuredLabelValue(match.Groups["value"].Value);
         return true;
     }
 
@@ -921,17 +1059,20 @@ public sealed class TelegramClient : IDisposable
         return $"<pre><code>{EscapeHtmlForTelegram(alignedTable)}</code></pre>";
     }
 
-    private static void AppendEscapedTelegramLines(StringBuilder builder, string[] lines, int start, int endExclusive)
+    private static void AppendRenderedTelegramLines(StringBuilder builder, string[] lines, int start, int endExclusive)
     {
         var safeStart = Math.Max(0, start);
         var safeEnd = Math.Clamp(endExclusive, safeStart, lines.Length);
-        for (var i = safeStart; i < safeEnd; i += 1)
+        if (safeStart >= safeEnd)
         {
-            builder.Append(EscapeHtmlForTelegram(lines[i] ?? string.Empty));
-            if (i + 1 < safeEnd)
-            {
-                builder.Append('\n');
-            }
+            return;
+        }
+
+        var segment = string.Join('\n', lines.Skip(safeStart).Take(safeEnd - safeStart));
+        var rendered = BuildTelegramHtmlSegment(segment);
+        if (!string.IsNullOrWhiteSpace(rendered))
+        {
+            builder.Append(rendered);
         }
     }
 
@@ -1144,6 +1285,11 @@ public sealed class TelegramClient : IDisposable
             return false;
         }
 
+        if (columnCount >= 3)
+        {
+            return true;
+        }
+
         if (columnCount == 2)
         {
             var values = rows
@@ -1201,6 +1347,7 @@ public sealed class TelegramClient : IDisposable
         }
 
         var headers = rows[0] ?? Array.Empty<string>();
+        var keyColumn = ResolveTelegramMobileKeyColumn(headers, columnCount);
         var builder = new StringBuilder();
         var itemIndex = 0;
         foreach (var row in rows.Skip(1))
@@ -1210,7 +1357,7 @@ public sealed class TelegramClient : IDisposable
                 continue;
             }
 
-            var key = row.Length > 0 ? row[0] : string.Empty;
+            var key = keyColumn < row.Length ? row[keyColumn] : string.Empty;
             key = string.IsNullOrWhiteSpace(key) ? $"항목 {itemIndex + 1}" : key.Trim();
             itemIndex += 1;
 
@@ -1227,8 +1374,13 @@ public sealed class TelegramClient : IDisposable
                 continue;
             }
 
-            for (var col = 1; col < columnCount; col += 1)
+            for (var col = 0; col < columnCount; col += 1)
             {
+                if (col == keyColumn)
+                {
+                    continue;
+                }
+
                 var value = col < row.Length ? row[col] : string.Empty;
                 if (string.IsNullOrWhiteSpace(value))
                 {
@@ -1241,6 +1393,11 @@ public sealed class TelegramClient : IDisposable
                     header = $"항목 {col + 1}";
                 }
 
+                if (col == 0 && keyColumn == 1 && IsTelegramOrdinalHeader(header))
+                {
+                    continue;
+                }
+
                 builder.Append("• <b>");
                 builder.Append(EscapeHtmlForTelegram(header.Trim()));
                 builder.Append(":</b> ");
@@ -1250,6 +1407,32 @@ public sealed class TelegramClient : IDisposable
         }
 
         return builder.ToString().Trim();
+    }
+
+    private static int ResolveTelegramMobileKeyColumn(string[] headers, int columnCount)
+    {
+        if (columnCount < 2)
+        {
+            return 0;
+        }
+
+        var firstHeader = headers != null && headers.Length > 0 ? headers[0] : string.Empty;
+        return IsTelegramOrdinalHeader(firstHeader) ? 1 : 0;
+    }
+
+    private static bool IsTelegramOrdinalHeader(string header)
+    {
+        var normalized = (header ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            normalized,
+            @"^(순번|번호|순서|No\.?|no\.?|index)$",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
     }
 
     private static string BuildAlignedTelegramTableText(IReadOnlyList<string[]> rows)
@@ -1408,6 +1591,67 @@ public sealed class TelegramClient : IDisposable
         }
 
         return html.Trim();
+    }
+
+    private static string BuildTelegramHtmlSegment(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var builder = new StringBuilder(normalized.Length + 128);
+
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            if (i > 0)
+            {
+                builder.Append('\n');
+            }
+
+            var line = (lines[i] ?? string.Empty).Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (TryFormatTelegramStyledLabelLine(line, out var formatted))
+            {
+                EnsureBlankLineBeforeStyledLine(builder);
+                builder.Append(formatted);
+                continue;
+            }
+
+            if (TryFormatTelegramStyledCategoryLine(line, out var categoryFormatted))
+            {
+                EnsureBlankLineBeforeStyledLine(builder);
+                builder.Append(categoryFormatted);
+                continue;
+            }
+
+            builder.Append(ConvertMarkdownToTelegramHtml(line));
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string NormalizeTelegramStructuredLabelValue(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"^(?:</?b>|\*\*)+\s*", string.Empty, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"\s*(?:</?b>|\*\*)+$", string.Empty, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ").Trim();
+        return normalized;
     }
 
     private sealed record TelegramMarkdownTableBlock(

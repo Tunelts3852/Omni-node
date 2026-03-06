@@ -247,9 +247,26 @@ public sealed record RoutineSummary(
     string LastOutput,
     string ScriptPath,
     string Language,
-    string CoderModel
+    string CoderModel,
+    string ScheduleKind,
+    string? ScheduleExpr,
+    string TimezoneId,
+    string TimeOfDay,
+    int? DayOfMonth,
+    IReadOnlyList<int> Weekdays,
+    IReadOnlyList<RoutineRunSummary> Runs
 );
 public sealed record RoutineActionResult(bool Ok, string Message, RoutineSummary? Routine);
+public sealed record RoutineRunSummary(
+    long Ts,
+    string RunAtLocal,
+    string Status,
+    string Summary,
+    string? Error,
+    long? DurationMs,
+    string DurationText,
+    string? NextRunLocal
+);
 public sealed record CronToolStatusResult(
     bool Enabled,
     string StorePath,
@@ -352,6 +369,16 @@ public sealed record CronToolWakeResult(
     string? Error
 );
 internal sealed record RoutineSchedule(int Hour, int Minute, string Display);
+internal sealed record RoutineScheduleConfig(
+    string Kind,
+    int Hour,
+    int Minute,
+    string Display,
+    string TimezoneId,
+    string CronExpr,
+    int? DayOfMonth,
+    IReadOnlyList<int> Weekdays
+);
 internal sealed record RoutineModelStrategy(string Mode, IReadOnlyList<string> Models, string Reason);
 internal sealed record RoutineGenerationResult(
     string PlannerProvider,

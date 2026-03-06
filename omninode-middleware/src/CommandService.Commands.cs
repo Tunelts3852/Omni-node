@@ -71,43 +71,202 @@ public sealed partial class CommandService
         }
 
         var schedule = ParseDailySchedule(input);
+        var scheduleConfig = BuildDailyRoutineScheduleConfig(schedule.Hour, schedule.Minute, TimeZoneInfo.Local.Id);
+        return await CreateRoutineCoreAsync(input, BuildRoutineTitle(input), scheduleConfig, source, cancellationToken);
+    }
+
+    public async Task<RoutineActionResult> CreateRoutineAsync(
+        string request,
+        string? title,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        string source,
+        CancellationToken cancellationToken
+    )
+    {
+        var input = (request ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return new RoutineActionResult(false, "루틴 요청이 비어 있습니다.", null);
+        }
+
+        if (!TryBuildRoutineScheduleConfig(
+                scheduleKind,
+                scheduleTime,
+                weekdays,
+                dayOfMonth,
+                timezoneId,
+                out var scheduleConfig,
+                out var scheduleError
+            ))
+        {
+            return new RoutineActionResult(false, scheduleError, null);
+        }
+
+        var resolvedTitle = string.IsNullOrWhiteSpace(title)
+            ? BuildRoutineTitle(input)
+            : title.Trim();
+        return await CreateRoutineCoreAsync(input, resolvedTitle, scheduleConfig, source, cancellationToken);
+    }
+
+    public async Task<RoutineActionResult> UpdateRoutineAsync(
+        string routineId,
+        string request,
+        string? title,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        CancellationToken cancellationToken
+    )
+    {
+        var key = (routineId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return new RoutineActionResult(false, "routineId가 필요합니다.", null);
+        }
+
+        var input = (request ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return new RoutineActionResult(false, "루틴 요청이 비어 있습니다.", null);
+        }
+
+        if (!TryBuildRoutineScheduleConfig(
+                scheduleKind,
+                scheduleTime,
+                weekdays,
+                dayOfMonth,
+                timezoneId,
+                out var scheduleConfig,
+                out var scheduleError
+            ))
+        {
+            return new RoutineActionResult(false, scheduleError, null);
+        }
+
+        RoutineDefinition? existing;
+        lock (_routineLock)
+        {
+            if (!_routinesById.TryGetValue(key, out var found))
+            {
+                return new RoutineActionResult(false, "루틴을 찾을 수 없습니다.", null);
+            }
+
+            if (found.Running)
+            {
+                return new RoutineActionResult(false, "실행 중인 루틴은 수정할 수 없습니다.", ToRoutineSummary(found));
+            }
+
+            existing = found;
+        }
+
+        var resolvedTitle = string.IsNullOrWhiteSpace(title)
+            ? BuildRoutineTitle(input)
+            : title.Trim();
+        var requestChanged = !string.Equals(existing.Request, input, StringComparison.Ordinal);
+        var titleChanged = !string.Equals(existing.Title, resolvedTitle, StringComparison.Ordinal);
+        var scheduleChanged = !RoutineMatchesSchedule(existing, scheduleConfig);
+        RoutineGenerationResult? generation = null;
+        if (requestChanged || scheduleChanged)
+        {
+            generation = await GenerateRoutineImplementationAsync(
+                input,
+                new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
+                cancellationToken
+            );
+        }
+
+        lock (_routineLock)
+        {
+            if (!_routinesById.TryGetValue(key, out var update))
+            {
+                return new RoutineActionResult(false, "루틴을 찾을 수 없습니다.", null);
+            }
+
+            if (update.Running)
+            {
+                return new RoutineActionResult(false, "실행 중인 루틴은 수정할 수 없습니다.", ToRoutineSummary(update));
+            }
+
+            update.Title = resolvedTitle;
+            update.Request = input;
+            update.ScheduleText = scheduleConfig.Display;
+            update.TimezoneId = scheduleConfig.TimezoneId;
+            update.Hour = scheduleConfig.Hour;
+            update.Minute = scheduleConfig.Minute;
+            update.CronScheduleKind = "cron";
+            update.CronScheduleExpr = scheduleConfig.CronExpr;
+            update.CronScheduleAtMs = null;
+            update.CronScheduleEveryMs = null;
+            update.CronScheduleAnchorMs = null;
+            update.NextRunUtc = ComputeNextCronBridgeRunUtc(update, DateTimeOffset.UtcNow);
+
+            if (generation != null)
+            {
+                var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
+                    ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
+                    : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
+                Directory.CreateDirectory(runDir);
+                update.ScriptPath = WriteRoutineScript(runDir, generation.Language, generation.Code);
+                update.Language = generation.Language;
+                update.Code = generation.Code;
+                update.Planner = generation.PlannerProvider;
+                update.PlannerModel = generation.PlannerModel;
+                update.CoderModel = generation.CoderModel;
+                if (!update.LastRunUtc.HasValue)
+                {
+                    update.LastOutput = generation.Plan;
+                }
+            }
+
+            if (titleChanged || requestChanged || scheduleChanged)
+            {
+                update.LastStatus = update.LastRunUtc.HasValue
+                    ? update.LastStatus
+                    : "updated";
+            }
+
+            SaveRoutineStateLocked();
+            return new RoutineActionResult(true, "루틴 수정 완료", ToRoutineSummary(update));
+        }
+    }
+
+    private async Task<RoutineActionResult> CreateRoutineCoreAsync(
+        string request,
+        string title,
+        RoutineScheduleConfig scheduleConfig,
+        string source,
+        CancellationToken cancellationToken
+    )
+    {
         var createdAt = DateTimeOffset.UtcNow;
         var id = $"rt-{createdAt:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
-        var title = BuildRoutineTitle(input);
-        var timezone = TimeZoneInfo.Local.Id;
-        var nextRunUtc = ComputeNextDailyRunUtc(schedule.Hour, schedule.Minute, timezone, createdAt);
         var runDir = Path.Combine(_config.WorkspaceRootDir, "routines", id);
         Directory.CreateDirectory(runDir);
 
-        var generation = await GenerateRoutineImplementationAsync(input, schedule, cancellationToken);
-        var scriptFileName = generation.Language == "python" ? "run.py" : "run.sh";
-        var scriptPath = Path.Combine(runDir, scriptFileName);
-        File.WriteAllText(scriptPath, generation.Code, Encoding.UTF8);
-        if (!OperatingSystem.IsWindows())
-        {
-            try
-            {
-                File.SetUnixFileMode(scriptPath,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
-                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
-            }
-            catch
-            {
-            }
-        }
+        var generation = await GenerateRoutineImplementationAsync(
+            request,
+            new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
+            cancellationToken
+        );
+        var scriptPath = WriteRoutineScript(runDir, generation.Language, generation.Code);
 
         var routine = new RoutineDefinition
         {
             Id = id,
             Title = title,
-            Request = input,
-            ScheduleText = schedule.Display,
-            TimezoneId = timezone,
-            Hour = schedule.Hour,
-            Minute = schedule.Minute,
+            Request = request,
+            ScheduleText = scheduleConfig.Display,
+            TimezoneId = scheduleConfig.TimezoneId,
+            Hour = scheduleConfig.Hour,
+            Minute = scheduleConfig.Minute,
             Enabled = true,
-            NextRunUtc = nextRunUtc,
+            NextRunUtc = createdAt,
             LastRunUtc = null,
             LastStatus = "created",
             LastOutput = generation.Plan,
@@ -117,8 +276,14 @@ public sealed partial class CommandService
             Planner = generation.PlannerProvider,
             PlannerModel = generation.PlannerModel,
             CoderModel = generation.CoderModel,
+            CronScheduleKind = "cron",
+            CronScheduleExpr = scheduleConfig.CronExpr,
+            CronScheduleAtMs = null,
+            CronScheduleEveryMs = null,
+            CronScheduleAnchorMs = null,
             CreatedUtc = createdAt
         };
+        routine.NextRunUtc = ComputeNextCronBridgeRunUtc(routine, createdAt);
 
         lock (_routineLock)
         {
@@ -130,7 +295,7 @@ public sealed partial class CommandService
         return runNow with
         {
             Routine = ToRoutineSummary(routine),
-            Message = $"루틴 생성 완료: {title} ({schedule.Display})\n{runNow.Message}"
+            Message = $"루틴 생성 완료: {title} ({scheduleConfig.Display})\n{runNow.Message}"
         };
     }
 
@@ -322,6 +487,66 @@ public sealed partial class CommandService
             }
         }
         var resolvedModel = ResolveModel(requestedProvider, request.Model);
+        var resolvedWebUrls = ResolveWebUrls(rawInput, request.WebUrls, request.WebSearchEnabled);
+        if (resolvedWebUrls.Count > 0 && _llmRouter.HasGeminiApiKey())
+        {
+            var memoryHint = BuildSafeWebMemoryPreferenceHint(
+                session.SessionId,
+                rawInput,
+                session.LinkedMemoryNotes
+            );
+            var urlResult = await GenerateGeminiUrlContextAnswerDetailedAsync(
+                rawInput,
+                resolvedWebUrls,
+                memoryHint,
+                allowMarkdownTable: true,
+                enforceTelegramOutputStyle: false,
+                streamCallback,
+                session.Scope,
+                session.Mode,
+                thread.Id,
+                "heuristic_url_context",
+                0,
+                cancellationToken
+            );
+            var urlText = urlResult.Response.Text;
+            var assistantMeta = "gemini-url-single";
+            var urlCitationBundle = BuildAndLogCitationMappings(
+                request.Source,
+                "chat-single-url-context",
+                urlResult.Citations,
+                ("text", urlText)
+            );
+            _conversationStore.AppendMessage(thread.Id, "user", rawInput, $"{requestedProvider}:{request.Model ?? "-"}");
+            _conversationStore.AppendMessage(thread.Id, "assistant", urlText, assistantMeta);
+            ScheduleConversationMaintenance(
+                thread.Id,
+                $"{session.Scope}-{session.Mode}",
+                urlResult.Response.Provider,
+                urlResult.Response.Model
+            );
+
+            var updatedUrl = _conversationStore.Get(thread.Id) ?? thread;
+            return new ConversationChatResult(
+                "single",
+                updatedUrl.Id,
+                urlResult.Response.Provider,
+                urlResult.Response.Model,
+                urlText,
+                assistantMeta,
+                updatedUrl,
+                null,
+                null,
+                urlResult.Citations,
+                urlCitationBundle.Mappings,
+                urlCitationBundle.Validation,
+                0,
+                0,
+                "-",
+                urlResult.Latency
+            );
+        }
+
         if (request.WebSearchEnabled)
         {
             var decisionStopwatch = Stopwatch.StartNew();
@@ -329,7 +554,12 @@ public sealed partial class CommandService
             var shouldUseGeminiWeb = false;
             var selfDecideNeedWeb = false;
 
-            if (LooksLikeRealtimeQuestion(rawInput))
+            if (LooksLikeExplicitWebLookupQuestion(rawInput))
+            {
+                decisionPath = "heuristic_explicit_web";
+                shouldUseGeminiWeb = true;
+            }
+            else if (LooksLikeRealtimeQuestion(rawInput))
             {
                 decisionPath = "heuristic_web";
                 shouldUseGeminiWeb = true;
@@ -534,7 +764,7 @@ public sealed partial class CommandService
             ("text", generated.Text)
         );
         var effectiveGuardFailure = preparedInput.GuardFailure;
-        var responseText = generated.Text;
+        var responseText = ApplyListCountFallback(rawInput, generated.Text, preparedInput.Citations);
 
         _conversationStore.AppendMessage(thread.Id, "user", rawInput, $"{requestedProvider}:{request.Model ?? "-"}");
         _conversationStore.AppendMessage(thread.Id, "assistant", responseText, $"{generated.Provider}:{generated.Model}");
@@ -2061,7 +2291,7 @@ public sealed partial class CommandService
 
         if (urls.Count > 0)
         {
-            var webBlock = await BuildWebContextBlockAsync(urls, cancellationToken);
+            var webBlock = await BuildWebContextBlockAsync(normalizedInput, urls, cancellationToken);
             if (!string.IsNullOrWhiteSpace(webBlock))
             {
                 builder.AppendLine();
@@ -2550,7 +2780,7 @@ public sealed partial class CommandService
                 {
                     webSearchCitations = BuildSearchCitationReferences(contextAlignedResults);
                     sections.Add(BuildWebSearchContextBlock(freshness, contextAlignedResults));
-                    sections.Add(BuildWebAnswerFormattingContextBlock(requestedSearchCount));
+                    sections.Add(BuildWebAnswerFormattingContextBlock(query, requestedSearchCount));
                 }
 
                 webFetchTrace = CreateForcedToolTrace("skip", skipReason: "disabled_for_latency");
@@ -2637,16 +2867,35 @@ public sealed partial class CommandService
         return $"[web_search freshness={normalizedFreshness}]\n" + string.Join("\n", lines);
     }
 
-    private static string BuildWebAnswerFormattingContextBlock(int requestedCount)
+    private static string BuildWebAnswerFormattingContextBlock(string query, int requestedCount)
     {
+        var normalizedQuery = (query ?? string.Empty).Trim();
+        var loweredQuery = normalizedQuery.ToLowerInvariant();
         var normalizedRequestedCount = Math.Clamp(requestedCount, 1, 10);
+        var tableMode = LooksLikeTableRenderRequest(normalizedQuery);
+        var listMode = LooksLikeListOutputRequest(normalizedQuery);
+        var newsMode = ContainsAny(loweredQuery, "뉴스", "news", "헤드라인", "속보", "브리핑");
         return "[response_format_rule]\n"
             + "- 아래 web_search 항목에 있는 사실만 사용해 답변하세요.\n"
-            + "- 한국어로 간결하게 번호 목록으로 정리하세요.\n"
-            + $"- 요청 건수는 정확히 {normalizedRequestedCount}개로 맞추고, 번호는 1부터 순서대로 작성하세요.\n"
-            + "- 각 항목은 '제목 / 핵심 내용 / 출처(매체명)' 순서로 작성하세요.\n"
+            + "- web_search 항목에 없는 추정/기억 기반 내용은 작성하지 마세요.\n"
+            + "- 같은 제목/내용을 반복하거나 제목만 먼저 몰아서 나열하지 마세요.\n"
+            + "- '정리했습니다', '다음과 같습니다' 같은 서론 문장과 날짜 설명문을 앞에 붙이지 마세요.\n"
             + "- URL을 직접 노출하지 말고, 출처는 매체명만 작성하세요.\n"
-            + "- web_search 항목에 없는 추정/기억 기반 내용은 작성하지 마세요.";
+            + (tableMode
+                ? $"- 사용자가 표를 요청했으므로 정확히 {normalizedRequestedCount}개 행의 GitHub 마크다운 표만 출력하세요.\n"
+                    + "- 표 바깥에 제목 나열, 불릿, 추가 설명 문단을 쓰지 마세요.\n"
+                    + "- 표 헤더는 정확히 '| 번호 | 뉴스 제목 | 핵심 요약 | 출처 |' 로 작성하세요.\n"
+                    + "- 각 셀은 한 줄로 짧게 작성하세요.\n"
+                : listMode
+                    ? $"- 사용자가 목록을 요청했으므로 정확히 {normalizedRequestedCount}개 항목만 작성하세요.\n"
+                        + "- 번호는 1부터 순서대로 작성하세요.\n"
+                        + "- 각 항목은 아래 3줄 형식만 사용하세요.\n"
+                        + "  1. 뉴스 제목\n"
+                        + "  - 핵심: 한 줄 요약\n"
+                        + "  - 출처: 매체명\n"
+                    : newsMode
+                        ? "- 뉴스 요약 요청이면 핵심만 간결하게 줄바꿈해 정리하세요.\n"
+                        : "- 사용자가 목록/표를 명시하지 않았다면 번호 목록을 강제하지 마세요.\n");
     }
 
     private async Task<IReadOnlyList<WebSearchResultItem>> BuildContextAlignedWebResultsAsync(
@@ -4181,7 +4430,8 @@ public sealed partial class CommandService
     private readonly record struct WebPreferenceHint(string Category, string Text);
     private readonly record struct GeminiGroundedWebAnswerResult(
         LlmSingleChatResult Response,
-        ChatLatencyMetrics? Latency
+        ChatLatencyMetrics? Latency,
+        IReadOnlyList<SearchCitationReference>? Citations = null
     );
 
     private async Task<WebNeedDecisionResult> DecideNeedWebBySelectedProviderAsync(
@@ -4261,6 +4511,94 @@ public sealed partial class CommandService
             + normalizedInput;
     }
 
+    private async Task<GeminiGroundedWebAnswerResult> GenerateGeminiUrlContextAnswerDetailedAsync(
+        string input,
+        IReadOnlyList<string> urls,
+        string memoryHint,
+        bool allowMarkdownTable,
+        bool enforceTelegramOutputStyle,
+        Action<ChatStreamUpdate>? streamCallback,
+        string scope,
+        string mode,
+        string conversationId,
+        string decisionPath,
+        long decisionMs,
+        CancellationToken cancellationToken
+    )
+    {
+        var model = ResolveUrlContextLlmModel();
+        const bool includeGoogleSearch = false;
+        const string route = "gemini-url-single";
+        var chunkIndex = 0;
+        Action<string>? deltaCallback = null;
+        if (streamCallback != null)
+        {
+            deltaCallback = delta =>
+            {
+                if (string.IsNullOrEmpty(delta))
+                {
+                    return;
+                }
+
+                chunkIndex += 1;
+                streamCallback(new ChatStreamUpdate(scope, mode, conversationId, "gemini", model, route, delta, chunkIndex));
+            };
+        }
+
+        var promptStopwatch = Stopwatch.StartNew();
+        var prompt = BuildGeminiUrlContextAnswerPrompt(
+            input,
+            urls,
+            memoryHint,
+            allowMarkdownTable,
+            enforceTelegramOutputStyle,
+            includeGoogleSearch
+        );
+        var maxOutputTokens = ResolveGeminiUrlContextMaxOutputTokens(input);
+        var promptBuildMs = Math.Max(0L, promptStopwatch.ElapsedMilliseconds);
+        var response = await _llmRouter.GenerateGeminiUrlContextChatStreamingAsync(
+            prompt,
+            model,
+            maxOutputTokens,
+            _config.GeminiWebTimeoutMs,
+            includeGoogleSearch,
+            deltaCallback,
+            cancellationToken
+        );
+
+        var sanitizeStopwatch = Stopwatch.StartNew();
+        string outputText;
+        if (IsGeminiUrlContextFailureText(response.Text))
+        {
+            outputText = BuildGeminiUrlContextFailureNotice(input, response.Text);
+        }
+        else
+        {
+            outputText = SanitizeChatOutput(response.Text, keepMarkdownTables: allowMarkdownTable);
+            outputText = EnsureReadableWebAnswerResponse(outputText, input, allowMarkdownTable);
+        }
+
+        var sanitizeMs = Math.Max(0L, sanitizeStopwatch.ElapsedMilliseconds);
+        ChatLatencyMetrics? latency = null;
+        if (!string.IsNullOrWhiteSpace(decisionPath))
+        {
+            latency = new ChatLatencyMetrics(
+                decisionMs,
+                promptBuildMs,
+                response.FirstChunkMs,
+                response.FullResponseMs,
+                sanitizeMs,
+                decisionPath
+            );
+        }
+
+        return new GeminiGroundedWebAnswerResult(
+            new LlmSingleChatResult("gemini", model, outputText),
+            latency,
+            response.Citations
+        );
+    }
+
     private async Task<LlmSingleChatResult> GenerateGeminiGroundedWebAnswerAsync(
         string input,
         string memoryHint,
@@ -4332,6 +4670,26 @@ public sealed partial class CommandService
             deltaCallback,
             cancellationToken
         );
+        if (IsGeminiWebTimeoutText(response.Text))
+        {
+            Console.Error.WriteLine($"[gemini] grounded chat timeout retry (model={model})");
+            var retryResponse = await _llmRouter.GenerateGeminiGroundedChatStreamingAsync(
+                prompt,
+                model,
+                maxOutputTokens,
+                _config.GeminiWebTimeoutMs,
+                deltaCallback,
+                cancellationToken
+            );
+            response = new GeminiGroundedChatResponse(
+                retryResponse.Text,
+                retryResponse.FirstChunkMs > 0
+                    ? response.FullResponseMs + retryResponse.FirstChunkMs
+                    : 0,
+                response.FullResponseMs + retryResponse.FullResponseMs
+            );
+        }
+
         var sanitizeStopwatch = Stopwatch.StartNew();
         string outputText;
         if (IsGeminiWebFailureText(response.Text))
@@ -4341,10 +4699,7 @@ public sealed partial class CommandService
         else
         {
             outputText = SanitizeChatOutput(response.Text, keepMarkdownTables: allowMarkdownTable);
-            if (allowMarkdownTable && LooksLikeTableRenderRequest(input))
-            {
-                outputText = EnsureMarkdownTableResponseIfRequested(outputText);
-            }
+            outputText = EnsureReadableWebAnswerResponse(outputText, input, allowMarkdownTable);
         }
 
         var sanitizeMs = Math.Max(0L, sanitizeStopwatch.ElapsedMilliseconds);
@@ -4367,6 +4722,536 @@ public sealed partial class CommandService
         );
     }
 
+    private static string EnsureReadableWebAnswerResponse(string text, string input, bool allowMarkdownTable)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return normalized;
+        }
+
+        if (allowMarkdownTable && LooksLikeTableRenderRequest(input))
+        {
+            return EnsureMarkdownTableResponseIfRequested(normalized);
+        }
+
+        normalized = RemoveWebAnswerSourceLinkArtifacts(normalized);
+        normalized = NormalizeCollapsedWebBulletRuns(normalized);
+        if (LooksLikeComparisonRequest(input))
+        {
+            return normalized;
+        }
+
+        if (LooksLikeListOutputRequest(input) || LooksLikeNumberedListResponse(normalized))
+        {
+            return NormalizeGeminiWebNumberedListResponse(normalized);
+        }
+
+        return NormalizeWebAnswerNarrativeParagraphs(normalized);
+    }
+
+    private static string NormalizeGeminiWebNumberedListResponse(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Replace("\t", " ", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<=[.!?]|…)\s*(?=(?:No\.)?\d{1,2}\.\s*(?:\*\*|[A-Za-z가-힣0-9]))",
+            "\n\n",
+            RegexOptions.CultureInvariant
+        );
+        normalized = Regex.Replace(
+            normalized,
+            @"(?m)^(?<n>(?:No\.)?\d{1,2})\.(?=\S)",
+            "${n}. ",
+            RegexOptions.CultureInvariant
+        );
+        normalized = MergeDetachedNumberLinesForWeb(normalized);
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        if (!LooksLikeNumberedListResponse(normalized))
+        {
+            return normalized;
+        }
+
+        var introParts = new List<string>(8);
+        var itemBlocks = new List<string>(12);
+        var trailingBlocks = new List<string>(4);
+        var currentItem = new StringBuilder();
+        var sawItem = false;
+        var inTrailing = false;
+
+        void FlushCurrentItem()
+        {
+            var body = NormalizeGeminiWebListItemBody(currentItem.ToString());
+            if (body.Length > 0)
+            {
+                itemBlocks.Add(body);
+            }
+
+            currentItem.Clear();
+        }
+
+        foreach (var rawLine in lines)
+        {
+            var line = (rawLine ?? string.Empty).Trim();
+            if (line.Length == 0)
+            {
+                continue;
+            }
+
+            if (IsGeminiWebListSourceBlock(line))
+            {
+                FlushCurrentItem();
+                inTrailing = true;
+                trailingBlocks.Add(line);
+                continue;
+            }
+
+            if (inTrailing)
+            {
+                trailingBlocks.Add(line);
+                continue;
+            }
+
+            if (TryParseGeminiWebListLeadingNumber(line, out _))
+            {
+                FlushCurrentItem();
+                currentItem.Append(StripGeminiWebListLeadingMarker(line));
+                sawItem = true;
+                continue;
+            }
+
+            if (!sawItem)
+            {
+                introParts.Add(line);
+                continue;
+            }
+
+            if (currentItem.Length > 0)
+            {
+                currentItem.Append(' ');
+            }
+
+            currentItem.Append(line);
+        }
+
+        FlushCurrentItem();
+        if (itemBlocks.Count < 2)
+        {
+            return normalized;
+        }
+
+        var output = new List<string>(itemBlocks.Count + trailingBlocks.Count + 2);
+        var introBlock = NormalizeGeminiWebListItemBody(string.Join(" ", introParts));
+        if (!string.IsNullOrWhiteSpace(introBlock))
+        {
+            output.Add(introBlock);
+        }
+
+        for (var index = 0; index < itemBlocks.Count; index++)
+        {
+            var body = NormalizeGeminiWebListItemBody(itemBlocks[index]);
+            if (body.Length == 0)
+            {
+                continue;
+            }
+
+            output.Add($"{index + 1}. {body}");
+        }
+
+        foreach (var trailing in trailingBlocks)
+        {
+            output.Add(trailing.Trim());
+        }
+
+        return string.Join("\n\n", output.Where(block => !string.IsNullOrWhiteSpace(block))).Trim();
+    }
+
+    private static string MergeDetachedNumberLinesForWeb(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            var current = (lines[i] ?? string.Empty).Trim();
+            if (!Regex.IsMatch(current, @"^(?:No\.)?\d+\.$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var nextIndex = i + 1;
+            while (nextIndex < lines.Length && string.IsNullOrWhiteSpace(lines[nextIndex]))
+            {
+                nextIndex += 1;
+            }
+
+            if (nextIndex >= lines.Length)
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var next = (lines[nextIndex] ?? string.Empty).Trim();
+            if (next.Length == 0
+                || Regex.IsMatch(next, @"^(?:No\.)?\d+\.$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)
+                || IsMarkdownTableRow(next))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            output.Add($"{current} {next}");
+            i = nextIndex;
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static string NormalizeGeminiWebListItemBody(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = normalized.Replace("\t", " ", StringComparison.Ordinal);
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ").Trim();
+        normalized = Regex.Replace(normalized, @"\s+([,.;:!?])", "$1");
+        return normalized.Trim();
+    }
+
+    private static bool LooksLikeNumberedListResponse(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<=[.!?]|…)\s*(?=(?:No\.)?\d{1,2}\.\s*(?:\*\*|[A-Za-z가-힣0-9]))",
+            "\n",
+            RegexOptions.CultureInvariant
+        );
+        var matches = Regex.Matches(
+            normalized,
+            @"(?m)^\s*(?:No\.)?\d{1,2}\.\s*(?:\*\*|[A-Za-z가-힣0-9])",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
+        return matches.Count >= 2;
+    }
+
+    private static bool NeedsGeminiWebListRenumbering(IReadOnlyList<string> itemBlocks)
+    {
+        if (itemBlocks == null || itemBlocks.Count == 0)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < itemBlocks.Count; index++)
+        {
+            if (!TryParseGeminiWebListLeadingNumber(itemBlocks[index], out var parsedNumber))
+            {
+                return true;
+            }
+
+            if (parsedNumber != index + 1)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryParseGeminiWebListLeadingNumber(string value, out int number)
+    {
+        number = 0;
+        var trimmed = (value ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        var match = Regex.Match(trimmed, @"^(?:No\.)?(?<n>\d{1,2})\.\s*", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        return int.TryParse(match.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out number);
+    }
+
+    private static string StripGeminiWebListLeadingMarker(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        normalized = Regex.Replace(normalized, @"^(?:No\.)?\d{1,2}\.\s*", string.Empty, RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+        return normalized.Trim();
+    }
+
+    private static bool IsGeminiWebListIntroBlock(string value)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        if (trimmed.Length == 0
+            || TryParseGeminiWebListLeadingNumber(trimmed, out _)
+            || IsGeminiWebListSourceBlock(trimmed))
+        {
+            return false;
+        }
+
+        var lowered = trimmed.ToLowerInvariant();
+        return lowered.Contains("정리해", StringComparison.Ordinal)
+            || lowered.Contains("정리했습니다", StringComparison.Ordinal)
+            || lowered.Contains("다음과 같습니다", StringComparison.Ordinal)
+            || lowered.Contains("주요 뉴스", StringComparison.Ordinal);
+    }
+
+    private static bool IsGeminiWebListSourceBlock(string value)
+    {
+        var trimmed = (value ?? string.Empty).Trim();
+        return trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("**출처:**", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeCollapsedWebBulletRuns(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var normalized = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        normalized = Regex.Replace(
+            normalized,
+            @"(?<=[.!?]|다\.)\s*-\s+(?=[^\n])",
+            "\n- ",
+            RegexOptions.CultureInvariant
+        );
+        return Regex.Replace(normalized, @"\n{3,}", "\n\n");
+    }
+
+    private static string RemoveWebAnswerSourceLinkArtifacts(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        var skipImmediateUrl = false;
+
+        foreach (var raw in lines)
+        {
+            var trimmed = (raw ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                skipImmediateUrl = false;
+                continue;
+            }
+
+            if (trimmed.StartsWith("출처 링크:", StringComparison.OrdinalIgnoreCase))
+            {
+                skipImmediateUrl = true;
+                continue;
+            }
+
+            var isRawUrlLine = HttpUrlRegex.IsMatch(trimmed)
+                && HttpUrlRegex.Match(trimmed).Value.Equals(trimmed, StringComparison.Ordinal);
+            if (skipImmediateUrl && isRawUrlLine)
+            {
+                skipImmediateUrl = false;
+                continue;
+            }
+
+            skipImmediateUrl = false;
+
+            if (trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            {
+                var cleanedSource = Regex.Replace(trimmed["출처:".Length..].Trim(), @"https?://\S+", string.Empty);
+                cleanedSource = cleanedSource.Replace("**", string.Empty, StringComparison.Ordinal);
+                cleanedSource = Regex.Replace(cleanedSource, @"\s{2,}", " ").Trim().Trim(',', ';', '|', '/');
+                if (cleanedSource.Length == 0)
+                {
+                    continue;
+                }
+
+                output.Add($"출처: {cleanedSource}");
+                continue;
+            }
+
+            if (isRawUrlLine
+                && output.Count > 0
+                && output[^1].StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            output.Add(trimmed);
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static string NormalizeWebAnswerNarrativeParagraphs(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length + 4);
+        var paragraphParts = new List<string>(8);
+
+        void FlushParagraph()
+        {
+            if (paragraphParts.Count == 0)
+            {
+                return;
+            }
+
+            var merged = string.Join(" ", paragraphParts.Where(part => !string.IsNullOrWhiteSpace(part)).Select(part => part.Trim()));
+            merged = Regex.Replace(merged, @"\s{2,}", " ").Trim();
+            merged = Regex.Replace(merged, @"\s+([,.;:!?])", "$1");
+            if (merged.Length > 0)
+            {
+                output.Add(merged);
+            }
+
+            paragraphParts.Clear();
+        }
+
+        foreach (var raw in lines)
+        {
+            var trimmed = (raw ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                FlushParagraph();
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                continue;
+            }
+
+            if (IsNarrativeWebAnswerLine(trimmed))
+            {
+                paragraphParts.Add(trimmed);
+                continue;
+            }
+
+            FlushParagraph();
+            if (TryNormalizeWebAnswerStructuredLabelLine(trimmed, out var normalizedStructuredLine))
+            {
+                if (output.Count > 0
+                    && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                output.Add(normalizedStructuredLine);
+                continue;
+            }
+
+            output.Add(trimmed);
+        }
+
+        FlushParagraph();
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static bool TryNormalizeWebAnswerStructuredLabelLine(string line, out string normalizedLine)
+    {
+        normalizedLine = string.Empty;
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        if (TryNormalizeExistingStructuredMarkdownLabelLine(trimmed, out normalizedLine))
+        {
+            return true;
+        }
+
+        return TryFormatStructuredMarkdownLabelLine(trimmed, out normalizedLine);
+    }
+
+    private static bool IsNarrativeWebAnswerLine(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith("```", StringComparison.Ordinal)
+            || IsMarkdownTableRow(trimmed)
+            || trimmed.StartsWith("요약:", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("핵심:", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("**핵심:**", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(trimmed, @"^(?:[-•▪*]\s+|\d+[.)]\s+)", RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(
+                trimmed,
+                @"^(?:\*\*)?\s*[A-Za-z가-힣0-9(][A-Za-z가-힣0-9(),.&+_/\-·\s]{0,40}\s*(?:\*\*)?\s*[:：]",
+                RegexOptions.CultureInvariant))
+        {
+            return false;
+        }
+
+        return !HttpUrlRegex.IsMatch(trimmed);
+    }
+
     private static string EnsureMarkdownTableResponseIfRequested(string text)
     {
         var normalized = (text ?? string.Empty)
@@ -4377,6 +5262,8 @@ public sealed partial class CommandService
         {
             return text;
         }
+
+        normalized = ConvertDelimitedPlainTextTableToMarkdown(normalized);
 
         var hasTableHeader = Regex.IsMatch(normalized, @"(?m)^\s*\|.+\|\s*$", RegexOptions.CultureInvariant);
         var hasTableSeparator = Regex.IsMatch(
@@ -4643,6 +5530,104 @@ public sealed partial class CommandService
         }
 
         return string.Join('\n', output).Trim();
+    }
+
+    private static string ConvertDelimitedPlainTextTableToMarkdown(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length + 4);
+        var index = 0;
+        while (index < lines.Length)
+        {
+            if (!TrySplitDelimitedTableRow(lines[index], out var headerCells, out var delimiterKind))
+            {
+                output.Add(lines[index]);
+                index += 1;
+                continue;
+            }
+
+            var rows = new List<string[]>(8);
+            var cursor = index + 1;
+            while (cursor < lines.Length
+                && TrySplitDelimitedTableRow(lines[cursor], out var rowCells, out var rowDelimiterKind)
+                && rowDelimiterKind == delimiterKind
+                && rowCells.Length == headerCells.Length)
+            {
+                rows.Add(rowCells);
+                cursor += 1;
+            }
+
+            if (rows.Count == 0)
+            {
+                output.Add(lines[index]);
+                index += 1;
+                continue;
+            }
+
+            output.Add($"| {string.Join(" | ", headerCells.Select(SanitizeTableCell))} |");
+            output.Add($"| {string.Join(" | ", Enumerable.Repeat("---", headerCells.Length))} |");
+            foreach (var row in rows)
+            {
+                output.Add($"| {string.Join(" | ", row.Select(SanitizeTableCell))} |");
+            }
+
+            index = cursor;
+        }
+
+        return string.Join('\n', output).Trim();
+    }
+
+    private static bool TrySplitDelimitedTableRow(string line, out string[] cells, out string delimiterKind)
+    {
+        cells = Array.Empty<string>();
+        delimiterKind = string.Empty;
+
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0
+            || trimmed.StartsWith("|", StringComparison.Ordinal)
+            || Regex.IsMatch(trimmed, @"^(?:[-•▪*]\s+|\d+[.)]\s+)", RegexOptions.CultureInvariant)
+            || Regex.IsMatch(trimmed, @"^(?:\*\*)?\s*[A-Za-z가-힣0-9(][A-Za-z가-힣0-9().&+_/\-·\s]{0,40}\s*(?:\*\*)?\s*[:：]", RegexOptions.CultureInvariant)
+            || HttpUrlRegex.IsMatch(trimmed))
+        {
+            return false;
+        }
+
+        if (trimmed.Contains('\t'))
+        {
+            var tabCells = trimmed
+                .Split('\t', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                .Select(cell => cell.Trim())
+                .Where(cell => cell.Length > 0)
+                .ToArray();
+            if (tabCells.Length >= 3)
+            {
+                cells = tabCells;
+                delimiterKind = "tab";
+                return true;
+            }
+        }
+
+        var spaceCells = Regex.Split(trimmed, @"\s{2,}", RegexOptions.CultureInvariant)
+            .Select(cell => cell.Trim())
+            .Where(cell => cell.Length > 0)
+            .ToArray();
+        if (spaceCells.Length >= 3)
+        {
+            cells = spaceCells;
+            delimiterKind = "space";
+            return true;
+        }
+
+        return false;
     }
 
     private static string NormalizeMarkdownTableResponseMetadata(string text)
@@ -4958,6 +5943,198 @@ public sealed partial class CommandService
         return normalized.Length == 0 ? "-" : normalized;
     }
 
+    private string BuildGeminiUrlContextAnswerPrompt(
+        string input,
+        IReadOnlyList<string> urls,
+        string memoryHint,
+        bool allowMarkdownTable,
+        bool enforceTelegramOutputStyle,
+        bool includeGoogleSearch
+    )
+    {
+        var normalizedInput = (input ?? string.Empty).Trim();
+        var normalizedMemoryHint = (memoryHint ?? string.Empty).Trim();
+        var hasExplicitCount = HasExplicitRequestedCountInQuery(normalizedInput);
+        var requestedCount = hasExplicitCount
+            ? Math.Clamp(ResolveRequestedResultCountFromQuery(normalizedInput), 1, 20)
+            : ResolveWebDefaultCount(normalizedInput);
+        var listMode = LooksLikeListOutputRequest(normalizedInput);
+        var tableMode = allowMarkdownTable && LooksLikeTableRenderRequest(normalizedInput);
+        var comparisonMode = LooksLikeComparisonRequest(normalizedInput);
+        var primaryUrl = urls.FirstOrDefault() ?? string.Empty;
+        var siteOverviewMode = urls.Count == 1 && LooksLikeSiteOverviewRequest(normalizedInput) && LooksLikeSiteRootUrl(primaryUrl);
+        var documentMode = urls.Count == 1 && LooksLikeDocumentationUrl(primaryUrl);
+        var articleMode = urls.Count == 1 && LooksLikeArticleUrl(primaryUrl);
+
+        var builder = new StringBuilder();
+        builder.AppendLine("너는 URL 컨텍스트 기반 한국어 답변기다.");
+        builder.AppendLine("- 아래 참조 URL 내용이 1차 근거다.");
+        if (includeGoogleSearch)
+        {
+            builder.AppendLine("- google_search가 가능하면 배경 보강이나 최신성 확인에만 보조적으로 사용해라.");
+            builder.AppendLine("- URL에 없는 내용은 추정하지 말고, 검색으로도 확인되지 않으면 없다고 말해라.");
+        }
+        else
+        {
+            builder.AppendLine("- URL에 없는 내용은 추정하지 말고, URL에서 직접 확인되지 않으면 없다고 말해라.");
+        }
+        builder.AppendLine("- 허위/기억 기반 문장 금지.");
+        builder.AppendLine("- 출처는 URL이 아닌 도메인명으로만 작성해라.");
+        builder.AppendLine("- 출처 표기는 마지막 한 줄 형식으로만 작성: '출처: 도메인1, 도메인2'.");
+        builder.AppendLine("- '출처 링크:' 섹션이나 URL 단독 줄을 만들지 마라.");
+        builder.AppendLine("- 문장 중간을 임의로 줄바꿈하지 말고 자연스러운 한국어 문장으로 정리해라.");
+        builder.AppendLine("- 답변이 길어질 것 같으면 항목 수를 줄이고 요약해서 문장을 끝까지 완성해라.");
+        builder.AppendLine("- 페이지의 제목, 목적, 핵심 내용, 중요한 세부사항이 무엇인지 요약하면서도 분명하게 드러내라.");
+        builder.AppendLine("- 본문에서 임의의 '**' 강조를 남발하지 말고, 구조 라벨이나 항목 제목에만 제한적으로 사용해라.");
+        if (tableMode)
+        {
+            builder.AppendLine("- 사용자가 표를 요청했으므로 반드시 GitHub 마크다운 표로 작성해라.");
+            builder.AppendLine("- 표의 헤더/구분선/데이터 행은 모두 '|'로 시작하고 '|'로 끝내라.");
+            builder.AppendLine("- 표를 코드블록으로 감싸지 마라.");
+            builder.AppendLine("- 표 안에 '출처' 열이나 '출처' 행을 만들지 마라.");
+        }
+        else
+        {
+            builder.AppendLine("- 사용자가 표를 요청하지 않았다면 표/ASCII 테이블 형식은 쓰지 마라.");
+        }
+        if (enforceTelegramOutputStyle)
+        {
+            builder.AppendLine("- 출력 채널은 텔레그램이다. 군더더기 머리말 없이 바로 본문 형식으로 작성해라.");
+        }
+        if (siteOverviewMode)
+        {
+            builder.AppendLine("- 이 요청은 사이트/서비스 소개 요청이다.");
+            builder.AppendLine("- 해당 사이트가 무엇을 하는지, 핵심 제품/기능, 누구를 위한 서비스인지, 눈여겨볼 점을 정리해라.");
+        }
+        else if (documentMode)
+        {
+            builder.AppendLine("- 이 요청은 문서/가이드 설명 요청이다.");
+            builder.AppendLine("- 문서의 목적, 어떤 기능을 설명하는지, 사용 흐름, 지원 대상, 제한/주의점을 정리해라.");
+        }
+        else if (articleMode)
+        {
+            builder.AppendLine("- 이 요청은 기사/게시물 요약 요청이다.");
+            builder.AppendLine("- 핵심 사실, 주요 인물/기관, 중요한 수치/날짜, 왜 중요한지를 우선 정리해라.");
+        }
+
+        if (tableMode)
+        {
+            builder.AppendLine("요약: <1문장>");
+            builder.AppendLine();
+            builder.AppendLine("| 항목 | 내용 |");
+            builder.AppendLine("| --- | --- |");
+            builder.AppendLine("| 예시 | 값 |");
+            builder.AppendLine();
+            builder.AppendLine("출처: 도메인1, 도메인2");
+            if (listMode)
+            {
+                builder.AppendLine($"- 표의 데이터 행은 가능하면 {requestedCount}개로 맞춰라.");
+            }
+        }
+        else if (listMode)
+        {
+            builder.AppendLine($"- 목록 모드: 목표 {requestedCount}건.");
+            builder.AppendLine("- 각 항목은 제목과 핵심 내용만 간결하게 정리해라.");
+        }
+        else
+        {
+            builder.AppendLine("- 일반 검색형 답변은 아래 형식만 사용해라.");
+            builder.AppendLine("요약: <2~3문장>");
+            builder.AppendLine();
+            builder.AppendLine("무엇을 다루나: <1~2문장>");
+            builder.AppendLine();
+            builder.AppendLine("핵심:");
+            builder.AppendLine("- <핵심 포인트 3~5개>");
+            builder.AppendLine("- <핵심 포인트>");
+            builder.AppendLine();
+            builder.AppendLine("중요 포인트:");
+            builder.AppendLine("- <사용자가 바로 알아야 할 점>");
+            builder.AppendLine();
+            builder.AppendLine("출처: 도메인1, 도메인2");
+            if (comparisonMode)
+            {
+                builder.AppendLine("- 비교/분류형 답변이면 항목별 줄바꿈을 유지해라.");
+            }
+        }
+
+        if (normalizedMemoryHint.Length > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("사용자 선호 메모리(보조 규칙, 충돌 시 무시):");
+            builder.AppendLine(normalizedMemoryHint);
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("참조 URL:");
+        foreach (var url in urls.Take(3))
+        {
+            builder.AppendLine($"- {url}");
+        }
+        builder.AppendLine();
+        builder.AppendLine("사용자 입력:");
+        builder.AppendLine(normalizedInput);
+        return builder.ToString().Trim();
+    }
+
+    private static bool LooksLikeSiteOverviewRequest(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+            normalized,
+            "이 사이트",
+            "사이트 내용",
+            "사이트 설명",
+            "사이트 알려",
+            "서비스 설명",
+            "회사 소개",
+            "기업 소개",
+            "무슨 사이트",
+            "무슨 서비스"
+        );
+    }
+
+    private static bool LooksLikeSiteRootUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var path = (uri.AbsolutePath ?? string.Empty).Trim();
+        return path.Length == 0 || path == "/";
+    }
+
+    private static bool LooksLikeDocumentationUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var host = (uri.Host ?? string.Empty).ToLowerInvariant();
+        var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(host, "developers", "docs", "api")
+               || ContainsAny(path, "/docs", "/doc", "/api", "/guide", "/reference", "/tutorial");
+    }
+
+    private static bool LooksLikeArticleUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var host = (uri.Host ?? string.Empty).ToLowerInvariant();
+        var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(host, "news", "blog", "medium", "substack")
+               || ContainsAny(path, "/article", "/news", "/blog", "/posts", "/post");
+    }
+
     private string BuildGeminiWebAnswerPrompt(
         string input,
         string memoryHint,
@@ -4996,12 +6173,16 @@ public sealed partial class CommandService
         builder.AppendLine("- 허위/기억 기반 문장 금지.");
         builder.AppendLine("- 출처는 URL이 아닌 매체명으로만 작성해라.");
         builder.AppendLine("- 출처 표기는 마지막 한 줄 형식으로만 작성: '출처: 매체1, 매체2, 매체3'.");
+        builder.AppendLine("- '출처 링크:' 섹션이나 URL 단독 줄을 만들지 마라.");
+        builder.AppendLine("- 문장 중간을 임의로 줄바꿈하지 말고 자연스러운 한국어 문장으로 정리해라.");
         if (tableMode)
         {
             builder.AppendLine("- 사용자가 표를 요청했으므로 반드시 GitHub 마크다운 표로 작성해라.");
             builder.AppendLine("- 표의 헤더/구분선/데이터 행은 모두 '|'로 시작하고 '|'로 끝내라.");
             builder.AppendLine("- 표를 코드블록으로 감싸지 마라.");
             builder.AppendLine("- 표 안에 '출처' 열이나 '출처' 행을 만들지 마라.");
+            builder.AppendLine("- 표 요청 응답에서는 불릿 목록으로 대체하지 마라.");
+            builder.AppendLine("- 표가 필요한 정보는 반드시 표의 행/열로 정리해라.");
         }
         else
         {
@@ -5009,8 +6190,7 @@ public sealed partial class CommandService
         }
         if (enforceTelegramOutputStyle)
         {
-            builder.AppendLine("- 출력 채널은 텔레그램이다. 첫 줄은 1~2문장 요약으로 작성해라.");
-            builder.AppendLine("- 요약 뒤에는 빈 줄 1개를 두고 핵심 항목은 '▪ ' 불릿으로 정리해라.");
+            builder.AppendLine("- 출력 채널은 텔레그램이다. 군더더기 머리말 없이 바로 본문 형식으로 작성해라.");
             builder.AppendLine("- URL 본문 노출은 금지하고 매체명만 사용해라.");
         }
         if (sourceFocus.Length > 0)
@@ -5022,7 +6202,24 @@ public sealed partial class CommandService
             }
         }
 
-        if (listMode)
+        if (tableMode)
+        {
+            builder.AppendLine("- 표 요청 모드: 아래 형식만 사용해라.");
+            builder.AppendLine("요약: <1문장>");
+            builder.AppendLine();
+            builder.AppendLine("| 항목 | 내용 |");
+            builder.AppendLine("| --- | --- |");
+            builder.AppendLine("| 예시 | 값 |");
+            builder.AppendLine();
+            builder.AppendLine("출처: 매체1, 매체2");
+            builder.AppendLine("- 표 앞뒤에 불릿 목록을 쓰지 마라.");
+            builder.AppendLine("- 가능한 경우 실제 데이터 열 이름을 사용해 3열 이상 표로 확장해라.");
+            if (listMode)
+            {
+                builder.AppendLine($"- 표의 데이터 행은 가능하면 {requestedCount}개로 맞춰라.");
+            }
+        }
+        else if (listMode)
         {
             builder.AppendLine($"- 목록 모드: 목표 {requestedCount}건.");
             builder.AppendLine("- 각 항목은 제목과 핵심 내용만 간결하게 정리해라.");
@@ -5041,6 +6238,18 @@ public sealed partial class CommandService
             if (comparisonMode)
             {
                 builder.AppendLine("- 비교/분류형 답변이면 항목별 줄바꿈을 유지해라.");
+            }
+            else
+            {
+                builder.AppendLine("- 일반 검색형 답변은 아래 형식만 사용해라.");
+                builder.AppendLine("요약: <1~2문장>");
+                builder.AppendLine();
+                builder.AppendLine("핵심:");
+                builder.AppendLine("- <핵심 포인트>");
+                builder.AppendLine("- <핵심 포인트>");
+                builder.AppendLine();
+                builder.AppendLine("출처: 매체1, 매체2");
+                builder.AppendLine("- 위 형식 외의 제목/머리말/날짜 안내문은 추가하지 마라.");
             }
         }
 
@@ -5481,15 +6690,65 @@ public sealed partial class CommandService
         var comparisonMode = LooksLikeComparisonRequest(normalized);
         if (!tableMode && !listMode && !comparisonMode)
         {
-            return 512;
+            return 1024;
         }
 
         if (targetCount > 5 || (tableMode && normalized.Length >= 80))
         {
-            return 1024;
+            return 1280;
         }
 
-        return 768;
+        return 1024;
+    }
+
+    private int ResolveGeminiUrlContextMaxOutputTokens(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim();
+        var targetCount = HasExplicitRequestedCountInQuery(normalized)
+            ? Math.Clamp(ResolveRequestedResultCountFromQuery(normalized), 1, 20)
+            : ResolveWebDefaultCount(normalized);
+        var tableMode = LooksLikeTableRenderRequest(normalized);
+        var listMode = LooksLikeListOutputRequest(normalized);
+        var comparisonMode = LooksLikeComparisonRequest(normalized);
+        if (!tableMode && !listMode && !comparisonMode)
+        {
+            return 2048;
+        }
+
+        if (targetCount > 5 || (tableMode && normalized.Length >= 80))
+        {
+            return 4096;
+        }
+
+        return 2048;
+    }
+
+    private static bool IsGeminiUrlContextFailureText(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return true;
+        }
+
+        return normalized.StartsWith("Gemini URL 참조 요청 실패:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("Gemini URL 참조 응답 시간이 초과되었습니다.", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("Gemini URL 참조 호출 오류:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("Gemini URL 참조 응답이 비어 있습니다.", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("429", StringComparison.OrdinalIgnoreCase)
+               && normalized.Contains("Gemini", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string BuildGeminiUrlContextFailureNotice(string input, string failureText)
+    {
+        var normalizedInput = (input ?? string.Empty).Trim();
+        var coreFailure = (failureText ?? string.Empty).Trim();
+        return $"""
+                요청하신 URL 참조 답변을 생성하지 못했습니다.
+                원인: {coreFailure}
+                안내: URL 접근 권한이나 본문 공개 상태를 확인한 뒤 다시 요청해 주세요.
+                입력: {normalizedInput}
+                """.Trim();
     }
 
     private static bool IsGeminiWebFailureText(string text)
@@ -5506,6 +6765,12 @@ public sealed partial class CommandService
             || normalized.StartsWith("Gemini 웹검색 응답이 비어 있습니다.", StringComparison.OrdinalIgnoreCase)
             || normalized.Contains("429", StringComparison.OrdinalIgnoreCase)
                && normalized.Contains("Gemini", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsGeminiWebTimeoutText(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        return normalized.StartsWith("Gemini 웹검색 응답 시간이 초과되었습니다.", StringComparison.OrdinalIgnoreCase);
     }
 
     private string BuildGeminiWebFailureNotice(string input, string failureText)
@@ -5610,10 +6875,12 @@ public sealed partial class CommandService
 
         if (_config.EnableFastWebPipeline)
         {
-            var heuristicNeedWeb = LooksLikeRealtimeQuestion(normalized);
+            var heuristicNeedWeb = LooksLikeExplicitWebLookupQuestion(normalized) || LooksLikeRealtimeQuestion(normalized);
             return new SearchRequirementDecision(
                 heuristicNeedWeb,
-                heuristicNeedWeb ? "fast:true:heuristic" : "fast:false:heuristic",
+                heuristicNeedWeb
+                    ? (LooksLikeExplicitWebLookupQuestion(normalized) ? "fast:true:explicit_web" : "fast:true:heuristic")
+                    : "fast:false:heuristic",
                 ExtractSourceFocusHintFromInput(normalized),
                 ExtractSourceDomainHintFromInput(normalized)
             );
@@ -5624,7 +6891,7 @@ public sealed partial class CommandService
             : string.Empty;
         if (provider.Length == 0)
         {
-            var fallbackDecision = LooksLikeRealtimeQuestion(normalized);
+            var fallbackDecision = LooksLikeExplicitWebLookupQuestion(normalized) || LooksLikeRealtimeQuestion(normalized);
             return new SearchRequirementDecision(
                 fallbackDecision,
                 fallbackDecision ? "fallback:true:no_llm_key" : "fallback:false:no_llm_key",
@@ -5693,7 +6960,7 @@ public sealed partial class CommandService
             );
         }
 
-        var fallback = LooksLikeRealtimeQuestion(normalized);
+        var fallback = LooksLikeExplicitWebLookupQuestion(normalized) || LooksLikeRealtimeQuestion(normalized);
         return new SearchRequirementDecision(
             fallback,
             fallback
@@ -5713,6 +6980,17 @@ public sealed partial class CommandService
         }
 
         return _config.GeminiModel;
+    }
+
+    private string ResolveUrlContextLlmModel()
+    {
+        var configured = NormalizeModelSelection(_config.GeminiModel);
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured!;
+        }
+
+        return "gemini-3-flash-preview";
     }
 
     private bool ShouldUseGeminiWebComposer(
@@ -6057,10 +7335,45 @@ public sealed partial class CommandService
         );
     }
 
+    private static bool LooksLikeExplicitWebLookupQuestion(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+                normalized,
+                "검색해서",
+                "알려줘",
+                "말해줘",
+                "검색해줘",
+                "검색해 줘",
+                "검색해봐",
+                "찾아봐",
+                "찾아봐줘",
+                "알아봐",
+                "알아봐줘",
+                "웹에서",
+                "인터넷에서",
+                "search for",
+                "look up",
+                "lookup"
+            )
+            || Regex.IsMatch(
+                normalized,
+                @"\b(?:search|lookup)\b",
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+            );
+    }
+
     private static bool LooksLikeClearlyNonWebQuestion(string input)
     {
         var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalized.Length == 0 || LooksLikeRealtimeQuestion(normalized))
+        if (normalized.Length == 0
+            || LooksLikeRealtimeQuestion(normalized)
+            || LooksLikeExplicitWebLookupQuestion(normalized))
         {
             return false;
         }
@@ -6372,8 +7685,14 @@ public sealed partial class CommandService
             );
         }
 
+        var tableMode = LooksLikeTableRenderRequest(input);
         var builder = new StringBuilder();
-        builder.AppendLine($"요청하신 소식 {targetCount}건입니다.");
+        if (tableMode)
+        {
+            builder.AppendLine("| 번호 | 뉴스 제목 | 핵심 요약 | 출처 |");
+            builder.AppendLine("| --- | --- | --- | --- |");
+        }
+
         for (var index = 0; index < targetCount; index++)
         {
             var hasDirectCitation = index < validCitations.Length;
@@ -6383,10 +7702,20 @@ public sealed partial class CommandService
             var sourceLabel = ResolveSourceLabel(item.Url, item.Title);
             var title = BuildCitationDisplayTitle(item, sourceLabel, index + 1, hasDirectCitation);
             var summary = BuildCitationDisplaySummary(item, sourceLabel, hasDirectCitation);
-            builder.AppendLine($"No.{index + 1} 제목: {title}");
-            builder.AppendLine($"내용: {summary}");
-            builder.AppendLine($"출처: {sourceLabel}");
-            if (index < targetCount - 1)
+            if (tableMode)
+            {
+                builder.AppendLine(
+                    $"| {index + 1} | {SanitizeTableCell(title)} | {SanitizeTableCell(summary)} | {SanitizeTableCell(sourceLabel)} |"
+                );
+            }
+            else
+            {
+                builder.AppendLine($"{index + 1}. {title}");
+                builder.AppendLine($"- 핵심: {summary}");
+                builder.AppendLine($"- 출처: {sourceLabel}");
+            }
+
+            if (!tableMode && index < targetCount - 1)
             {
                 builder.AppendLine();
             }
@@ -7922,11 +9251,6 @@ public sealed partial class CommandService
 
     private static IReadOnlyList<string> ResolveWebUrls(string input, IReadOnlyList<string>? requestUrls, bool webSearchEnabled)
     {
-        if (!webSearchEnabled)
-        {
-            return Array.Empty<string>();
-        }
-
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         if (requestUrls != null)
         {
@@ -7974,11 +9298,32 @@ public sealed partial class CommandService
         return uri.AbsoluteUri;
     }
 
-    private async Task<string> BuildWebContextBlockAsync(IReadOnlyList<string> urls, CancellationToken cancellationToken)
+    private async Task<string> BuildWebContextBlockAsync(string input, IReadOnlyList<string> urls, CancellationToken cancellationToken)
     {
         if (urls.Count == 0)
         {
             return string.Empty;
+        }
+
+        if (_llmRouter.HasGeminiApiKey())
+        {
+            var summaryPrompt = BuildGeminiUrlContextSummaryPrompt(input, urls);
+            var summaryResponse = await _llmRouter.GenerateGeminiUrlContextChatAsync(
+                summaryPrompt,
+                ResolveUrlContextLlmModel(),
+                maxOutputTokens: 768,
+                _config.GeminiWebTimeoutMs,
+                includeGoogleSearch: false,
+                cancellationToken
+            );
+            if (!IsGeminiUrlContextFailureText(summaryResponse.Text))
+            {
+                var summary = SanitizeChatOutput(summaryResponse.Text);
+                if (!string.IsNullOrWhiteSpace(summary))
+                {
+                    return "[URL 참조]\n" + summary.Trim();
+                }
+            }
         }
 
         var blocks = new List<string>();
@@ -7999,6 +9344,30 @@ public sealed partial class CommandService
         }
 
         return "[웹 참조]\n" + string.Join("\n\n", blocks);
+    }
+
+    private string BuildGeminiUrlContextSummaryPrompt(string input, IReadOnlyList<string> urls)
+    {
+        var normalizedInput = (input ?? string.Empty).Trim();
+        var builder = new StringBuilder();
+        builder.AppendLine("너는 URL 컨텍스트 전처리 요약기다.");
+        builder.AppendLine("- 제공된 URL 내용만 사용해 후속 LLM이 참고할 요약 블록을 만들어라.");
+        builder.AppendLine("- 한국어.");
+        builder.AppendLine("- 최대 8줄.");
+        builder.AppendLine("- 군더더기 서론/결론/출처 링크 섹션 금지.");
+        builder.AppendLine("- 사실, 수치, 핵심 규칙, 중요한 예제 위주로만 정리해라.");
+        builder.AppendLine("- 각 줄은 독립적인 짧은 문장 또는 불릿으로 작성해라.");
+        builder.AppendLine();
+        builder.AppendLine("사용자 요청:");
+        builder.AppendLine(normalizedInput.Length == 0 ? "URL 내용을 요약해줘." : normalizedInput);
+        builder.AppendLine();
+        builder.AppendLine("참조 URL:");
+        foreach (var url in urls.Take(3))
+        {
+            builder.AppendLine($"- {url}");
+        }
+
+        return builder.ToString().Trim();
     }
 
     private async Task<string> FetchWebSnippetAsync(string url, CancellationToken cancellationToken)
@@ -8776,27 +10145,93 @@ public sealed partial class CommandService
         var effectiveModel = normalized == "groq"
             ? ResolveGroqModelForInput(input, model)
             : ResolveProviderModel(normalized, model);
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var timeoutSeconds = normalized switch
         {
             "copilot" => Math.Max(120, _config.LlmTimeoutSec * 3),
             "cerebras" => Math.Max(8, _config.CerebrasTimeoutSec),
             _ => Math.Max(8, _config.LlmTimeoutSec)
         };
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        var maxAttempts = normalized == "gemini" ? 2 : 1;
+        LlmSingleChatResult? lastResult = null;
+        Exception? lastException = null;
 
-        try
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            return await GenerateByProviderAsync(normalized, model, input, timeoutCts.Token, maxOutputTokens);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+            try
+            {
+                lastResult = await GenerateByProviderAsync(normalized, model, input, timeoutCts.Token, maxOutputTokens);
+                lastException = null;
+                if (normalized == "gemini"
+                    && attempt < maxAttempts
+                    && ShouldRetryTransientGeminiFailure(lastResult.Text))
+                {
+                    Console.Error.WriteLine(
+                        $"[gemini] transient failure detected, retrying once (attempt={attempt}, model={effectiveModel})"
+                    );
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                return lastResult;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastResult = new LlmSingleChatResult(normalized, effectiveModel, $"{normalized} 응답 시간이 초과되었습니다.");
+                lastException = null;
+                if (normalized == "gemini" && attempt < maxAttempts)
+                {
+                    Console.Error.WriteLine(
+                        $"[gemini] provider timeout detected, retrying once (attempt={attempt}, model={effectiveModel})"
+                    );
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                return lastResult;
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                if (normalized == "gemini" && attempt < maxAttempts)
+                {
+                    Console.Error.WriteLine(
+                        $"[gemini] provider exception detected, retrying once (attempt={attempt}, model={effectiveModel}, error={ex.Message})"
+                    );
+                    await Task.Delay(250, cancellationToken);
+                    continue;
+                }
+
+                break;
+            }
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+
+        if (lastResult != null)
         {
-            return new LlmSingleChatResult(normalized, effectiveModel, $"{normalized} 응답 시간이 초과되었습니다.");
+            return lastResult;
         }
-        catch (Exception ex)
+
+        return new LlmSingleChatResult(
+            normalized,
+            effectiveModel,
+            $"{normalized} 호출 오류: {lastException?.Message ?? "unknown"}"
+        );
+    }
+
+    private static bool ShouldRetryTransientGeminiFailure(string? text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
         {
-            return new LlmSingleChatResult(normalized, effectiveModel, $"{normalized} 호출 오류: {ex.Message}");
+            return false;
         }
+
+        return normalized.StartsWith("gemini 호출 오류:", StringComparison.Ordinal)
+               && (normalized.Contains("the operation was canceled", StringComparison.Ordinal)
+                   || normalized.Contains("the operation was cancelled", StringComparison.Ordinal))
+            || normalized.StartsWith("gemini 응답 시간이 초과되었습니다.", StringComparison.Ordinal);
     }
 
     private async Task<LlmSingleChatResult> ExecuteGroqSingleChainAsync(
@@ -10162,6 +11597,27 @@ public sealed partial class CommandService
     {
         var localNext = routine.NextRunUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
         var localLast = routine.LastRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
+        var scheduleKind = "daily";
+        var timeOfDay = $"{routine.Hour:D2}:{routine.Minute:D2}";
+        int? dayOfMonth = null;
+        var weekdays = Array.Empty<int>();
+        if (TryParseSupportedRoutineCronExpression(
+                routine.CronScheduleExpr,
+                out var parsedKind,
+                out var parsedHour,
+                out var parsedMinute,
+                out var parsedDayOfMonth,
+                out var parsedWeekdays,
+                out _,
+                out _
+            ))
+        {
+            scheduleKind = parsedKind;
+            timeOfDay = $"{parsedHour:D2}:{parsedMinute:D2}";
+            dayOfMonth = parsedDayOfMonth;
+            weekdays = parsedWeekdays;
+        }
+
         return new RoutineSummary(
             routine.Id,
             routine.Title,
@@ -10174,7 +11630,14 @@ public sealed partial class CommandService
             routine.LastOutput,
             routine.ScriptPath,
             routine.Language,
-            routine.CoderModel
+            routine.CoderModel,
+            scheduleKind,
+            routine.CronScheduleExpr,
+            routine.TimezoneId,
+            timeOfDay,
+            dayOfMonth,
+            weekdays,
+            BuildRoutineRunSummaries(routine)
         );
     }
 
@@ -10218,6 +11681,394 @@ public sealed partial class CommandService
         }
 
         return new RoutineSchedule(hour, minute, $"매일 {hour:D2}:{minute:D2}");
+    }
+
+    private static RoutineScheduleConfig BuildDailyRoutineScheduleConfig(int hour, int minute, string timezoneId)
+    {
+        var resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        return new RoutineScheduleConfig(
+            "daily",
+            hour,
+            minute,
+            BuildRoutineScheduleDisplay("daily", hour, minute, resolvedTimezoneId, null, Array.Empty<int>()),
+            resolvedTimezoneId,
+            $"{minute} {hour} * * *",
+            null,
+            Array.Empty<int>()
+        );
+    }
+
+    private static bool TryBuildRoutineScheduleConfig(
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        out RoutineScheduleConfig config,
+        out string error
+    )
+    {
+        config = BuildDailyRoutineScheduleConfig(8, 0, TimeZoneInfo.Local.Id);
+        error = string.Empty;
+        var kind = NormalizeRoutineScheduleKind(scheduleKind);
+        if (!TryParseRoutineTimeOfDay(scheduleTime, out var hour, out var minute, out error))
+        {
+            return false;
+        }
+
+        string resolvedTimezoneId;
+        try
+        {
+            resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        }
+        catch (Exception ex)
+        {
+            error = $"시간대가 올바르지 않습니다: {ex.Message}";
+            return false;
+        }
+
+        if (string.Equals(kind, "weekly", StringComparison.Ordinal))
+        {
+            var normalizedWeekdays = NormalizeRoutineWeekdays(weekdays);
+            if (normalizedWeekdays.Length == 0)
+            {
+                error = "주간 스케줄은 요일을 하나 이상 선택해야 합니다.";
+                return false;
+            }
+
+            config = new RoutineScheduleConfig(
+                kind,
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay(kind, hour, minute, resolvedTimezoneId, null, normalizedWeekdays),
+                resolvedTimezoneId,
+                $"{minute} {hour} * * {string.Join(",", normalizedWeekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}",
+                null,
+                normalizedWeekdays
+            );
+            return true;
+        }
+
+        if (string.Equals(kind, "monthly", StringComparison.Ordinal))
+        {
+            var normalizedDayOfMonth = dayOfMonth ?? 1;
+            if (normalizedDayOfMonth < 1 || normalizedDayOfMonth > 31)
+            {
+                error = "월간 스케줄의 날짜는 1일부터 31일 사이여야 합니다.";
+                return false;
+            }
+
+            config = new RoutineScheduleConfig(
+                kind,
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay(kind, hour, minute, resolvedTimezoneId, normalizedDayOfMonth, Array.Empty<int>()),
+                resolvedTimezoneId,
+                $"{minute} {hour} {normalizedDayOfMonth} * *",
+                normalizedDayOfMonth,
+                Array.Empty<int>()
+            );
+            return true;
+        }
+
+        config = new RoutineScheduleConfig(
+            "daily",
+            hour,
+            minute,
+            BuildRoutineScheduleDisplay("daily", hour, minute, resolvedTimezoneId, null, Array.Empty<int>()),
+            resolvedTimezoneId,
+            $"{minute} {hour} * * *",
+            null,
+            Array.Empty<int>()
+        );
+        return true;
+    }
+
+    private static bool TryParseRoutineTimeOfDay(string? rawTime, out int hour, out int minute, out string error)
+    {
+        hour = 8;
+        minute = 0;
+        error = string.Empty;
+        var normalized = (rawTime ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        var match = Regex.Match(normalized, @"^(?<hour>\d{1,2})\s*:\s*(?<minute>\d{1,2})$");
+        if (!match.Success
+            || !int.TryParse(match.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out hour)
+            || !int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute)
+            || hour < 0
+            || hour > 23
+            || minute < 0
+            || minute > 59)
+        {
+            error = "시간 형식은 HH:MM 이어야 합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string NormalizeRoutineScheduleKind(string? kind)
+    {
+        var normalized = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "weekly" => "weekly",
+            "monthly" => "monthly",
+            _ => "daily"
+        };
+    }
+
+    private static int[] NormalizeRoutineWeekdays(IReadOnlyList<int>? weekdays)
+    {
+        if (weekdays == null || weekdays.Count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        var normalized = weekdays
+            .Select(static value => value == 7 ? 0 : value)
+            .Where(static value => value >= 0 && value <= 6)
+            .Distinct()
+            .OrderBy(static value => value == 0 ? 7 : value)
+            .ToArray();
+        return normalized;
+    }
+
+    private static bool RoutineMatchesSchedule(RoutineDefinition routine, RoutineScheduleConfig config)
+    {
+        return string.Equals(routine.ScheduleText, config.Display, StringComparison.Ordinal)
+            && string.Equals(routine.TimezoneId, config.TimezoneId, StringComparison.Ordinal)
+            && routine.Hour == config.Hour
+            && routine.Minute == config.Minute
+            && string.Equals(routine.CronScheduleExpr ?? string.Empty, config.CronExpr, StringComparison.Ordinal)
+            && string.Equals(NormalizeCronScheduleKind(routine.CronScheduleKind), "cron", StringComparison.Ordinal);
+    }
+
+    private static string BuildRoutineScheduleDisplay(
+        string kind,
+        int hour,
+        int minute,
+        string timezoneId,
+        int? dayOfMonth,
+        IReadOnlyList<int> weekdays
+    )
+    {
+        var suffix = string.Equals(timezoneId, TimeZoneInfo.Local.Id, StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : $" ({timezoneId})";
+        if (string.Equals(kind, "weekly", StringComparison.Ordinal))
+        {
+            return $"매주 {FormatRoutineWeekdays(weekdays)} {hour:D2}:{minute:D2}{suffix}";
+        }
+
+        if (string.Equals(kind, "monthly", StringComparison.Ordinal))
+        {
+            return $"매월 {Math.Clamp(dayOfMonth ?? 1, 1, 31)}일 {hour:D2}:{minute:D2}{suffix}";
+        }
+
+        return $"매일 {hour:D2}:{minute:D2}{suffix}";
+    }
+
+    private static string FormatRoutineWeekdays(IReadOnlyList<int> weekdays)
+    {
+        if (weekdays == null || weekdays.Count == 0)
+        {
+            return "월";
+        }
+
+        return string.Join(", ", weekdays.Select(FormatRoutineWeekday));
+    }
+
+    private static string FormatRoutineWeekday(int value)
+    {
+        return value switch
+        {
+            0 => "일",
+            1 => "월",
+            2 => "화",
+            3 => "수",
+            4 => "목",
+            5 => "금",
+            6 => "토",
+            _ => "월"
+        };
+    }
+
+    private static bool TryParseSupportedRoutineCronExpression(
+        string? expr,
+        out string kind,
+        out int hour,
+        out int minute,
+        out int? dayOfMonth,
+        out int[] weekdays,
+        out string normalizedExpr,
+        out string error
+    )
+    {
+        kind = "daily";
+        hour = 0;
+        minute = 0;
+        dayOfMonth = null;
+        weekdays = Array.Empty<int>();
+        normalizedExpr = "0 8 * * *";
+        error = "지원되지 않는 cron 식입니다.";
+
+        var tokens = (expr ?? string.Empty)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length != 5)
+        {
+            error = "cron 식은 5개 필드(m h dom mon dow)여야 합니다.";
+            return false;
+        }
+
+        if (!int.TryParse(tokens[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out minute)
+            || minute < 0 || minute > 59)
+        {
+            error = "cron 분은 0-59여야 합니다.";
+            return false;
+        }
+
+        if (!int.TryParse(tokens[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out hour)
+            || hour < 0 || hour > 23)
+        {
+            error = "cron 시는 0-23이어야 합니다.";
+            return false;
+        }
+
+        if (!string.Equals(tokens[3], "*", StringComparison.Ordinal))
+        {
+            error = "cron month 필드는 현재 '*'만 지원합니다.";
+            return false;
+        }
+
+        if (string.Equals(tokens[2], "*", StringComparison.Ordinal)
+            && string.Equals(tokens[4], "*", StringComparison.Ordinal))
+        {
+            kind = "daily";
+            normalizedExpr = $"{minute} {hour} * * *";
+            return true;
+        }
+
+        if (string.Equals(tokens[2], "*", StringComparison.Ordinal))
+        {
+            var parsedWeekdays = new List<int>();
+            foreach (var rawPart in tokens[4].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!int.TryParse(rawPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                {
+                    error = "주간 cron 요일은 0-6 또는 7(일요일)만 지원합니다.";
+                    return false;
+                }
+
+                if (parsed == 7)
+                {
+                    parsed = 0;
+                }
+
+                if (parsed < 0 || parsed > 6)
+                {
+                    error = "주간 cron 요일은 0-6 또는 7(일요일)만 지원합니다.";
+                    return false;
+                }
+
+                parsedWeekdays.Add(parsed);
+            }
+
+            weekdays = NormalizeRoutineWeekdays(parsedWeekdays);
+            if (weekdays.Length == 0)
+            {
+                error = "주간 cron 요일은 하나 이상 필요합니다.";
+                return false;
+            }
+
+            kind = "weekly";
+            normalizedExpr = $"{minute} {hour} * * {string.Join(",", weekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}";
+            return true;
+        }
+
+        if (string.Equals(tokens[4], "*", StringComparison.Ordinal)
+            && int.TryParse(tokens[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDayOfMonth)
+            && parsedDayOfMonth >= 1
+            && parsedDayOfMonth <= 31)
+        {
+            kind = "monthly";
+            dayOfMonth = parsedDayOfMonth;
+            normalizedExpr = $"{minute} {hour} {parsedDayOfMonth} * *";
+            return true;
+        }
+
+        error = "지원되는 cron 형식은 daily/weekly/monthly 뿐입니다.";
+        return false;
+    }
+
+    private static IReadOnlyList<RoutineRunSummary> BuildRoutineRunSummaries(RoutineDefinition routine)
+    {
+        return BuildCronRunEntries(routine)
+            .OrderByDescending(static entry => entry.Ts)
+            .Take(20)
+            .Select(entry => new RoutineRunSummary(
+                entry.Ts,
+                entry.RunAtMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(entry.RunAtMs.Value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    : "-",
+                string.IsNullOrWhiteSpace(entry.Status) ? "-" : entry.Status!,
+                entry.Summary ?? string.Empty,
+                string.IsNullOrWhiteSpace(entry.Error) ? null : entry.Error,
+                entry.DurationMs,
+                FormatRoutineDuration(entry.DurationMs),
+                entry.NextRunAtMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(entry.NextRunAtMs.Value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    : null
+            ))
+            .ToArray();
+    }
+
+    private static string FormatRoutineDuration(long? durationMs)
+    {
+        if (!durationMs.HasValue || durationMs.Value < 0)
+        {
+            return "-";
+        }
+
+        if (durationMs.Value < 1000)
+        {
+            return $"{durationMs.Value}ms";
+        }
+
+        var seconds = durationMs.Value / 1000d;
+        if (seconds < 60d)
+        {
+            return $"{seconds:0.0}s";
+        }
+
+        var minutes = seconds / 60d;
+        return $"{minutes:0.0}m";
+    }
+
+    private static string WriteRoutineScript(string runDir, string language, string code)
+    {
+        var scriptFileName = string.Equals(language, "python", StringComparison.OrdinalIgnoreCase) ? "run.py" : "run.sh";
+        var scriptPath = Path.Combine(runDir, scriptFileName);
+        File.WriteAllText(scriptPath, code, Encoding.UTF8);
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                File.SetUnixFileMode(scriptPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+            catch
+            {
+            }
+        }
+
+        return scriptPath;
     }
 
     private static string BuildRoutineTitle(string request)

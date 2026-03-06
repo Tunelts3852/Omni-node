@@ -951,6 +951,39 @@ public sealed class WebSocketGateway
                     continue;
                 }
 
+                if (message.Type == "rename_memory_note")
+                {
+                    if (string.IsNullOrWhiteSpace(message.NoteName))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"note name is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(message.NewName))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"newName is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var renamed = _commandService.RenameMemoryNote(message.NoteName.Trim(), message.NewName.Trim());
+                    await SendTextAsync(
+                        socket,
+                        sendLock,
+                        "{"
+                        + "\"type\":\"memory_note_renamed\","
+                        + $"\"ok\":{(renamed.Result.Ok ? "true" : "false")},"
+                        + $"\"message\":\"{EscapeJson(renamed.Result.Message)}\","
+                        + $"\"oldName\":\"{EscapeJson(renamed.Result.OldName)}\","
+                        + $"\"newName\":\"{EscapeJson(renamed.Result.NewName)}\","
+                        + $"\"relinkedConversations\":{renamed.RelinkedConversations},"
+                        + $"\"note\":{BuildMemoryNoteJson(renamed.Result.Note)}"
+                        + "}",
+                        cancellationToken
+                    );
+                    await SendMemoryNotesAsync(socket, sendLock, cancellationToken);
+                    continue;
+                }
+
                 if (message.Type == "delete_memory_notes")
                 {
                     var deleted = _commandService.DeleteMemoryNotes(message.MemoryNotes);
@@ -1832,7 +1865,47 @@ public sealed class WebSocketGateway
                         continue;
                     }
 
-                    var result = await _commandService.CreateRoutineAsync(message.Text.Trim(), "web", cancellationToken);
+                    var result = await _commandService.CreateRoutineAsync(
+                        message.Text.Trim(),
+                        message.Title,
+                        message.ScheduleKind,
+                        message.ScheduleTime,
+                        message.Weekdays,
+                        message.DayOfMonth,
+                        message.TimezoneId,
+                        "web",
+                        cancellationToken
+                    );
+                    await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
+                    await SendRoutinesAsync(socket, sendLock, cancellationToken);
+                    continue;
+                }
+
+                if (message.Type == "update_routine")
+                {
+                    if (string.IsNullOrWhiteSpace(message.RoutineId))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routineId is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(message.Text))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routine request is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var result = await _commandService.UpdateRoutineAsync(
+                        message.RoutineId.Trim(),
+                        message.Text.Trim(),
+                        message.Title,
+                        message.ScheduleKind,
+                        message.ScheduleTime,
+                        message.Weekdays,
+                        message.DayOfMonth,
+                        message.TimezoneId,
+                        cancellationToken
+                    );
                     await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
                     await SendRoutinesAsync(socket, sendLock, cancellationToken);
                     continue;
@@ -4386,11 +4459,14 @@ public sealed class WebSocketGateway
             + $"\"retryReason\":\"{EscapeJson(retryDirective.RetryReason)}\","
             + $"\"retryAttempt\":{Math.Max(0, result.RetryAttempt)},"
             + $"\"retryMaxAttempts\":{Math.Max(0, result.RetryMaxAttempts)},"
-            + $"\"retryStopReason\":\"{EscapeJson(normalizedRetryStopReason)}\""
+            + $"\"retryStopReason\":\"{EscapeJson(normalizedRetryStopReason)}\","
+            + $"\"latency\":{BuildChatLatencyJson(result.Latency)}"
             + "}",
             cancellationToken
         );
-        if (result.Latency != null && result.Route.Equals("gemini-web-single", StringComparison.OrdinalIgnoreCase))
+        if (result.Latency != null
+            && (result.Route.Equals("gemini-web-single", StringComparison.OrdinalIgnoreCase)
+                || result.Route.Equals("gemini-url-single", StringComparison.OrdinalIgnoreCase)))
         {
             _auditLogger.Log(
                 "web",
@@ -4620,6 +4696,32 @@ public sealed class WebSocketGateway
         return builder.ToString();
     }
 
+    private static string BuildChatLatencyJson(ChatLatencyMetrics? latency)
+    {
+        if (latency == null)
+        {
+            return "null";
+        }
+
+        var serverTotalMs = Math.Max(
+            0L,
+            latency.DecisionMs
+            + latency.PromptBuildMs
+            + latency.FullResponseMs
+            + latency.SanitizeMs
+        );
+
+        return "{"
+            + $"\"decisionMs\":{Math.Max(0L, latency.DecisionMs).ToString(CultureInfo.InvariantCulture)},"
+            + $"\"promptBuildMs\":{Math.Max(0L, latency.PromptBuildMs).ToString(CultureInfo.InvariantCulture)},"
+            + $"\"firstChunkMs\":{Math.Max(0L, latency.FirstChunkMs).ToString(CultureInfo.InvariantCulture)},"
+            + $"\"fullResponseMs\":{Math.Max(0L, latency.FullResponseMs).ToString(CultureInfo.InvariantCulture)},"
+            + $"\"sanitizeMs\":{Math.Max(0L, latency.SanitizeMs).ToString(CultureInfo.InvariantCulture)},"
+            + $"\"serverTotalMs\":{serverTotalMs.ToString(CultureInfo.InvariantCulture)},"
+            + $"\"decisionPath\":\"{EscapeJson(latency.DecisionPath)}\""
+            + "}";
+    }
+
     private static string BuildMemoryNoteJson(MemoryNoteSaveResult? note)
     {
         if (note == null)
@@ -4636,20 +4738,65 @@ public sealed class WebSocketGateway
 
     private static string BuildRoutineJson(RoutineSummary routine)
     {
+        var builder = new StringBuilder();
+        builder.Append("{");
+        builder.Append($"\"id\":\"{EscapeJson(routine.Id)}\",");
+        builder.Append($"\"title\":\"{EscapeJson(routine.Title)}\",");
+        builder.Append($"\"request\":\"{EscapeJson(routine.Request)}\",");
+        builder.Append($"\"scheduleText\":\"{EscapeJson(routine.ScheduleText)}\",");
+        builder.Append($"\"enabled\":{(routine.Enabled ? "true" : "false")},");
+        builder.Append($"\"nextRunLocal\":\"{EscapeJson(routine.NextRunLocal)}\",");
+        builder.Append($"\"lastRunLocal\":\"{EscapeJson(routine.LastRunLocal)}\",");
+        builder.Append($"\"lastStatus\":\"{EscapeJson(routine.LastStatus)}\",");
+        builder.Append($"\"lastOutput\":\"{EscapeJson(TrimTo(routine.LastOutput, 1200))}\",");
+        builder.Append($"\"scriptPath\":\"{EscapeJson(routine.ScriptPath)}\",");
+        builder.Append($"\"language\":\"{EscapeJson(routine.Language)}\",");
+        builder.Append($"\"coderModel\":\"{EscapeJson(routine.CoderModel)}\",");
+        builder.Append($"\"scheduleKind\":\"{EscapeJson(routine.ScheduleKind)}\",");
+        builder.Append($"\"scheduleExpr\":{ToJsonStringOrNull(routine.ScheduleExpr)},");
+        builder.Append($"\"timezoneId\":\"{EscapeJson(routine.TimezoneId)}\",");
+        builder.Append($"\"timeOfDay\":\"{EscapeJson(routine.TimeOfDay)}\",");
+        builder.Append($"\"dayOfMonth\":{(routine.DayOfMonth.HasValue ? routine.DayOfMonth.Value.ToString(CultureInfo.InvariantCulture) : "null")},");
+        builder.Append("\"weekdays\":[");
+        for (var i = 0; i < routine.Weekdays.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(",");
+            }
+
+            builder.Append(routine.Weekdays[i].ToString(CultureInfo.InvariantCulture));
+        }
+
+        builder.Append("],");
+        builder.Append("\"runs\":[");
+        for (var i = 0; i < routine.Runs.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(",");
+            }
+
+            builder.Append(BuildRoutineRunJson(routine.Runs[i]));
+        }
+
+        builder.Append("]");
+        builder.Append("}");
+        return builder.ToString();
+    }
+
+    private static string BuildRoutineRunJson(RoutineRunSummary run)
+    {
         return "{"
-               + $"\"id\":\"{EscapeJson(routine.Id)}\","
-               + $"\"title\":\"{EscapeJson(routine.Title)}\","
-               + $"\"request\":\"{EscapeJson(routine.Request)}\","
-               + $"\"scheduleText\":\"{EscapeJson(routine.ScheduleText)}\","
-               + $"\"enabled\":{(routine.Enabled ? "true" : "false")},"
-               + $"\"nextRunLocal\":\"{EscapeJson(routine.NextRunLocal)}\","
-               + $"\"lastRunLocal\":\"{EscapeJson(routine.LastRunLocal)}\","
-               + $"\"lastStatus\":\"{EscapeJson(routine.LastStatus)}\","
-               + $"\"lastOutput\":\"{EscapeJson(TrimTo(routine.LastOutput, 1200))}\","
-               + $"\"scriptPath\":\"{EscapeJson(routine.ScriptPath)}\","
-               + $"\"language\":\"{EscapeJson(routine.Language)}\","
-               + $"\"coderModel\":\"{EscapeJson(routine.CoderModel)}\""
-               + "}";
+            + $"\"ts\":{run.Ts.ToString(CultureInfo.InvariantCulture)},"
+            + $"\"runAtLocal\":\"{EscapeJson(run.RunAtLocal)}\","
+            + $"\"status\":\"{EscapeJson(run.Status)}\","
+            + $"\"summary\":\"{EscapeJson(run.Summary)}\","
+            + $"\"error\":{ToJsonStringOrNull(run.Error)},"
+            + $"\"durationMs\":{(run.DurationMs.HasValue ? run.DurationMs.Value.ToString(CultureInfo.InvariantCulture) : "null")},"
+            + $"\"durationText\":\"{EscapeJson(run.DurationText)}\","
+            + $"\"nextRunLocal\":{ToJsonStringOrNull(run.NextRunLocal)}"
+            + "}";
     }
 
     private static string TrimTo(string value, int maxChars)
@@ -5372,8 +5519,12 @@ public sealed class WebSocketGateway
             string? category = null;
             string? language = null;
             string? noteName = null;
+            string? newName = null;
             string? filePath = null;
             string? routineId = null;
+            string? scheduleKind = null;
+            string? scheduleTime = null;
+            string? timezoneId = null;
             string? telegramBotToken = null;
             string? telegramChatId = null;
             string? groqApiKey = null;
@@ -5393,6 +5544,7 @@ public sealed class WebSocketGateway
             double? minScore = null;
             int? fromLine = null;
             int? lines = null;
+            int? dayOfMonth = null;
             bool? enabled = null;
             bool? compactConversation = null;
             bool? includeDisabled = null;
@@ -5402,6 +5554,7 @@ public sealed class WebSocketGateway
             var memoryNotes = new List<string>();
             var tags = new List<string>();
             var kinds = new List<string>();
+            var weekdays = new List<int>();
             var webUrls = new List<string>();
             var webSearchEnabled = true;
             var persist = false;
@@ -5680,6 +5833,11 @@ public sealed class WebSocketGateway
                 noteName = noteNameElement.GetString();
             }
 
+            if (doc.RootElement.TryGetProperty("newName", out var newNameElement))
+            {
+                newName = newNameElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("filePath", out var filePathElement))
             {
                 filePath = filePathElement.GetString();
@@ -5688,6 +5846,51 @@ public sealed class WebSocketGateway
             if (doc.RootElement.TryGetProperty("routineId", out var routineIdElement))
             {
                 routineId = routineIdElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("scheduleKind", out var scheduleKindElement))
+            {
+                scheduleKind = scheduleKindElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("scheduleTime", out var scheduleTimeElement))
+            {
+                scheduleTime = scheduleTimeElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("timezoneId", out var timezoneElement))
+            {
+                timezoneId = timezoneElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("dayOfMonth", out var dayOfMonthElement))
+            {
+                if (dayOfMonthElement.ValueKind == JsonValueKind.Number && dayOfMonthElement.TryGetInt32(out var parsedDayOfMonth))
+                {
+                    dayOfMonth = parsedDayOfMonth;
+                }
+                else if (dayOfMonthElement.ValueKind == JsonValueKind.String
+                         && int.TryParse(dayOfMonthElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDayOfMonthString))
+                {
+                    dayOfMonth = parsedDayOfMonthString;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("weekdays", out var weekdaysElement)
+                && weekdaysElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in weekdaysElement.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out var weekdayValue))
+                    {
+                        weekdays.Add(weekdayValue);
+                    }
+                    else if (item.ValueKind == JsonValueKind.String
+                             && int.TryParse(item.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var weekdayStringValue))
+                    {
+                        weekdays.Add(weekdayStringValue);
+                    }
+                }
             }
 
             if (doc.RootElement.TryGetProperty("memoryNotes", out var memoryNotesElement)
@@ -6141,8 +6344,12 @@ public sealed class WebSocketGateway
                 Category = category,
                 Language = language,
                 NoteName = noteName,
+                NewName = newName,
                 FilePath = filePath,
                 RoutineId = routineId,
+                ScheduleKind = scheduleKind,
+                ScheduleTime = scheduleTime,
+                TimezoneId = timezoneId,
                 TelegramBotToken = telegramBotToken,
                 TelegramChatId = telegramChatId,
                 GroqApiKey = groqApiKey,
@@ -6162,6 +6369,7 @@ public sealed class WebSocketGateway
                 MinScore = minScore,
                 FromLine = fromLine,
                 Lines = lines,
+                DayOfMonth = dayOfMonth,
                 Enabled = enabled,
                 CompactConversation = compactConversation,
                 IncludeDisabled = includeDisabled,
@@ -6169,6 +6377,7 @@ public sealed class WebSocketGateway
                 Thread = thread,
                 Tags = tags.Count == 0 ? Array.Empty<string>() : tags.ToArray(),
                 Kinds = kinds.Count == 0 ? Array.Empty<string>() : kinds.ToArray(),
+                Weekdays = weekdays.Count == 0 ? Array.Empty<int>() : weekdays.ToArray(),
                 MemoryNotes = memoryNotes.Count == 0 ? Array.Empty<string>() : memoryNotes.ToArray(),
                 Attachments = attachments.Count == 0 ? Array.Empty<InputAttachment>() : attachments.ToArray(),
                 WebUrls = webUrls.Count == 0 ? Array.Empty<string>() : webUrls.ToArray(),
@@ -6492,8 +6701,12 @@ public sealed class WebSocketGateway
         public string? Category { get; set; }
         public string? Language { get; set; }
         public string? NoteName { get; set; }
+        public string? NewName { get; set; }
         public string? FilePath { get; set; }
         public string? RoutineId { get; set; }
+        public string? ScheduleKind { get; set; }
+        public string? ScheduleTime { get; set; }
+        public string? TimezoneId { get; set; }
         public string? TelegramBotToken { get; set; }
         public string? TelegramChatId { get; set; }
         public string? GroqApiKey { get; set; }
@@ -6513,6 +6726,7 @@ public sealed class WebSocketGateway
         public double? MinScore { get; set; }
         public int? FromLine { get; set; }
         public int? Lines { get; set; }
+        public int? DayOfMonth { get; set; }
         public bool? Enabled { get; set; }
         public bool? CompactConversation { get; set; }
         public bool? IncludeDisabled { get; set; }
@@ -6520,6 +6734,7 @@ public sealed class WebSocketGateway
         public bool? Thread { get; set; }
         public IReadOnlyList<string> Tags { get; set; } = Array.Empty<string>();
         public IReadOnlyList<string> Kinds { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<int> Weekdays { get; set; } = Array.Empty<int>();
         public IReadOnlyList<string> MemoryNotes { get; set; } = Array.Empty<string>();
         public IReadOnlyList<InputAttachment> Attachments { get; set; } = Array.Empty<InputAttachment>();
         public IReadOnlyList<string> WebUrls { get; set; } = Array.Empty<string>();

@@ -24,7 +24,10 @@ public sealed partial class CommandService
     private const int TelegramLongContextTargetChars = 1200;
     private static readonly Regex CodeFenceRegex = new("```([a-zA-Z0-9#+._-]*)\\s*\\n(.*?)```", RegexOptions.Compiled | RegexOptions.Singleline);
     private static readonly Regex JsonObjectRegex = new("\\{[\\s\\S]*\\}", RegexOptions.Compiled);
-    private static readonly Regex LeadingTitleNoiseRegex = new(@"^(?:[-*#>\d\.\)\(\s]+)", RegexOptions.Compiled);
+    private static readonly Regex LeadingTitleNoiseRegex = new(
+        @"^(?:(?:[-*#>]+\s*)|(?:\(\d+\)\s+)|(?:\d+[.)]\s+))+",
+        RegexOptions.Compiled
+    );
     private static readonly Regex RepeatedChunkRegex = new(@"(.{12,120}?)(?:\s+\1){2,}", RegexOptions.Compiled | RegexOptions.Singleline);
     private static readonly Regex OuterHtmlContainerRegex = new(@"^\s*<\s*(p|pre|code)\b[^>]*>([\s\S]*)</\s*\1\s*>\s*$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex JsonTrailingCommaRegex = new(@",\s*([}\]])", RegexOptions.Compiled);

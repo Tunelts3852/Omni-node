@@ -241,9 +241,14 @@ public sealed partial class CommandService
                 return;
             }
 
-            var firstUser = thread.Messages.FirstOrDefault(x => x.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Text?.Trim();
-            var firstAssistant = thread.Messages.FirstOrDefault(x => x.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase))?.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(firstUser))
+            var titleLooksFailed = IsLikelyProviderFailureText(thread.Title);
+            var selectedUser = titleLooksFailed
+                ? thread.Messages.LastOrDefault(x => x.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Text?.Trim()
+                : thread.Messages.FirstOrDefault(x => x.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Text?.Trim();
+            var selectedAssistant = titleLooksFailed
+                ? SelectAssistantTextForAutoTitle(thread, preferLatest: true)
+                : SelectAssistantTextForAutoTitle(thread, preferLatest: false);
+            if (string.IsNullOrWhiteSpace(selectedUser))
             {
                 return;
             }
@@ -255,7 +260,7 @@ public sealed partial class CommandService
             }
 
             var title = string.Empty;
-            if (provider != "none" && !string.IsNullOrWhiteSpace(firstAssistant))
+            if (provider != "none" && !string.IsNullOrWhiteSpace(selectedAssistant))
             {
                 var model = ResolveModel(provider, preferredModel);
                 var prompt = $"""
@@ -266,18 +271,26 @@ public sealed partial class CommandService
                             - 제목만 출력
 
                             [사용자]
-                            {firstUser}
+                            {selectedUser}
 
                             [어시스턴트]
-                            {TruncateForTitle(firstAssistant)}
+                            {TruncateForTitle(selectedAssistant)}
                             """;
                 var generated = await GenerateByProviderAsync(provider, model, prompt, cancellationToken);
-                title = NormalizeConversationTitle(generated.Text);
+                if (!IsLikelyProviderFailureText(generated.Text))
+                {
+                    title = NormalizeConversationTitle(generated.Text);
+                }
             }
 
             if (string.IsNullOrWhiteSpace(title))
             {
-                title = BuildFallbackConversationTitle(firstUser);
+                title = BuildFallbackConversationTitleFromAssistant(selectedAssistant);
+            }
+
+            if (string.IsNullOrWhiteSpace(title))
+            {
+                title = BuildFallbackConversationTitle(selectedUser);
             }
 
             _conversationStore.UpdateTitle(conversationId, title);
@@ -443,7 +456,7 @@ public sealed partial class CommandService
     {
         var userCount = thread.Messages.Count(x => x.Role.Equals("user", StringComparison.OrdinalIgnoreCase));
         var assistantCount = thread.Messages.Count(x => x.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase));
-        if (userCount != 1 || assistantCount != 1)
+        if (userCount < 1 || assistantCount < 1)
         {
             return false;
         }
@@ -452,6 +465,16 @@ public sealed partial class CommandService
         if (string.IsNullOrWhiteSpace(title))
         {
             return true;
+        }
+
+        if (IsLikelyProviderFailureText(title))
+        {
+            return true;
+        }
+
+        if (userCount != 1)
+        {
+            return false;
         }
 
         var defaultPrefix = $"{thread.Scope}-{thread.Mode}";
@@ -506,6 +529,39 @@ public sealed partial class CommandService
         return normalized.Length <= 32 ? normalized : normalized[..32].TrimEnd() + "...";
     }
 
+    private static string BuildFallbackConversationTitleFromAssistant(string assistantText)
+    {
+        var normalized = (assistantText ?? string.Empty)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || IsLikelyProviderFailureText(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"\[(?<text>[^\]]+)\]\((?<url>https?://[^)]+)\)", "${text}");
+        normalized = Regex.Replace(normalized, @"https?://\S+", string.Empty);
+        normalized = normalized.Replace("**", string.Empty, StringComparison.Ordinal)
+            .Replace("__", string.Empty, StringComparison.Ordinal)
+            .Replace("`", string.Empty, StringComparison.Ordinal);
+        normalized = Regex.Replace(normalized, @"^(요약|핵심|출처)\s*:\s*", string.Empty, RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"^(?:[-•▪*]\s+|\d+[.)]\s+)", string.Empty);
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ").Trim().Trim('"', '\'', '`', '“', '”', '‘', '’');
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var sentenceBoundary = normalized.IndexOfAny(new[] { '.', '!', '?', ':', ';' });
+        if (sentenceBoundary > 8)
+        {
+            normalized = normalized[..sentenceBoundary].Trim();
+        }
+
+        return normalized.Length <= 32 ? normalized : normalized[..32].TrimEnd() + "...";
+    }
+
     private static string TruncateForTitle(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -518,6 +574,68 @@ public sealed partial class CommandService
             .Replace("\n", " ", StringComparison.Ordinal)
             .Trim();
         return normalized.Length <= 260 ? normalized : normalized[..260] + "...";
+    }
+
+    private static string SelectAssistantTextForAutoTitle(ConversationThreadView thread, bool preferLatest)
+    {
+        var assistantMessages = thread.Messages
+            .Where(x => x.Role.Equals("assistant", StringComparison.OrdinalIgnoreCase))
+            .Select(x => (x.Text ?? string.Empty).Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+        if (assistantMessages.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var candidatePool = preferLatest
+            ? assistantMessages.AsEnumerable().Reverse()
+            : assistantMessages.AsEnumerable();
+        var usable = candidatePool.FirstOrDefault(x => !IsLikelyProviderFailureText(x));
+        if (!string.IsNullOrWhiteSpace(usable))
+        {
+            return usable;
+        }
+
+        return preferLatest ? assistantMessages[^1] : assistantMessages[0];
+    }
+
+    private static bool IsLikelyProviderFailureText(string? text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var lowered = normalized.ToLowerInvariant();
+        if (lowered.Contains("the operation was canceled", StringComparison.Ordinal)
+            || lowered.Contains("the operation was cancelled", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        if (lowered.EndsWith("api 키가 설정되지 않았습니다.", StringComparison.Ordinal)
+            || lowered.EndsWith("인증이 필요합니다.", StringComparison.Ordinal)
+            || lowered.EndsWith("응답이 비어 있습니다.", StringComparison.Ordinal)
+            || lowered.EndsWith("응답이 비어 있습니다. 다시 질문해 주세요.", StringComparison.Ordinal)
+            || lowered.Contains("응답 시간이 초과되었습니다.", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return lowered.StartsWith("groq 호출 오류:", StringComparison.Ordinal)
+            || lowered.StartsWith("gemini 호출 오류:", StringComparison.Ordinal)
+            || lowered.StartsWith("cerebras 호출 오류:", StringComparison.Ordinal)
+            || lowered.StartsWith("copilot 호출 오류:", StringComparison.Ordinal)
+            || lowered.StartsWith("groq 요청 실패:", StringComparison.Ordinal)
+            || lowered.StartsWith("gemini 요청 실패:", StringComparison.Ordinal)
+            || lowered.StartsWith("cerebras 요청 실패:", StringComparison.Ordinal)
+            || lowered.StartsWith("copilot 요청 실패:", StringComparison.Ordinal)
+            || lowered.StartsWith("gemini 웹검색 호출 오류:", StringComparison.Ordinal)
+            || lowered.StartsWith("gemini 웹검색 요청 실패:", StringComparison.Ordinal)
+            || lowered.StartsWith("gemini 웹검색 응답 시간이 초과되었습니다.", StringComparison.Ordinal)
+            || lowered.StartsWith("현재 groq 요청 한도를 초과했습니다.", StringComparison.Ordinal);
     }
 
     private async Task<LlmSingleChatResult?> TryFallbackFromGroqRateLimitAsync(string input, CancellationToken cancellationToken)
@@ -716,7 +834,46 @@ public sealed partial class CommandService
 
         merged = NormalizeSourceBlockToSingleLine(merged);
         merged = NormalizeStructuredLabelBlocks(merged);
+        merged = RemoveDanglingMarkdownBoldMarkers(merged);
         return merged;
+    }
+
+    private static string RemoveDanglingMarkdownBoldMarkers(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            var line = lines[i] ?? string.Empty;
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0
+                || trimmed.StartsWith("```", StringComparison.Ordinal)
+                || IsMarkdownTableRow(trimmed))
+            {
+                continue;
+            }
+
+            if (Regex.Matches(line, Regex.Escape("**"), RegexOptions.CultureInvariant).Count % 2 != 0)
+            {
+                line = line.Replace("**", string.Empty, StringComparison.Ordinal);
+            }
+
+            if (Regex.Matches(line, Regex.Escape("__"), RegexOptions.CultureInvariant).Count % 2 != 0)
+            {
+                line = line.Replace("__", string.Empty, StringComparison.Ordinal);
+            }
+
+            lines[i] = line;
+        }
+
+        return string.Join('\n', lines).Trim();
     }
 
     private static string NormalizeSourceBlockToSingleLine(string text)
@@ -834,6 +991,28 @@ public sealed partial class CommandService
                 continue;
             }
 
+            if (TryFormatStandaloneNumberedHeadlineLine(line, out var formattedHeadline))
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                output.Add(formattedHeadline);
+                continue;
+            }
+
+            if (TryNormalizeExistingStructuredMarkdownLabelLine(line, out var normalizedExistingLabel))
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+
+                output.Add(normalizedExistingLabel);
+                continue;
+            }
+
             if (TryFormatStructuredMarkdownLabelLine(line, out var formatted))
             {
                 if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
@@ -849,6 +1028,162 @@ public sealed partial class CommandService
         }
 
         return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static bool TryFormatStandaloneNumberedHeadlineLine(string line, out string formatted)
+    {
+        formatted = string.Empty;
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0 || normalized.Contains("**", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (!TryExtractStandaloneNumberedHeadlineParts(
+                normalized,
+                allowWrappedBold: false,
+                out var lead,
+                out var body,
+                out _))
+        {
+            return false;
+        }
+
+        formatted = lead.Length == 0
+            ? $"**{body}**"
+            : $"{lead}**{body}**";
+        return true;
+    }
+
+    private static bool IsStandaloneNumberedHeadlineLine(string line)
+    {
+        return TryExtractStandaloneNumberedHeadlineParts(
+            line,
+            allowWrappedBold: true,
+            out _,
+            out _,
+            out _);
+    }
+
+    private static bool TryExtractStandaloneNumberedHeadlineParts(
+        string line,
+        bool allowWrappedBold,
+        out string lead,
+        out string body,
+        out string headline)
+    {
+        lead = string.Empty;
+        body = string.Empty;
+        headline = string.Empty;
+
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0
+            || normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("[", StringComparison.Ordinal)
+            || normalized.StartsWith("```", StringComparison.Ordinal)
+            || IsMarkdownTableRow(normalized))
+        {
+            return false;
+        }
+
+        var pattern = allowWrappedBold
+            ? @"^(?<lead>(?:[-•▪]\s*)?)(?:\*\*(?<bodyBold>\d+[.)]\s*[^\n]+)\*\*|(?<bodyPlain>\d+[.)]\s*[^\n]+))$"
+            : @"^(?<lead>(?:[-•▪]\s*)?)(?<bodyPlain>\d+[.)]\s*[^\n]+)$";
+        var match = Regex.Match(normalized, pattern, RegexOptions.CultureInvariant);
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        lead = match.Groups["lead"].Value;
+        body = match.Groups["bodyBold"].Success
+            ? match.Groups["bodyBold"].Value.Trim()
+            : match.Groups["bodyPlain"].Value.Trim();
+        if (body.Length == 0)
+        {
+            return false;
+        }
+
+        var headlineMatch = Regex.Match(body, @"^\d+[.)]\s*(?<headline>.+)$", RegexOptions.CultureInvariant);
+        if (!headlineMatch.Success)
+        {
+            return false;
+        }
+
+        headline = Regex.Replace(headlineMatch.Groups["headline"].Value, @"\s{2,}", " ").Trim();
+        return LooksLikeStandaloneNumberedHeadlineText(headline);
+    }
+
+    private static bool LooksLikeStandaloneNumberedHeadlineText(string headline)
+    {
+        var normalized = (headline ?? string.Empty).Trim();
+        if (normalized.Length < 2 || normalized.Length > 140)
+        {
+            return false;
+        }
+
+        if (normalized.Contains(':', StringComparison.Ordinal)
+            || normalized.Contains('：', StringComparison.Ordinal)
+            || normalized.Contains('|', StringComparison.Ordinal)
+            || normalized.Contains("http://", StringComparison.OrdinalIgnoreCase)
+            || normalized.Contains("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (normalized.StartsWith("출처", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("요약", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("핵심", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (normalized.EndsWith(".", StringComparison.Ordinal)
+            || normalized.EndsWith("?", StringComparison.Ordinal)
+            || normalized.EndsWith("!", StringComparison.Ordinal)
+            || normalized.EndsWith("다.", StringComparison.Ordinal)
+            || normalized.EndsWith("요.", StringComparison.Ordinal)
+            || normalized.EndsWith("니다.", StringComparison.Ordinal)
+            || normalized.EndsWith("습니다.", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(normalized, @"[A-Za-z가-힣0-9]", RegexOptions.CultureInvariant);
+    }
+
+    private static bool TryNormalizeExistingStructuredMarkdownLabelLine(string line, out string formatted)
+    {
+        formatted = string.Empty;
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            normalized,
+            @"^(?<lead>(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?)\*\*(?<label>[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}?)\s*[:：]\*\*\s*(?<value>.*)$",
+            RegexOptions.CultureInvariant
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var lead = match.Groups["lead"].Value;
+        var label = Regex.Replace(match.Groups["label"].Value, @"\s{2,}", " ").Trim();
+        if (!LooksLikeStructuredLabel(label))
+        {
+            return false;
+        }
+
+        var value = NormalizeStructuredLabelValueText(match.Groups["value"].Value);
+        formatted = value.Length == 0
+            ? $"{lead}**{label}:**"
+            : $"{lead}**{label}:** {value}";
+        return true;
     }
 
     private static bool TryFormatStructuredMarkdownLabelLine(string line, out string formatted)
@@ -873,7 +1208,7 @@ public sealed partial class CommandService
 
         var match = Regex.Match(
             normalized,
-            @"^(?<lead>(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?)(?<label>[A-Za-z가-힣0-9(][A-Za-z가-힣0-9().&+_/\-·\s]{0,80}?)\s*[:：]\s*(?<value>.*)$",
+            @"^(?<lead>(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?)(?<label>[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}?)\s*[:：]\s*(?<value>.*)$",
             RegexOptions.CultureInvariant
         );
         if (!match.Success)
@@ -883,7 +1218,7 @@ public sealed partial class CommandService
 
         var lead = match.Groups["lead"].Value;
         var label = Regex.Replace(match.Groups["label"].Value, @"\s{2,}", " ").Trim();
-        var value = match.Groups["value"].Value.Trim();
+        var value = NormalizeStructuredLabelValueText(match.Groups["value"].Value);
         if (!LooksLikeStructuredLabel(label))
         {
             return false;
@@ -893,6 +1228,21 @@ public sealed partial class CommandService
             ? $"{lead}**{label}:**"
             : $"{lead}**{label}:** {value}";
         return true;
+    }
+
+    private static string NormalizeStructuredLabelValueText(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"^\*\*\s+", string.Empty, RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\s+\*\*$", string.Empty, RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"^\*\*$", string.Empty, RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ").Trim();
+        return normalized;
     }
 
     private static bool LooksLikeStructuredLabel(string label)

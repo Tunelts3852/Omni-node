@@ -190,6 +190,55 @@ public sealed class MemoryNoteStore
         }
     }
 
+    public MemoryNoteRenameResult Rename(string name, string newName)
+    {
+        var safeSource = Sanitize(name, string.Empty, 240);
+        if (string.IsNullOrWhiteSpace(safeSource))
+        {
+            return new MemoryNoteRenameResult(false, "원본 메모리 노트 이름이 올바르지 않습니다.", string.Empty, string.Empty, null);
+        }
+
+        var safeTargetBase = Sanitize(newName, string.Empty, 240);
+        if (string.IsNullOrWhiteSpace(safeTargetBase))
+        {
+            return new MemoryNoteRenameResult(false, "새 메모리 노트 이름을 입력하세요.", safeSource, string.Empty, null);
+        }
+
+        var sourcePath = Path.Combine(_rootDir, safeSource);
+        if (!File.Exists(sourcePath))
+        {
+            return new MemoryNoteRenameResult(false, "메모리 노트를 찾을 수 없습니다.", safeSource, string.Empty, null);
+        }
+
+        var targetBaseName = Path.GetFileNameWithoutExtension(safeTargetBase);
+        if (string.IsNullOrWhiteSpace(targetBaseName))
+        {
+            targetBaseName = safeTargetBase;
+        }
+
+        var targetName = ResolveRenameFileName(targetBaseName, sourcePath);
+        var targetPath = Path.Combine(_rootDir, targetName);
+
+        try
+        {
+            if (!PathEquals(sourcePath, targetPath))
+            {
+                File.Move(sourcePath, targetPath);
+            }
+
+            var content = File.ReadAllText(targetPath);
+            var note = new MemoryNoteSaveResult(targetName, targetPath, BuildExcerpt(content));
+            var message = PathEquals(sourcePath, targetPath)
+                ? "메모리 노트 이름을 유지했습니다."
+                : "메모리 노트 이름을 변경했습니다.";
+            return new MemoryNoteRenameResult(true, message, safeSource, targetName, note);
+        }
+        catch
+        {
+            return new MemoryNoteRenameResult(false, "메모리 노트 이름을 변경하지 못했습니다.", safeSource, string.Empty, null);
+        }
+    }
+
     private static string BuildExcerpt(string content)
     {
         if (string.IsNullOrWhiteSpace(content))
@@ -462,4 +511,12 @@ public sealed record MemoryNoteDeleteResult(
     int Removed,
     int UnlinkedConversations,
     IReadOnlyList<string> RemovedNames
+);
+
+public sealed record MemoryNoteRenameResult(
+    bool Ok,
+    string Message,
+    string OldName,
+    string NewName,
+    MemoryNoteSaveResult? Note
 );

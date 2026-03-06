@@ -311,6 +311,62 @@ public sealed class ConversationStore
         }
     }
 
+    public int RenameLinkedMemoryNote(string oldName, string newName)
+    {
+        var safeOld = (oldName ?? string.Empty).Trim();
+        var safeNew = (newName ?? string.Empty).Trim();
+        if (safeOld.Length == 0 || safeNew.Length == 0)
+        {
+            return 0;
+        }
+
+        lock (_lock)
+        {
+            var updatedCount = 0;
+            foreach (var thread in _state.Conversations)
+            {
+                if (thread.LinkedMemoryNotes.Count == 0)
+                {
+                    continue;
+                }
+
+                var changed = false;
+                var renamed = new List<string>(thread.LinkedMemoryNotes.Count);
+                foreach (var note in thread.LinkedMemoryNotes)
+                {
+                    var trimmed = (note ?? string.Empty).Trim();
+                    if (trimmed.Equals(safeOld, StringComparison.OrdinalIgnoreCase))
+                    {
+                        renamed.Add(safeNew);
+                        changed = true;
+                    }
+                    else if (trimmed.Length > 0)
+                    {
+                        renamed.Add(trimmed);
+                    }
+                }
+
+                if (!changed)
+                {
+                    continue;
+                }
+
+                thread.LinkedMemoryNotes = renamed
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                thread.UpdatedUtc = DateTimeOffset.UtcNow;
+                updatedCount += 1;
+            }
+
+            if (updatedCount > 0)
+            {
+                SaveLocked();
+            }
+
+            return updatedCount;
+        }
+    }
+
     public ConversationThreadView UpdateTitle(string conversationId, string title)
     {
         var safeTitle = (title ?? string.Empty).Trim();
