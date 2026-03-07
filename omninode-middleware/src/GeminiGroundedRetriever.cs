@@ -19,7 +19,7 @@ public sealed record GeminiGroundedRetrieverResult(
     string? Error
 );
 
-public sealed class GeminiGroundedRetriever
+public sealed class GeminiGroundedRetriever : ISearchRetriever
 {
     private const string DefaultRetrieverModel = "gemini-3.1-flash-lite-preview";
     private const int DefaultTimeoutSeconds = 30;

@@ -46,6 +46,7 @@ public sealed partial class CommandService
         string? groqApiKey,
         string? geminiApiKey,
         string? cerebrasApiKey,
+        string? codexApiKey,
         bool persist
     )
     {
@@ -53,6 +54,7 @@ public sealed partial class CommandService
             groqApiKey,
             geminiApiKey,
             cerebrasApiKey,
+            codexApiKey,
             persist
         );
         _auditLogger.Log("web", "update_llm_credentials", "ok", result);
@@ -102,6 +104,11 @@ public sealed partial class CommandService
         return _copilotWrapper.StartLoginAsync(cancellationToken);
     }
 
+    public Task<string> StartCodexLoginAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.StartLoginAsync(cancellationToken);
+    }
+
     public Task<string> GetMetricsAsync(CancellationToken cancellationToken)
     {
         return _coreClient.GetMetricsAsync(cancellationToken);
@@ -110,6 +117,16 @@ public sealed partial class CommandService
     public Task<CopilotStatus> GetCopilotStatusAsync(CancellationToken cancellationToken)
     {
         return _copilotWrapper.GetStatusAsync(cancellationToken);
+    }
+
+    public Task<CodexStatus> GetCodexStatusAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.GetStatusAsync(cancellationToken);
+    }
+
+    public Task<string> LogoutCodexAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.LogoutAsync(cancellationToken);
     }
 
     public Task<IReadOnlyList<CopilotModelInfo>> GetCopilotModelsAsync(CancellationToken cancellationToken)
@@ -632,7 +649,7 @@ public sealed partial class CommandService
                 || (!_routineSchedulerTask.IsFaulted && !_routineSchedulerTask.IsCanceled);
             return new CronToolStatusResult(
                 Enabled: schedulerEnabled,
-                StorePath: _routineStatePath,
+                StorePath: _routineStore.StorePath,
                 Jobs: routines.Length,
                 NextWakeAtMs: nextWakeAtMs
             );
@@ -2115,7 +2132,7 @@ public sealed partial class CommandService
             var effectiveFreshness = freshness;
             var searchRequest = BuildSearchGatewayRequest(normalizedQuery, effectiveCount, effectiveFreshness);
             var response = await _searchGateway.SearchAsync(searchRequest, cancellationToken).ConfigureAwait(false);
-            var guardDecision = SearchAnswerGuard.Evaluate(response);
+            var guardDecision = _searchGuard.Evaluate(response);
             if (!guardDecision.Allowed
                 && ShouldRetrySearchWithRelaxedConstraint(guardDecision.Failure))
             {
@@ -2134,7 +2151,7 @@ public sealed partial class CommandService
                     effectiveFreshness = relaxedFreshness;
                     var relaxedRequest = BuildSearchGatewayRequest(normalizedQuery, effectiveCount, effectiveFreshness);
                     response = await _searchGateway.SearchAsync(relaxedRequest, cancellationToken).ConfigureAwait(false);
-                    guardDecision = SearchAnswerGuard.Evaluate(response);
+                    guardDecision = _searchGuard.Evaluate(response);
                 }
             }
 
@@ -2262,7 +2279,7 @@ public sealed partial class CommandService
             var targetCount = ResolveGatewayTargetCount(count);
             var request = BuildSearchGatewayRequest(normalizedQuery, count, freshness);
             var response = await _searchGateway.SearchAsync(request, cancellationToken).ConfigureAwait(false);
-            var guardDecision = SearchAnswerGuard.Evaluate(response);
+            var guardDecision = _searchGuard.Evaluate(response);
             var docs = response.Documents;
             if (docs.Count < targetCount
                 && ShouldTryFastPartialTopUp(normalizedQuery))
@@ -3869,7 +3886,7 @@ public sealed partial class CommandService
     {
         var createdAtMs = routine.CreatedUtc.ToUnixTimeMilliseconds();
         var updatedAtMs = (routine.LastRunUtc ?? routine.CreatedUtc).ToUnixTimeMilliseconds();
-        var requestText = ResolveRoutineRequestText(routine.Request, routine.Title);
+        var requestText = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
         var payloadKind = NormalizeCronPayloadKindOrDefault(routine.CronPayloadKind);
         var payloadText = string.Equals(payloadKind, "agentTurn", StringComparison.Ordinal)
             ? null
@@ -3973,8 +3990,12 @@ public sealed partial class CommandService
                     JobId: routine.Id,
                     Action: "finished",
                     Status: status,
+                    Source: string.IsNullOrWhiteSpace(raw.Source) ? null : raw.Source,
+                    AttemptCount: Math.Max(1, raw.AttemptCount),
                     Error: status == "error" ? TrimForCronError(raw.Error) : null,
                     Summary: BuildCronRunEntrySummary(raw.Summary ?? string.Empty),
+                    TelegramStatus: string.IsNullOrWhiteSpace(raw.TelegramStatus) ? null : raw.TelegramStatus,
+                    ArtifactPath: string.IsNullOrWhiteSpace(raw.ArtifactPath) ? null : raw.ArtifactPath,
                     RunAtMs: raw.RunAtMs,
                     DurationMs: raw.DurationMs,
                     NextRunAtMs: raw.NextRunAtMs,
@@ -3994,8 +4015,12 @@ public sealed partial class CommandService
             JobId: routine.Id,
             Action: "finished",
             Status: fallbackStatus,
+            Source: null,
+            AttemptCount: 1,
             Error: fallbackStatus == "error" ? TrimForCronError(routine.LastOutput) : null,
             Summary: BuildCronRunEntrySummary(routine.LastOutput),
+            TelegramStatus: null,
+            ArtifactPath: null,
             RunAtMs: routine.LastRunUtc.Value.ToUnixTimeMilliseconds(),
             DurationMs: routine.LastDurationMs,
             NextRunAtMs: routine.Enabled ? routine.NextRunUtc.ToUnixTimeMilliseconds() : null,
@@ -4616,17 +4641,108 @@ public sealed partial class CommandService
         return true;
     }
 
-    private static string ResolveRoutineRequestText(string? request, string? title)
+    private static string ResolveRoutineExecutionRequestText(string? request, string? title, string? scheduleSourceMode)
     {
-        var normalized = (request ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalized))
+        var normalizedMode = NormalizeRoutineScheduleSourceMode(scheduleSourceMode, request);
+        if (string.Equals(normalizedMode, "manual", StringComparison.Ordinal))
         {
-            return normalized;
+            var manualTask = NormalizeRoutineTaskRequest(request);
+            if (!string.IsNullOrWhiteSpace(manualTask))
+            {
+                return manualTask;
+            }
+        }
+
+        var raw = (request ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            return raw;
         }
 
         return string.IsNullOrWhiteSpace(title)
             ? "scheduled routine"
             : title.Trim();
+    }
+
+    private static string NormalizeRoutineScheduleSourceMode(string? mode, string? request)
+    {
+        var normalized = (mode ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized is "auto" or "manual")
+        {
+            return normalized;
+        }
+
+        return ContainsRoutineScheduleExpression(request)
+            ? "auto"
+            : "manual";
+    }
+
+    private static bool ContainsRoutineScheduleExpression(string? request)
+    {
+        var text = (request ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(text, @"매(?:일|주|월)|평일|주말", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"(?:월|화|수|목|금|토|일)요일(?:마다)?", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"\d{1,2}\s*:\s*\d{1,2}", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"(?:아침|오전|오후|저녁|밤|새벽)?\s*\d{1,2}\s*시(?:\s*(?:\d{1,2}\s*분|반))?", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static string NormalizeRoutineTaskRequest(string? request)
+    {
+        var normalized = Regex.Replace(
+                (request ?? string.Empty).Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal),
+                @"\s+",
+                " ",
+                RegexOptions.CultureInvariant
+            )
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        for (var i = 0; i < 4; i += 1)
+        {
+            var updated = StripLeadingRoutineScheduleDirective(normalized);
+            if (string.Equals(updated, normalized, StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            normalized = updated;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"\s+(?:매일|매주|매월|(?:월|화|수|목|금|토|일)요일(?:마다)?|(?:아침|오전|오후|저녁|밤|새벽)?\s*\d{1,2}(?::\d{2})?\s*(?:시(?:\s*\d{1,2}\s*분)?|분)?(?:\s*반)?)(?:에|마다)?(?=\s*(?:알려줘|보내줘|전송해줘|정리해줘|요약해줘|브리핑해줘|말해줘|공유해줘))",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        normalized = Regex.Replace(normalized, @"^\s*[-,:;·/]+\s*", string.Empty, RegexOptions.CultureInvariant).Trim();
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ", RegexOptions.CultureInvariant).Trim();
+        return normalized;
+    }
+
+    private static string StripLeadingRoutineScheduleDirective(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var options = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+        normalized = Regex.Replace(normalized, @"^(?:매일|매주|매월)\s+", string.Empty, options);
+        normalized = Regex.Replace(normalized, @"^(?:매주\s*)?(?:월|화|수|목|금|토|일)(?:요일)?(?:\s*(?:,|/|·|및)\s*(?:월|화|수|목|금|토|일)(?:요일)?)*(?:마다)?\s+", string.Empty, options);
+        normalized = Regex.Replace(normalized, @"^(?:월|화|수|목|금|토|일)(?:요일)?(?:마다)?\s+", string.Empty, options);
+        normalized = Regex.Replace(normalized, @"^매월\s*\d{1,2}\s*일(?:마다)?\s+", string.Empty, options);
+        normalized = Regex.Replace(normalized, @"^(?:아침|오전|오후|저녁|밤|새벽)?\s*\d{1,2}(?::\d{2})?\s*(?:시(?:\s*\d{1,2}\s*분)?|분)?(?:\s*반)?(?:에|마다)?\s+", string.Empty, options);
+        normalized = Regex.Replace(normalized, @"^(?:마다|에)\s+", string.Empty, options);
+        return normalized.Trim();
     }
 
     private static string? NormalizeCronRunStatus(string? status)

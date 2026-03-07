@@ -4,14 +4,16 @@ public sealed record ProviderAvailability(string Provider, bool Available, strin
 
 public sealed class ProviderRegistry
 {
-    private static readonly string[] AutoPriority = { "gemini", "groq", "cerebras", "copilot" };
+    private static readonly string[] AutoPriority = { "gemini", "groq", "cerebras", "copilot", "codex" };
     private readonly LlmRouter _llmRouter;
     private readonly CopilotCliWrapper _copilotWrapper;
+    private readonly CodexCliWrapper _codexWrapper;
 
-    public ProviderRegistry(LlmRouter llmRouter, CopilotCliWrapper copilotWrapper)
+    public ProviderRegistry(LlmRouter llmRouter, CopilotCliWrapper copilotWrapper, CodexCliWrapper codexWrapper)
     {
         _llmRouter = llmRouter;
         _copilotWrapper = copilotWrapper;
+        _codexWrapper = codexWrapper;
     }
 
     public async Task<IReadOnlyList<string>> GetAvailableProvidersAsync(CancellationToken cancellationToken)
@@ -39,7 +41,7 @@ public sealed class ProviderRegistry
 
     public async Task<IReadOnlyList<ProviderAvailability>> GetAvailabilitySnapshotAsync(CancellationToken cancellationToken)
     {
-        var items = new List<ProviderAvailability>(4)
+        var items = new List<ProviderAvailability>(5)
         {
             _llmRouter.HasGeminiApiKey()
                 ? new ProviderAvailability("gemini", true, "configured")
@@ -56,6 +58,10 @@ public sealed class ProviderRegistry
         items.Add(copilot.Installed && copilot.Authenticated
             ? new ProviderAvailability("copilot", true, "ready")
             : new ProviderAvailability("copilot", false, "not_ready"));
+        var codex = await _codexWrapper.GetStatusAsync(cancellationToken);
+        items.Add(codex.Installed && codex.Authenticated
+            ? new ProviderAvailability("codex", true, "ready")
+            : new ProviderAvailability("codex", false, "not_ready"));
 
         return items;
     }

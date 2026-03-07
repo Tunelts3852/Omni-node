@@ -7,7 +7,8 @@ using System.Text.RegularExpressions;
 
 namespace OmniNode.Middleware;
 
-public sealed partial class CommandService
+public sealed partial class CommandService :
+    IGatewayApplicationService
 {
     private const string DefaultGroqPrimaryModel = "meta-llama/llama-4-scout-17b-16e-instruct";
     private const string DefaultGroqFastModel = "llama-3.1-8b-instant";
@@ -88,6 +89,7 @@ public sealed partial class CommandService
     private readonly ProviderRegistry _providerRegistry;
     private readonly ToolRegistry _toolRegistry;
     private readonly SearchGateway _searchGateway;
+    private readonly ISearchGuard _searchGuard;
     private readonly WebFetchTool _webFetchTool;
     private readonly MemorySearchTool _memorySearchTool;
     private readonly MemoryGetTool _memoryGetTool;
@@ -99,9 +101,11 @@ public sealed partial class CommandService
     private readonly CanvasTool _canvasTool;
     private readonly NodesTool _nodesTool;
     private readonly CopilotCliWrapper _copilotWrapper;
+    private readonly CodexCliWrapper _codexWrapper;
     private readonly PythonSandboxClient _sandboxClient;
-    private readonly MemoryNoteStore _memoryNoteStore;
-    private readonly ConversationStore _conversationStore;
+    private readonly IMemoryNoteStore _memoryNoteStore;
+    private readonly IConversationStore _conversationStore;
+    private readonly IRoutineStore _routineStore;
     private readonly UniversalCodeRunner _codeRunner;
     private readonly AuditLogger _auditLogger;
     private readonly Queue<string> _recentEvents = new();
@@ -123,7 +127,7 @@ public sealed partial class CommandService
     private TelegramLlmPreferences _telegramLlmPreferences;
     private WebLlmPreferences _webLlmPreferences;
 
-    public CommandService(
+    internal CommandService(
         AppConfig config,
         LlmRouter llmRouter,
         GroqModelCatalog groqModelCatalog,
@@ -133,6 +137,7 @@ public sealed partial class CommandService
         ProviderRegistry providerRegistry,
         ToolRegistry toolRegistry,
         SearchGateway searchGateway,
+        ISearchGuard searchGuard,
         WebFetchTool webFetchTool,
         MemorySearchTool memorySearchTool,
         MemoryGetTool memoryGetTool,
@@ -144,9 +149,11 @@ public sealed partial class CommandService
         CanvasTool canvasTool,
         NodesTool nodesTool,
         CopilotCliWrapper copilotWrapper,
+        CodexCliWrapper codexWrapper,
         PythonSandboxClient sandboxClient,
-        MemoryNoteStore memoryNoteStore,
-        ConversationStore conversationStore,
+        IMemoryNoteStore memoryNoteStore,
+        IConversationStore conversationStore,
+        IRoutineStore routineStore,
         UniversalCodeRunner codeRunner,
         AuditLogger auditLogger
     )
@@ -160,6 +167,7 @@ public sealed partial class CommandService
         _providerRegistry = providerRegistry;
         _toolRegistry = toolRegistry;
         _searchGateway = searchGateway;
+        _searchGuard = searchGuard;
         _webFetchTool = webFetchTool;
         _memorySearchTool = memorySearchTool;
         _memoryGetTool = memoryGetTool;
@@ -171,9 +179,11 @@ public sealed partial class CommandService
         _canvasTool = canvasTool;
         _nodesTool = nodesTool;
         _copilotWrapper = copilotWrapper;
+        _codexWrapper = codexWrapper;
         _sandboxClient = sandboxClient;
         _memoryNoteStore = memoryNoteStore;
         _conversationStore = conversationStore;
+        _routineStore = routineStore;
         _codeRunner = codeRunner;
         _auditLogger = auditLogger;
         _killAllowlist = (_config.KillAllowlistCsv ?? string.Empty)
@@ -188,8 +198,8 @@ public sealed partial class CommandService
             stateBaseDir = string.IsNullOrWhiteSpace(home) ? "/tmp" : Path.Combine(home, ".omninode");
         }
 
-        _routineStatePath = Path.Combine(stateBaseDir, "routines.json");
-        _routinePromptDir = Path.Combine(_config.WorkspaceRootDir, "_routine_prompts");
+        _routineStatePath = _routineStore.StorePath;
+        _routinePromptDir = _config.RoutinePromptDir;
         LoadTelegramUpgradeQuotaState();
         _telegramLlmPreferences = new TelegramLlmPreferences
         {

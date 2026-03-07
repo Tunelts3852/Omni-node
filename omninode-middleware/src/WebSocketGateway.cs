@@ -15,6 +15,7 @@ public sealed class WebSocketGateway
     private const int MaxTrustedAuthTtlHours = 168;
     private const string WebSocketPath = "/ws/";
     private const string GuardRetryTimelineApiPath = "/api/guard/retry-timeline";
+    private const string LocalImageApiPath = "/api/local-image";
     private const string GuardAlertDispatchMessageType = "dispatch_guard_alert";
     private const string GuardAlertDispatchResultType = "guard_alert_dispatch_result";
     private const string GuardAlertSchemaVersion = "guard_alert_event.v1";
@@ -42,9 +43,9 @@ public sealed class WebSocketGateway
     };
     private readonly AppConfig _config;
     private readonly int _port;
-    private readonly SessionManager _sessionManager;
+    private readonly IAuthSessionStore _sessionManager;
     private readonly TelegramClient _telegramClient;
-    private readonly CommandService _commandService;
+    private readonly IGatewayApplicationService _commandService;
     private readonly LlmRouter _llmRouter;
     private readonly GroqModelCatalog _groqModelCatalog;
     private readonly GuardRetryTimelineStore _guardRetryTimelineStore;
@@ -86,9 +87,9 @@ public sealed class WebSocketGateway
     public WebSocketGateway(
         AppConfig config,
         int port,
-        SessionManager sessionManager,
+        IAuthSessionStore sessionManager,
         TelegramClient telegramClient,
-        CommandService commandService,
+        IGatewayApplicationService commandService,
         LlmRouter llmRouter,
         GroqModelCatalog groqModelCatalog,
         GuardRetryTimelineStore guardRetryTimelineStore,
@@ -444,6 +445,20 @@ public sealed class WebSocketGateway
             return;
         }
 
+        if (path.Equals(LocalImageApiPath, StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleLocalImageApiAsync(context, cancellationToken);
+            return;
+        }
+
+        if (path.Equals("/favicon.ico", StringComparison.OrdinalIgnoreCase))
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.NoContent;
+            context.Response.ContentLength64 = 0;
+            context.Response.OutputStream.Close();
+            return;
+        }
+
         if (context.Request.HttpMethod.Equals("GET", StringComparison.OrdinalIgnoreCase))
         {
             if (TryResolveStaticAsset(path, out var filePath, out var contentType))
@@ -518,6 +533,66 @@ public sealed class WebSocketGateway
             payload,
             cancellationToken
         );
+    }
+
+    private async Task HandleLocalImageApiAsync(HttpListenerContext context, CancellationToken cancellationToken)
+    {
+        var method = context.Request.HttpMethod?.ToUpperInvariant() ?? "GET";
+        if (method != "GET" && method != "HEAD")
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+            context.Response.Headers["Allow"] = "GET, HEAD";
+            await WriteResponseAsync(context.Response, "text/plain; charset=utf-8", "Method Not Allowed", cancellationToken);
+            return;
+        }
+
+        var requestedPath = (context.Request.QueryString["path"] ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(requestedPath) || !Path.IsPathRooted(requestedPath))
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+            await WriteResponseAsync(context.Response, "text/plain; charset=utf-8", "absolute image path is required", cancellationToken);
+            return;
+        }
+
+        var fullPath = Path.GetFullPath(requestedPath);
+        var extension = Path.GetExtension(fullPath);
+        var contentType = extension.ToLowerInvariant() switch
+        {
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".webp" => "image/webp",
+            ".gif" => "image/gif",
+            _ => string.Empty
+        };
+
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+            await WriteResponseAsync(context.Response, "text/plain; charset=utf-8", "unsupported image type", cancellationToken);
+            return;
+        }
+
+        if (!File.Exists(fullPath))
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.NotFound;
+            await WriteResponseAsync(context.Response, "text/plain; charset=utf-8", "image not found", cancellationToken);
+            return;
+        }
+
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+        context.Response.Headers["Cache-Control"] = "no-store";
+        context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+        context.Response.Headers["X-Frame-Options"] = "DENY";
+        if (method == "HEAD")
+        {
+            context.Response.ContentType = contentType;
+            context.Response.ContentLength64 = 0;
+            context.Response.OutputStream.Close();
+            return;
+        }
+
+        var bytes = await File.ReadAllBytesAsync(fullPath, cancellationToken);
+        await WriteBinaryResponseAsync(context.Response, contentType, bytes, cancellationToken);
     }
 
     private static int? ParseQueryInt(string? raw, int min, int max)
@@ -757,6 +832,7 @@ public sealed class WebSocketGateway
                         message.GroqApiKey,
                         message.GeminiApiKey,
                         message.CerebrasApiKey,
+                        message.CodexApiKey,
                         message.Persist
                     );
                     await SendTextAsync(socket, sendLock, $"{{\"type\":\"settings_result\",\"ok\":true,\"message\":\"{EscapeJson(result)}\"}}", cancellationToken);
@@ -793,6 +869,24 @@ public sealed class WebSocketGateway
                         sendLock,
                         "{"
                         + "\"type\":\"copilot_status\","
+                        + $"\"installed\":{(status.Installed ? "true" : "false")},"
+                        + $"\"authenticated\":{(status.Authenticated ? "true" : "false")},"
+                        + $"\"mode\":\"{EscapeJson(status.Mode)}\","
+                        + $"\"detail\":\"{EscapeJson(status.Detail)}\""
+                        + "}",
+                        cancellationToken
+                    );
+                    continue;
+                }
+
+                if (message.Type == "get_codex_status")
+                {
+                    var status = await _commandService.GetCodexStatusAsync(cancellationToken);
+                    await SendTextAsync(
+                        socket,
+                        sendLock,
+                        "{"
+                        + "\"type\":\"codex_status\","
                         + $"\"installed\":{(status.Installed ? "true" : "false")},"
                         + $"\"authenticated\":{(status.Authenticated ? "true" : "false")},"
                         + $"\"mode\":\"{EscapeJson(status.Mode)}\","
@@ -1054,6 +1148,30 @@ public sealed class WebSocketGateway
                         socket,
                         sendLock,
                         $"{{\"type\":\"copilot_login_result\",\"message\":\"{EscapeJson(result)}\"}}",
+                        cancellationToken
+                    );
+                    continue;
+                }
+
+                if (message.Type == "start_codex_login")
+                {
+                    var result = await _commandService.StartCodexLoginAsync(cancellationToken);
+                    await SendTextAsync(
+                        socket,
+                        sendLock,
+                        $"{{\"type\":\"codex_login_result\",\"message\":\"{EscapeJson(result)}\"}}",
+                        cancellationToken
+                    );
+                    continue;
+                }
+
+                if (message.Type == "logout_codex")
+                {
+                    var result = await _commandService.LogoutCodexAsync(cancellationToken);
+                    await SendTextAsync(
+                        socket,
+                        sendLock,
+                        $"{{\"type\":\"codex_logout_result\",\"message\":\"{EscapeJson(result)}\"}}",
                         cancellationToken
                     );
                     continue;
@@ -1868,6 +1986,16 @@ public sealed class WebSocketGateway
                     var result = await _commandService.CreateRoutineAsync(
                         message.Text.Trim(),
                         message.Title,
+                        message.ExecutionMode,
+                        message.AgentProvider,
+                        message.AgentModel,
+                        message.AgentStartUrl,
+                        message.AgentTimeoutSeconds,
+                        message.AgentUsePlaywright,
+                        message.ScheduleSourceMode,
+                        message.MaxRetries,
+                        message.RetryDelaySeconds,
+                        message.NotifyPolicy,
                         message.ScheduleKind,
                         message.ScheduleTime,
                         message.Weekdays,
@@ -1899,6 +2027,16 @@ public sealed class WebSocketGateway
                         message.RoutineId.Trim(),
                         message.Text.Trim(),
                         message.Title,
+                        message.ExecutionMode,
+                        message.AgentProvider,
+                        message.AgentModel,
+                        message.AgentStartUrl,
+                        message.AgentTimeoutSeconds,
+                        message.AgentUsePlaywright,
+                        message.ScheduleSourceMode,
+                        message.MaxRetries,
+                        message.RetryDelaySeconds,
+                        message.NotifyPolicy,
                         message.ScheduleKind,
                         message.ScheduleTime,
                         message.Weekdays,
@@ -1920,6 +2058,65 @@ public sealed class WebSocketGateway
                     }
 
                     var result = await _commandService.RunRoutineNowAsync(message.RoutineId.Trim(), "web", cancellationToken);
+                    await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
+                    await SendRoutinesAsync(socket, sendLock, cancellationToken);
+                    continue;
+                }
+
+                if (message.Type == "test_routine_telegram")
+                {
+                    if (string.IsNullOrWhiteSpace(message.RoutineId))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routineId is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var result = await _commandService.RunRoutineNowAsync(message.RoutineId.Trim(), "telegram_test", cancellationToken);
+                    await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
+                    await SendRoutinesAsync(socket, sendLock, cancellationToken);
+                    continue;
+                }
+
+                if (message.Type == "test_browser_agent_routine")
+                {
+                    if (string.IsNullOrWhiteSpace(message.RoutineId))
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routineId is required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var result = await _commandService.RunRoutineNowAsync(message.RoutineId.Trim(), "browser_agent_test", cancellationToken);
+                    await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
+                    await SendRoutinesAsync(socket, sendLock, cancellationToken);
+                    continue;
+                }
+
+                if (message.Type == "get_routine_run_detail")
+                {
+                    if (string.IsNullOrWhiteSpace(message.RoutineId) || !message.Timestamp.HasValue)
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routineId and ts are required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var detail = _commandService.GetRoutineRunDetail(message.RoutineId.Trim(), message.Timestamp.Value);
+                    await SendRoutineRunDetailAsync(socket, sendLock, detail, cancellationToken);
+                    continue;
+                }
+
+                if (message.Type == "resend_routine_run_telegram")
+                {
+                    if (string.IsNullOrWhiteSpace(message.RoutineId) || !message.Timestamp.HasValue)
+                    {
+                        await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"routineId and ts are required\"}", cancellationToken);
+                        continue;
+                    }
+
+                    var result = await _commandService.ResendRoutineRunToTelegramAsync(
+                        message.RoutineId.Trim(),
+                        message.Timestamp.Value,
+                        cancellationToken
+                    );
                     await SendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
                     await SendRoutinesAsync(socket, sendLock, cancellationToken);
                     continue;
@@ -2065,7 +2262,8 @@ public sealed class WebSocketGateway
                                 message.CerebrasModel,
                                 message.Attachments,
                                 message.WebUrls,
-                                message.WebSearchEnabled
+                                message.WebSearchEnabled,
+                                message.CodexModel
                             ),
                             cancellationToken
                         );
@@ -2119,7 +2317,8 @@ public sealed class WebSocketGateway
                                 message.MemoryNotes,
                                 message.Attachments,
                                 message.WebUrls,
-                                message.WebSearchEnabled
+                                message.WebSearchEnabled,
+                                message.CodexModel
                             ),
                             cancellationToken
                         );
@@ -2189,7 +2388,8 @@ public sealed class WebSocketGateway
                                 null,
                                 message.Attachments,
                                 message.WebUrls,
-                                message.WebSearchEnabled
+                                message.WebSearchEnabled,
+                                null
                             ),
                             cancellationToken,
                             progress
@@ -2240,7 +2440,8 @@ public sealed class WebSocketGateway
                                 message.CopilotModel,
                                 message.Attachments,
                                 message.WebUrls,
-                                message.WebSearchEnabled
+                                message.WebSearchEnabled,
+                                message.CodexModel
                             ),
                             cancellationToken,
                             progress
@@ -2302,7 +2503,8 @@ public sealed class WebSocketGateway
                                 message.CopilotModel,
                                 message.Attachments,
                                 message.WebUrls,
-                                message.WebSearchEnabled
+                                message.WebSearchEnabled,
+                                message.CodexModel
                             ),
                             cancellationToken,
                             progress
@@ -2455,11 +2657,13 @@ public sealed class WebSocketGateway
             + $"\"groqApiKeySet\":{(snapshot.GroqApiKeySet ? "true" : "false")},"
             + $"\"geminiApiKeySet\":{(snapshot.GeminiApiKeySet ? "true" : "false")},"
             + $"\"cerebrasApiKeySet\":{(snapshot.CerebrasApiKeySet ? "true" : "false")},"
+            + $"\"codexApiKeySet\":{(snapshot.CodexApiKeySet ? "true" : "false")},"
             + $"\"telegramBotTokenMasked\":\"{EscapeJson(snapshot.TelegramBotTokenMasked)}\","
             + $"\"telegramChatIdMasked\":\"{EscapeJson(snapshot.TelegramChatIdMasked)}\","
             + $"\"groqApiKeyMasked\":\"{EscapeJson(snapshot.GroqApiKeyMasked)}\","
             + $"\"geminiApiKeyMasked\":\"{EscapeJson(snapshot.GeminiApiKeyMasked)}\","
-            + $"\"cerebrasApiKeyMasked\":\"{EscapeJson(snapshot.CerebrasApiKeyMasked)}\""
+            + $"\"cerebrasApiKeyMasked\":\"{EscapeJson(snapshot.CerebrasApiKeyMasked)}\","
+            + $"\"codexApiKeyMasked\":\"{EscapeJson(snapshot.CodexApiKeyMasked)}\""
             + "}",
             cancellationToken
         );
@@ -4617,11 +4821,13 @@ public sealed class WebSocketGateway
                + $"\"gemini\":\"{EscapeJson(result.GeminiText)}\","
                + $"\"cerebras\":\"{EscapeJson(result.CerebrasText)}\","
                + $"\"copilot\":\"{EscapeJson(result.CopilotText)}\","
+               + $"\"codex\":\"{EscapeJson(result.CodexText)}\","
                + $"\"summary\":\"{EscapeJson(result.Summary)}\","
                + $"\"groqModel\":\"{EscapeJson(result.GroqModel)}\","
                + $"\"geminiModel\":\"{EscapeJson(result.GeminiModel)}\","
                + $"\"cerebrasModel\":\"{EscapeJson(result.CerebrasModel)}\","
                + $"\"copilotModel\":\"{EscapeJson(result.CopilotModel)}\","
+               + $"\"codexModel\":\"{EscapeJson(result.CodexModel)}\","
                + $"\"requestedSummaryProvider\":\"{EscapeJson(result.RequestedSummaryProvider)}\","
                + $"\"resolvedSummaryProvider\":\"{EscapeJson(result.ResolvedSummaryProvider)}\","
                + $"\"conversation\":{BuildConversationJson(result.Conversation)},"
@@ -4743,7 +4949,18 @@ public sealed class WebSocketGateway
         builder.Append($"\"id\":\"{EscapeJson(routine.Id)}\",");
         builder.Append($"\"title\":\"{EscapeJson(routine.Title)}\",");
         builder.Append($"\"request\":\"{EscapeJson(routine.Request)}\",");
+        builder.Append($"\"executionMode\":\"{EscapeJson(routine.ExecutionMode)}\",");
+        builder.Append($"\"resolvedExecutionMode\":\"{EscapeJson(routine.ResolvedExecutionMode)}\",");
+        builder.Append($"\"agentProvider\":{ToJsonStringOrNull(routine.AgentProvider)},");
+        builder.Append($"\"agentModel\":{ToJsonStringOrNull(routine.AgentModel)},");
+        builder.Append($"\"agentStartUrl\":{ToJsonStringOrNull(routine.AgentStartUrl)},");
+        builder.Append($"\"agentTimeoutSeconds\":{(routine.AgentTimeoutSeconds.HasValue ? routine.AgentTimeoutSeconds.Value.ToString(CultureInfo.InvariantCulture) : "null")},");
+        builder.Append($"\"agentUsePlaywright\":{(routine.AgentUsePlaywright ? "true" : "false")},");
         builder.Append($"\"scheduleText\":\"{EscapeJson(routine.ScheduleText)}\",");
+        builder.Append($"\"scheduleSourceMode\":\"{EscapeJson(routine.ScheduleSourceMode)}\",");
+        builder.Append($"\"maxRetries\":{routine.MaxRetries.ToString(CultureInfo.InvariantCulture)},");
+        builder.Append($"\"retryDelaySeconds\":{routine.RetryDelaySeconds.ToString(CultureInfo.InvariantCulture)},");
+        builder.Append($"\"notifyPolicy\":\"{EscapeJson(routine.NotifyPolicy)}\",");
         builder.Append($"\"enabled\":{(routine.Enabled ? "true" : "false")},");
         builder.Append($"\"nextRunLocal\":\"{EscapeJson(routine.NextRunLocal)}\",");
         builder.Append($"\"lastRunLocal\":\"{EscapeJson(routine.LastRunLocal)}\",");
@@ -4791,12 +5008,63 @@ public sealed class WebSocketGateway
             + $"\"ts\":{run.Ts.ToString(CultureInfo.InvariantCulture)},"
             + $"\"runAtLocal\":\"{EscapeJson(run.RunAtLocal)}\","
             + $"\"status\":\"{EscapeJson(run.Status)}\","
+            + $"\"source\":\"{EscapeJson(run.Source)}\","
+            + $"\"attemptCount\":{run.AttemptCount.ToString(CultureInfo.InvariantCulture)},"
             + $"\"summary\":\"{EscapeJson(run.Summary)}\","
             + $"\"error\":{ToJsonStringOrNull(run.Error)},"
+            + $"\"telegramStatus\":{ToJsonStringOrNull(run.TelegramStatus)},"
+            + $"\"artifactPath\":{ToJsonStringOrNull(run.ArtifactPath)},"
+            + $"\"agentSessionId\":{ToJsonStringOrNull(run.AgentSessionId)},"
+            + $"\"agentRunId\":{ToJsonStringOrNull(run.AgentRunId)},"
+            + $"\"agentProvider\":{ToJsonStringOrNull(run.AgentProvider)},"
+            + $"\"agentModel\":{ToJsonStringOrNull(run.AgentModel)},"
+            + $"\"toolProfile\":{ToJsonStringOrNull(run.ToolProfile)},"
+            + $"\"startUrl\":{ToJsonStringOrNull(run.StartUrl)},"
+            + $"\"finalUrl\":{ToJsonStringOrNull(run.FinalUrl)},"
+            + $"\"pageTitle\":{ToJsonStringOrNull(run.PageTitle)},"
+            + $"\"screenshotPath\":{ToJsonStringOrNull(run.ScreenshotPath)},"
             + $"\"durationMs\":{(run.DurationMs.HasValue ? run.DurationMs.Value.ToString(CultureInfo.InvariantCulture) : "null")},"
             + $"\"durationText\":\"{EscapeJson(run.DurationText)}\","
             + $"\"nextRunLocal\":{ToJsonStringOrNull(run.NextRunLocal)}"
             + "}";
+    }
+
+    private async Task SendRoutineRunDetailAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        RoutineRunDetailResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        await SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"routine_run_detail\","
+            + $"\"ok\":{(result.Ok ? "true" : "false")},"
+            + $"\"routineId\":\"{EscapeJson(result.RoutineId)}\","
+            + $"\"ts\":{result.Ts.ToString(CultureInfo.InvariantCulture)},"
+            + $"\"runAtLocal\":\"{EscapeJson(DateTimeOffset.FromUnixTimeMilliseconds(result.Ts).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"))}\","
+            + $"\"title\":\"{EscapeJson(result.Title)}\","
+            + $"\"status\":\"{EscapeJson(result.Status)}\","
+            + $"\"source\":\"{EscapeJson(result.Source)}\","
+            + $"\"attemptCount\":{result.AttemptCount.ToString(CultureInfo.InvariantCulture)},"
+            + $"\"telegramStatus\":{ToJsonStringOrNull(result.TelegramStatus)},"
+            + $"\"artifactPath\":{ToJsonStringOrNull(result.ArtifactPath)},"
+            + $"\"agentSessionId\":{ToJsonStringOrNull(result.AgentSessionId)},"
+            + $"\"agentRunId\":{ToJsonStringOrNull(result.AgentRunId)},"
+            + $"\"agentProvider\":{ToJsonStringOrNull(result.AgentProvider)},"
+            + $"\"agentModel\":{ToJsonStringOrNull(result.AgentModel)},"
+            + $"\"toolProfile\":{ToJsonStringOrNull(result.ToolProfile)},"
+            + $"\"startUrl\":{ToJsonStringOrNull(result.StartUrl)},"
+            + $"\"finalUrl\":{ToJsonStringOrNull(result.FinalUrl)},"
+            + $"\"pageTitle\":{ToJsonStringOrNull(result.PageTitle)},"
+            + $"\"screenshotPath\":{ToJsonStringOrNull(result.ScreenshotPath)},"
+            + $"\"error\":{ToJsonStringOrNull(result.Error)},"
+            + $"\"content\":\"{EscapeJson(result.Content)}\""
+            + "}",
+            cancellationToken
+        );
     }
 
     private static string TrimTo(string value, int maxChars)
@@ -5337,29 +5605,62 @@ public sealed class WebSocketGateway
 
     private bool TryResolveStaticAsset(string path, out string filePath, out string contentType)
     {
-        var normalized = path switch
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || normalized == "/")
         {
-            "/" => "index.html",
-            "/index.html" => "index.html",
-            "/app.js" => "app.js",
-            "/worker.js" => "worker.js",
-            "/styles.css" => "styles.css",
-            _ => string.Empty
-        };
+            normalized = "/index.html";
+        }
 
-        if (string.IsNullOrEmpty(normalized))
+        if (!normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            normalized = "/" + normalized;
+        }
+
+        var relativePath = normalized[1..];
+        if (relativePath.Length == 0
+            || relativePath.Contains("..", StringComparison.Ordinal)
+            || relativePath.Contains('\\', StringComparison.Ordinal))
         {
             filePath = string.Empty;
             contentType = "text/plain";
             return false;
         }
 
-        filePath = Path.Combine(_dashboardRootPath, normalized);
-        contentType = normalized.EndsWith(".js", StringComparison.Ordinal)
-            ? "application/javascript; charset=utf-8"
-            : normalized.EndsWith(".css", StringComparison.Ordinal)
-                ? "text/css; charset=utf-8"
-                : "text/html; charset=utf-8";
+        var candidatePath = Path.GetFullPath(Path.Combine(_dashboardRootPath, relativePath));
+        var dashboardRoot = Path.GetFullPath(_dashboardRootPath);
+        var rootPrefix = dashboardRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? dashboardRoot
+            : dashboardRoot + Path.DirectorySeparatorChar;
+        if (!candidatePath.StartsWith(rootPrefix, StringComparison.Ordinal)
+            && !string.Equals(candidatePath, dashboardRoot, StringComparison.Ordinal))
+        {
+            filePath = string.Empty;
+            contentType = "text/plain";
+            return false;
+        }
+
+        if (!File.Exists(candidatePath))
+        {
+            filePath = string.Empty;
+            contentType = "text/plain";
+            return false;
+        }
+
+        var extension = Path.GetExtension(candidatePath).ToLowerInvariant();
+        contentType = extension switch
+        {
+            ".js" => "application/javascript; charset=utf-8",
+            ".css" => "text/css; charset=utf-8",
+            ".html" => "text/html; charset=utf-8",
+            _ => "text/plain; charset=utf-8"
+        };
+        if (contentType == "text/plain; charset=utf-8")
+        {
+            filePath = string.Empty;
+            return false;
+        }
+
+        filePath = candidatePath;
         return true;
     }
 
@@ -5377,6 +5678,22 @@ public sealed class WebSocketGateway
         var bytes = Encoding.UTF8.GetBytes(body);
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes, cancellationToken);
+        response.OutputStream.Close();
+    }
+
+    private static async Task WriteBinaryResponseAsync(
+        HttpListenerResponse response,
+        string contentType,
+        byte[] body,
+        CancellationToken cancellationToken
+    )
+    {
+        response.ContentType = contentType;
+        response.Headers["Cache-Control"] = "no-store";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+        response.Headers["X-Frame-Options"] = "DENY";
+        response.ContentLength64 = body.Length;
+        await response.OutputStream.WriteAsync(body, cancellationToken);
         response.OutputStream.Close();
     }
 
@@ -5490,6 +5807,7 @@ public sealed class WebSocketGateway
             string? geminiModel = null;
             string? copilotModel = null;
             string? cerebrasModel = null;
+            string? codexModel = null;
             string? summaryProvider = null;
             string? action = null;
             string? jobId = null;
@@ -5522,6 +5840,12 @@ public sealed class WebSocketGateway
             string? newName = null;
             string? filePath = null;
             string? routineId = null;
+            string? executionMode = null;
+            string? agentProvider = null;
+            string? agentModel = null;
+            string? agentStartUrl = null;
+            string? scheduleSourceMode = null;
+            string? notifyPolicy = null;
             string? scheduleKind = null;
             string? scheduleTime = null;
             string? timezoneId = null;
@@ -5545,7 +5869,12 @@ public sealed class WebSocketGateway
             int? fromLine = null;
             int? lines = null;
             int? dayOfMonth = null;
+            int? maxRetries = null;
+            int? retryDelaySeconds = null;
+            int? agentTimeoutSeconds = null;
+            long? timestamp = null;
             bool? enabled = null;
+            bool? agentUsePlaywright = null;
             bool? compactConversation = null;
             bool? includeDisabled = null;
             bool? includeTools = null;
@@ -5637,6 +5966,11 @@ public sealed class WebSocketGateway
             if (doc.RootElement.TryGetProperty("cerebrasModel", out var cerebrasModelElement))
             {
                 cerebrasModel = cerebrasModelElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("codexModel", out var codexModelElement))
+            {
+                codexModel = codexModelElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("summaryProvider", out var summaryProviderElement))
@@ -5848,9 +6182,39 @@ public sealed class WebSocketGateway
                 routineId = routineIdElement.GetString();
             }
 
+            if (doc.RootElement.TryGetProperty("executionMode", out var executionModeElement))
+            {
+                executionMode = executionModeElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("agentProvider", out var agentProviderElement))
+            {
+                agentProvider = agentProviderElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("agentModel", out var agentModelElement))
+            {
+                agentModel = agentModelElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("agentStartUrl", out var agentStartUrlElement))
+            {
+                agentStartUrl = agentStartUrlElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("scheduleKind", out var scheduleKindElement))
             {
                 scheduleKind = scheduleKindElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("scheduleSourceMode", out var scheduleSourceModeElement))
+            {
+                scheduleSourceMode = scheduleSourceModeElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("notifyPolicy", out var notifyPolicyElement))
+            {
+                notifyPolicy = notifyPolicyElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("scheduleTime", out var scheduleTimeElement))
@@ -5873,6 +6237,58 @@ public sealed class WebSocketGateway
                          && int.TryParse(dayOfMonthElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDayOfMonthString))
                 {
                     dayOfMonth = parsedDayOfMonthString;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("maxRetries", out var maxRetriesElement))
+            {
+                if (maxRetriesElement.ValueKind == JsonValueKind.Number && maxRetriesElement.TryGetInt32(out var parsedMaxRetries))
+                {
+                    maxRetries = parsedMaxRetries;
+                }
+                else if (maxRetriesElement.ValueKind == JsonValueKind.String
+                         && int.TryParse(maxRetriesElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedMaxRetriesString))
+                {
+                    maxRetries = parsedMaxRetriesString;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("retryDelaySeconds", out var retryDelaySecondsElement))
+            {
+                if (retryDelaySecondsElement.ValueKind == JsonValueKind.Number && retryDelaySecondsElement.TryGetInt32(out var parsedRetryDelay))
+                {
+                    retryDelaySeconds = parsedRetryDelay;
+                }
+                else if (retryDelaySecondsElement.ValueKind == JsonValueKind.String
+                         && int.TryParse(retryDelaySecondsElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedRetryDelayString))
+                {
+                    retryDelaySeconds = parsedRetryDelayString;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("agentTimeoutSeconds", out var agentTimeoutSecondsElement))
+            {
+                if (agentTimeoutSecondsElement.ValueKind == JsonValueKind.Number && agentTimeoutSecondsElement.TryGetInt32(out var parsedAgentTimeout))
+                {
+                    agentTimeoutSeconds = parsedAgentTimeout;
+                }
+                else if (agentTimeoutSecondsElement.ValueKind == JsonValueKind.String
+                         && int.TryParse(agentTimeoutSecondsElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedAgentTimeoutString))
+                {
+                    agentTimeoutSeconds = parsedAgentTimeoutString;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("ts", out var timestampElement))
+            {
+                if (timestampElement.ValueKind == JsonValueKind.Number && timestampElement.TryGetInt64(out var parsedTimestamp))
+                {
+                    timestamp = parsedTimestamp;
+                }
+                else if (timestampElement.ValueKind == JsonValueKind.String
+                         && long.TryParse(timestampElement.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedTimestampString))
+                {
+                    timestamp = parsedTimestampString;
                 }
             }
 
@@ -6045,6 +6461,18 @@ public sealed class WebSocketGateway
                 else if (enabledElement.ValueKind == JsonValueKind.False)
                 {
                     enabled = false;
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("agentUsePlaywright", out var agentUsePlaywrightElement))
+            {
+                if (agentUsePlaywrightElement.ValueKind == JsonValueKind.True)
+                {
+                    agentUsePlaywright = true;
+                }
+                else if (agentUsePlaywrightElement.ValueKind == JsonValueKind.False)
+                {
+                    agentUsePlaywright = false;
                 }
             }
 
@@ -6315,6 +6743,7 @@ public sealed class WebSocketGateway
                 GeminiModel = geminiModel,
                 CopilotModel = copilotModel,
                 CerebrasModel = cerebrasModel,
+                CodexModel = codexModel,
                 SummaryProvider = summaryProvider,
                 Action = action,
                 JobId = jobId,
@@ -6347,6 +6776,12 @@ public sealed class WebSocketGateway
                 NewName = newName,
                 FilePath = filePath,
                 RoutineId = routineId,
+                ExecutionMode = executionMode,
+                AgentProvider = agentProvider,
+                AgentModel = agentModel,
+                AgentStartUrl = agentStartUrl,
+                ScheduleSourceMode = scheduleSourceMode,
+                NotifyPolicy = notifyPolicy,
                 ScheduleKind = scheduleKind,
                 ScheduleTime = scheduleTime,
                 TimezoneId = timezoneId,
@@ -6370,7 +6805,12 @@ public sealed class WebSocketGateway
                 FromLine = fromLine,
                 Lines = lines,
                 DayOfMonth = dayOfMonth,
+                MaxRetries = maxRetries,
+                RetryDelaySeconds = retryDelaySeconds,
+                AgentTimeoutSeconds = agentTimeoutSeconds,
+                Timestamp = timestamp,
                 Enabled = enabled,
+                AgentUsePlaywright = agentUsePlaywright,
                 CompactConversation = compactConversation,
                 IncludeDisabled = includeDisabled,
                 IncludeTools = includeTools,
@@ -6672,6 +7112,7 @@ public sealed class WebSocketGateway
         public string? GeminiModel { get; set; }
         public string? CopilotModel { get; set; }
         public string? CerebrasModel { get; set; }
+        public string? CodexModel { get; set; }
         public string? SummaryProvider { get; set; }
         public string? Action { get; set; }
         public string? JobId { get; set; }
@@ -6704,6 +7145,12 @@ public sealed class WebSocketGateway
         public string? NewName { get; set; }
         public string? FilePath { get; set; }
         public string? RoutineId { get; set; }
+        public string? ExecutionMode { get; set; }
+        public string? AgentProvider { get; set; }
+        public string? AgentModel { get; set; }
+        public string? AgentStartUrl { get; set; }
+        public string? ScheduleSourceMode { get; set; }
+        public string? NotifyPolicy { get; set; }
         public string? ScheduleKind { get; set; }
         public string? ScheduleTime { get; set; }
         public string? TimezoneId { get; set; }
@@ -6712,6 +7159,7 @@ public sealed class WebSocketGateway
         public string? GroqApiKey { get; set; }
         public string? GeminiApiKey { get; set; }
         public string? CerebrasApiKey { get; set; }
+        public string? CodexApiKey { get; set; }
         public int? AuthTtlHours { get; set; }
         public int? TimeoutSeconds { get; set; }
         public int? RunTimeoutSeconds { get; set; }
@@ -6727,7 +7175,12 @@ public sealed class WebSocketGateway
         public int? FromLine { get; set; }
         public int? Lines { get; set; }
         public int? DayOfMonth { get; set; }
+        public int? MaxRetries { get; set; }
+        public int? RetryDelaySeconds { get; set; }
+        public int? AgentTimeoutSeconds { get; set; }
+        public long? Timestamp { get; set; }
         public bool? Enabled { get; set; }
+        public bool? AgentUsePlaywright { get; set; }
         public bool? CompactConversation { get; set; }
         public bool? IncludeDisabled { get; set; }
         public bool? IncludeTools { get; set; }

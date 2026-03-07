@@ -20,16 +20,21 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
     private static readonly HttpClient RedirectResolveHttpClient = CreateRedirectResolveHttpClient();
     private static readonly ConcurrentDictionary<string, string?> RedirectResolveCache = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, CachedSearchSnapshot> SuccessCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly GeminiGroundedRetriever _geminiGroundedRetriever;
+    private readonly ISearchRetriever _searchRetriever;
+    private readonly IEvidencePackBuilder _evidencePackBuilder;
 
     private sealed record CachedSearchSnapshot(
         IReadOnlyList<SearchDocument> Docs,
         DateTimeOffset CachedAtUtc
     );
 
-    public LegacyGeminiGroundingSearchGateway(GeminiGroundedRetriever geminiGroundedRetriever)
+    public LegacyGeminiGroundingSearchGateway(
+        ISearchRetriever searchRetriever,
+        IEvidencePackBuilder evidencePackBuilder
+    )
     {
-        _geminiGroundedRetriever = geminiGroundedRetriever;
+        _searchRetriever = searchRetriever;
+        _evidencePackBuilder = evidencePackBuilder;
     }
 
     public async Task<SearchResponse> SearchAsync(SearchRequest request, CancellationToken cancellationToken = default)
@@ -61,7 +66,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
         var maxResults = ResolveRetrieverMaxResults(targetCount, sourceConstrained);
         async Task<(GeminiGroundedRetrieverResult RetrieverResult, IReadOnlyList<SearchDocument> Docs)> RunAttemptAsync()
         {
-            var result = await _geminiGroundedRetriever
+            var result = await _searchRetriever
                 .RetrieveAsync(request, maxResults, cancellationToken)
                 .ConfigureAwait(false);
             if (result.Disabled)
@@ -104,7 +109,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
             );
             return new SearchResponse(SearchRetrieverPath.GeminiGrounding, firstAttempt.Docs, targetCount, true)
             {
-                EvidencePack = SearchEvidencePackBuilder.Build(
+                EvidencePack = _evidencePackBuilder.Build(
                     request,
                     firstAttempt.Docs,
                     targetCount,
@@ -136,7 +141,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
             );
             return new SearchResponse(SearchRetrieverPath.GeminiGrounding, secondAttempt.Docs, targetCount, true)
             {
-                EvidencePack = SearchEvidencePackBuilder.Build(
+                EvidencePack = _evidencePackBuilder.Build(
                     request,
                     secondAttempt.Docs,
                     targetCount,
@@ -168,7 +173,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
                 );
                 return new SearchResponse(SearchRetrieverPath.GeminiGrounding, cachedDocs, targetCount, true)
                 {
-                    EvidencePack = SearchEvidencePackBuilder.Build(
+                    EvidencePack = _evidencePackBuilder.Build(
                         request,
                         cachedDocs,
                         targetCount,
@@ -267,7 +272,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
         return docs.Count > 0;
     }
 
-    private static SearchResponse BuildBlockedResponse(
+    private SearchResponse BuildBlockedResponse(
         SearchRequest request,
         int targetCount,
         int minIndependentSources,
@@ -279,7 +284,7 @@ public sealed class LegacyGeminiGroundingSearchGateway : SearchGateway
         var blockedDocuments = documents ?? Array.Empty<SearchDocument>();
         return new SearchResponse(SearchRetrieverPath.GeminiGrounding, blockedDocuments, targetCount, false)
         {
-            EvidencePack = SearchEvidencePackBuilder.Build(
+            EvidencePack = _evidencePackBuilder.Build(
                 request,
                 blockedDocuments,
                 targetCount,

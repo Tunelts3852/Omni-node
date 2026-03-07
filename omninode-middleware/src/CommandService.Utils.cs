@@ -423,6 +423,7 @@ public sealed partial class CommandService
             "gemini" => _config.GeminiModel,
             "cerebras" => _config.CerebrasModel,
             "copilot" => _copilotWrapper.GetSelectedModel(),
+            "codex" => _config.CodexModel,
             _ => _llmRouter.GetSelectedGroqModel()
         };
     }
@@ -1834,22 +1835,20 @@ public sealed partial class CommandService
 
     private static string BuildMultiAssistantText(LlmMultiChatResult result)
     {
-        return $"""
-                [Groq]
-                {result.GroqText}
+        var blocks = new List<string>
+        {
+            $"[Groq]\n{result.GroqText}",
+            $"[Gemini]\n{result.GeminiText}",
+            $"[Cerebras]\n{result.CerebrasText}",
+            $"[Copilot]\n{result.CopilotText}"
+        };
+        if (!string.IsNullOrWhiteSpace(result.CodexText))
+        {
+            blocks.Add($"[Codex]\n{result.CodexText}");
+        }
 
-                [Gemini]
-                {result.GeminiText}
-
-                [Cerebras]
-                {result.CerebrasText}
-
-                [Copilot]
-                {result.CopilotText}
-
-                [공통 요약]
-                {result.Summary}
-                """;
+        blocks.Add($"[공통 요약]\n{result.Summary}");
+        return string.Join("\n\n", blocks);
     }
 
     private static string BuildCodeGenerationPrompt(string input, string languageHint, string modeLabel)

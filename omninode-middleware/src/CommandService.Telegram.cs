@@ -1395,6 +1395,7 @@ public sealed partial class CommandService
                 null,
                 null,
                 null,
+                null,
                 normalizedAttachments,
                 cancellationToken
             );
@@ -1434,6 +1435,7 @@ public sealed partial class CommandService
                 snapshot.MultiCopilotModel,
                 snapshot.MultiCerebrasModel,
                 snapshot.MultiSummaryProvider,
+                null,
                 normalizedAttachments,
                 cancellationToken
             );

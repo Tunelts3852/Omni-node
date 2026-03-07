@@ -8,6 +8,7 @@ public sealed class RuntimeSettings
     private const string GroqApiKeyService = "omninode_groq_api_key";
     private const string GeminiApiKeyService = "omninode_gemini_api_key";
     private const string CerebrasApiKeyService = "omninode_cerebras_api_key";
+    private const string CodexApiKeyService = "omninode_codex_api_key";
 
     private readonly object _lock = new();
     private string? _telegramBotToken;
@@ -15,6 +16,7 @@ public sealed class RuntimeSettings
     private string? _groqApiKey;
     private string? _geminiApiKey;
     private string? _cerebrasApiKey;
+    private string? _codexApiKey;
     private readonly string _cerebrasKeychainService;
     private readonly string _cerebrasKeychainAccount;
 
@@ -25,6 +27,7 @@ public sealed class RuntimeSettings
         _groqApiKey = config.GroqApiKey;
         _geminiApiKey = config.GeminiApiKey;
         _cerebrasApiKey = config.CerebrasApiKey;
+        _codexApiKey = config.CodexApiKey;
         _cerebrasKeychainService = string.IsNullOrWhiteSpace(config.CerebrasKeychainService)
             ? CerebrasApiKeyService
             : config.CerebrasKeychainService.Trim();
@@ -73,6 +76,14 @@ public sealed class RuntimeSettings
         }
     }
 
+    public string? GetCodexApiKey()
+    {
+        lock (_lock)
+        {
+            return _codexApiKey;
+        }
+    }
+
     public bool HasTelegramCredentials()
     {
         lock (_lock)
@@ -91,11 +102,13 @@ public sealed class RuntimeSettings
                 Mask(_groqApiKey),
                 Mask(_geminiApiKey),
                 Mask(_cerebrasApiKey),
+                Mask(_codexApiKey),
                 HasValue(_telegramBotToken),
                 HasValue(_telegramChatId),
                 HasValue(_groqApiKey),
                 HasValue(_geminiApiKey),
-                HasValue(_cerebrasApiKey)
+                HasValue(_cerebrasApiKey),
+                HasValue(_codexApiKey)
             );
         }
     }
@@ -156,6 +169,7 @@ public sealed class RuntimeSettings
         string? groqApiKey,
         string? geminiApiKey,
         string? cerebrasApiKey,
+        string? codexApiKey,
         bool persist
     )
     {
@@ -178,6 +192,12 @@ public sealed class RuntimeSettings
             {
                 _cerebrasApiKey = cerebrasApiKey.Trim();
                 updatedFields.Add("cerebras_api_key");
+            }
+
+            if (!string.IsNullOrWhiteSpace(codexApiKey))
+            {
+                _codexApiKey = codexApiKey.Trim();
+                updatedFields.Add("codex_api_key");
             }
         }
 
@@ -204,6 +224,11 @@ public sealed class RuntimeSettings
             if (!Persist(_cerebrasKeychainService, _cerebrasKeychainAccount, cerebrasApiKey))
             {
                 failed.Add("cerebras_api_key");
+            }
+
+            if (!Persist(CodexApiKeyService, KeychainAccount, codexApiKey))
+            {
+                failed.Add("codex_api_key");
             }
         }
 
@@ -259,6 +284,7 @@ public sealed class RuntimeSettings
             _groqApiKey = null;
             _geminiApiKey = null;
             _cerebrasApiKey = null;
+            _codexApiKey = null;
         }
 
         if (!deletePersisted)
@@ -280,6 +306,11 @@ public sealed class RuntimeSettings
         if (!SecretLoader.TryDeletePlatformSecret(_cerebrasKeychainService, _cerebrasKeychainAccount))
         {
             failed.Add("cerebras_api_key");
+        }
+
+        if (!SecretLoader.TryDeletePlatformSecret(CodexApiKeyService, KeychainAccount))
+        {
+            failed.Add("codex_api_key");
         }
 
         if (failed.Count > 0)
@@ -335,9 +366,11 @@ public sealed record SettingsSnapshot(
     string GroqApiKeyMasked,
     string GeminiApiKeyMasked,
     string CerebrasApiKeyMasked,
+    string CodexApiKeyMasked,
     bool TelegramBotTokenSet,
     bool TelegramChatIdSet,
     bool GroqApiKeySet,
     bool GeminiApiKeySet,
-    bool CerebrasApiKeySet
+    bool CerebrasApiKeySet,
+    bool CodexApiKeySet
 );

@@ -1,0 +1,290 @@
+namespace OmniNode.Middleware;
+
+public interface ICommandExecutionService
+{
+    Task<string> ExecuteAsync(
+        string input,
+        string source,
+        CancellationToken cancellationToken,
+        IReadOnlyList<InputAttachment>? attachments = null,
+        IReadOnlyList<string>? webUrls = null,
+        bool webSearchEnabled = true
+    );
+
+    TelegramExecutionMetadata GetCurrentTelegramExecutionMetadata();
+}
+
+public interface ISettingsApplicationService
+{
+    SettingsSnapshot GetSettingsSnapshot();
+    string UpdateTelegramCredentials(string? botToken, string? chatId, bool persist);
+    string UpdateLlmCredentials(
+        string? groqApiKey,
+        string? geminiApiKey,
+        string? cerebrasApiKey,
+        string? codexApiKey,
+        bool persist
+    );
+    string DeleteTelegramCredentials(bool deletePersisted);
+    string DeleteLlmCredentials(bool deletePersisted);
+    GeminiUsage GetGeminiUsageSnapshot();
+    Task<CopilotPremiumUsageSnapshot> GetCopilotPremiumUsageSnapshotAsync(
+        CancellationToken cancellationToken,
+        bool forceRefresh = false
+    );
+    Task<string> SendTelegramTestAsync(CancellationToken cancellationToken);
+    Task<string> StartCopilotLoginAsync(CancellationToken cancellationToken);
+    Task<string> StartCodexLoginAsync(CancellationToken cancellationToken);
+    Task<string> GetMetricsAsync(CancellationToken cancellationToken);
+    Task<CopilotStatus> GetCopilotStatusAsync(CancellationToken cancellationToken);
+    Task<CodexStatus> GetCodexStatusAsync(CancellationToken cancellationToken);
+    Task<string> LogoutCodexAsync(CancellationToken cancellationToken);
+    Task<IReadOnlyList<CopilotModelInfo>> GetCopilotModelsAsync(CancellationToken cancellationToken);
+    string GetSelectedCopilotModel();
+    IReadOnlyDictionary<string, CopilotUsage> GetCopilotLocalUsageSnapshot();
+    bool TrySetSelectedCopilotModel(string modelId);
+}
+
+public interface IConversationApplicationService
+{
+    IReadOnlyList<ConversationThreadSummary> ListConversations(string scope, string mode);
+    ConversationThreadView CreateConversation(
+        string scope,
+        string mode,
+        string? title,
+        string? project,
+        string? category,
+        IReadOnlyList<string>? tags
+    );
+    ConversationThreadView? GetConversation(string conversationId);
+    bool DeleteConversation(string conversationId);
+    ConversationThreadView UpdateConversationMetadata(
+        string conversationId,
+        string? title,
+        string? project,
+        string? category,
+        IReadOnlyList<string>? tags
+    );
+    WorkspaceFilePreview? ReadWorkspaceFile(string filePath, int maxChars = 120_000);
+}
+
+public interface IMemoryApplicationService
+{
+    string ClearMemory(string? scope, string source = "web");
+    IReadOnlyList<MemoryNoteItem> ListMemoryNotes();
+    MemoryNoteReadResult? ReadMemoryNote(string name);
+    (MemoryNoteRenameResult Result, int RelinkedConversations) RenameMemoryNote(string name, string newName);
+    MemoryNoteDeleteResult DeleteMemoryNotes(IReadOnlyList<string>? names);
+    Task<MemoryNoteCreateResult> CreateMemoryNoteAsync(
+        string conversationId,
+        string source,
+        bool compactConversation,
+        CancellationToken cancellationToken
+    );
+    MemorySearchToolResult SearchMemory(string query, int? maxResults = null, double? minScore = null);
+    MemoryGetToolResult GetMemory(string path, int? from = null, int? lines = null);
+}
+
+public interface IToolApplicationService
+{
+    SessionListToolResult ListSessions(
+        IReadOnlyList<string>? kinds = null,
+        int? limit = null,
+        int? activeMinutes = null,
+        int? messageLimit = null,
+        string? search = null,
+        string? scope = null,
+        string? mode = null
+    );
+    SessionHistoryToolResult GetSessionHistory(
+        string? sessionKey,
+        int? limit = null,
+        bool includeTools = false
+    );
+    SessionSendToolResult SendToSession(
+        string? sessionKey,
+        string? message,
+        int? timeoutSeconds = null
+    );
+    SessionSpawnToolResult SpawnSession(
+        string? task,
+        string? label = null,
+        string? runtime = null,
+        int? runTimeoutSeconds = null,
+        int? timeoutSeconds = null,
+        bool? thread = null,
+        string? mode = null
+    );
+    CronToolStatusResult GetCronStatus();
+    CronToolListResult ListCronJobs(
+        bool includeDisabled = false,
+        int? limit = null,
+        int? offset = null
+    );
+    CronToolRunsResult ListCronRuns(
+        string? jobId,
+        int? limit = null,
+        int? offset = null
+    );
+    CronToolAddResult AddCronJob(string? rawJobJson);
+    CronToolUpdateResult UpdateCronJob(string? jobId, string? rawPatchJson);
+    Task<CronToolRunResult> RunCronJobAsync(
+        string? jobId,
+        string? runMode,
+        string source,
+        CancellationToken cancellationToken
+    );
+    CronToolWakeResult WakeCron(
+        string? mode,
+        string? text,
+        string source
+    );
+    CronToolRemoveResult RemoveCronJob(string? jobId);
+    Task<WebSearchToolResult> SearchWebAsync(
+        string query,
+        int? count = null,
+        string? freshness = null,
+        CancellationToken cancellationToken = default,
+        string source = "web"
+    );
+    Task<WebFetchToolResult> FetchWebAsync(
+        string url,
+        string? extractMode = null,
+        int? maxChars = null,
+        CancellationToken cancellationToken = default
+    );
+    BrowserToolResult ExecuteBrowser(
+        string? action,
+        string? targetUrl = null,
+        string? profile = null,
+        string? targetId = null,
+        int? limit = null
+    );
+    CanvasToolResult ExecuteCanvas(
+        string? action,
+        string? profile = null,
+        string? target = null,
+        string? targetUrl = null,
+        string? javaScript = null,
+        string? jsonl = null,
+        string? outputFormat = null,
+        int? maxWidth = null
+    );
+    NodesToolResult ExecuteNodes(
+        string? action,
+        string? profile = null,
+        string? node = null,
+        string? requestId = null,
+        string? title = null,
+        string? body = null,
+        string? priority = null,
+        string? delivery = null,
+        string? invokeCommand = null,
+        string? invokeParamsJson = null
+    );
+}
+
+public interface IRoutineApplicationService
+{
+    IReadOnlyList<RoutineSummary> ListRoutines();
+    Task<RoutineActionResult> CreateRoutineAsync(string request, string source, CancellationToken cancellationToken);
+    Task<RoutineActionResult> CreateRoutineAsync(
+        string request,
+        string? title,
+        string? executionMode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl,
+        int? agentTimeoutSeconds,
+        bool? agentUsePlaywright,
+        string? scheduleSourceMode,
+        int? maxRetries,
+        int? retryDelaySeconds,
+        string? notifyPolicy,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        string source,
+        CancellationToken cancellationToken
+    );
+    Task<RoutineActionResult> UpdateRoutineAsync(
+        string routineId,
+        string request,
+        string? title,
+        string? executionMode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl,
+        int? agentTimeoutSeconds,
+        bool? agentUsePlaywright,
+        string? scheduleSourceMode,
+        int? maxRetries,
+        int? retryDelaySeconds,
+        string? notifyPolicy,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        CancellationToken cancellationToken
+    );
+    Task<RoutineActionResult> RunRoutineNowAsync(string routineId, string source, CancellationToken cancellationToken);
+    RoutineRunDetailResult GetRoutineRunDetail(string routineId, long ts);
+    Task<RoutineActionResult> ResendRoutineRunToTelegramAsync(
+        string routineId,
+        long ts,
+        CancellationToken cancellationToken
+    );
+    RoutineActionResult SetRoutineEnabled(string routineId, bool enabled);
+    RoutineActionResult DeleteRoutine(string routineId);
+}
+
+public interface IChatApplicationService
+{
+    Task<ConversationChatResult> ChatSingleWithStateAsync(
+        ChatRequest request,
+        CancellationToken cancellationToken,
+        Action<ChatStreamUpdate>? streamCallback = null
+    );
+    Task<ConversationChatResult> ChatOrchestrationWithStateAsync(
+        ChatRequest request,
+        CancellationToken cancellationToken
+    );
+    Task<ConversationMultiResult> ChatMultiWithStateAsync(
+        MultiChatRequest request,
+        CancellationToken cancellationToken
+    );
+}
+
+public interface ICodingApplicationService
+{
+    Task<CodingRunResult> RunCodingSingleAsync(
+        CodingRunRequest request,
+        CancellationToken cancellationToken,
+        Action<CodingProgressUpdate>? progressCallback = null
+    );
+    Task<CodingRunResult> RunCodingOrchestrationAsync(
+        CodingRunRequest request,
+        CancellationToken cancellationToken,
+        Action<CodingProgressUpdate>? progressCallback = null
+    );
+    Task<CodingRunResult> RunCodingMultiAsync(
+        CodingRunRequest request,
+        CancellationToken cancellationToken,
+        Action<CodingProgressUpdate>? progressCallback = null
+    );
+}
+
+public interface IGatewayApplicationService :
+    ICommandExecutionService,
+    ISettingsApplicationService,
+    IConversationApplicationService,
+    IMemoryApplicationService,
+    IToolApplicationService,
+    IRoutineApplicationService,
+    IChatApplicationService,
+    ICodingApplicationService
+{
+}

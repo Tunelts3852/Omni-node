@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace OmniNode.Middleware;
 
-public sealed class MemoryNoteStore
+public sealed class MemoryNoteStore : IMemoryNoteStore
 {
     private static readonly Regex MultiWhitespaceRegex = new(@"\s+", RegexOptions.Compiled);
     private static readonly HashSet<char> InvalidFileNameCharSet = Path.GetInvalidFileNameChars().ToHashSet();

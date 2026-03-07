@@ -3,7 +3,7 @@ namespace OmniNode.Middleware;
 public sealed class TelegramUpdateLoop
 {
     private readonly TelegramClient _telegramClient;
-    private readonly CommandService _commandService;
+    private readonly ICommandExecutionService _commandService;
     private readonly AppConfig _config;
     private readonly Dictionary<string, CommandWindow> _commandWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _rateLock = new();
@@ -11,7 +11,7 @@ public sealed class TelegramUpdateLoop
 
     public TelegramUpdateLoop(
         TelegramClient telegramClient,
-        CommandService commandService,
+        ICommandExecutionService commandService,
         AppConfig config
     )
     {

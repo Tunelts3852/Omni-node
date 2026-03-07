@@ -1,5 +1,3 @@
-using System.Runtime.InteropServices;
-
 namespace OmniNode.Middleware;
 
 public sealed class AppConfig
@@ -10,6 +8,7 @@ public sealed class AppConfig
     private const string GroqApiKeyService = "omninode_groq_api_key";
     private const string GeminiApiKeyService = "omninode_gemini_api_key";
     private const string CerebrasApiKeyService = "omninode_cerebras_api_key";
+    private const string CodexApiKeyService = "omninode_codex_api_key";
 
     public int WebSocketPort { get; init; } = 8080;
     public string CoreSocketPath { get; init; } = ResolveDefaultCoreSocketPath();
@@ -19,6 +18,8 @@ public sealed class AppConfig
     public string CopilotCliBinary { get; init; } = "gh";
     public string CopilotDirectBinary { get; init; } = "copilot";
     public string CopilotModel { get; init; } = "gpt-5-mini";
+    public string CodexBinary { get; init; } = "codex";
+    public string CodexModel { get; init; } = "gpt-5.4";
     public string PythonBinary { get; init; } = "python3";
     public string SandboxExecutorPath { get; init; } = "../omninode-sandbox/executor.py";
     public string DashboardIndexPath { get; init; } = ResolveDefaultDashboardIndexPath();
@@ -36,6 +37,7 @@ public sealed class AppConfig
     public string CerebrasKeychainService { get; init; } = CerebrasApiKeyService;
     public string CerebrasKeychainAccount { get; init; } = DefaultKeychainAccount;
     public string? CerebrasApiKey { get; init; }
+    public string? CodexApiKey { get; init; }
     public decimal GeminiInputPricePerMillionUsd { get; init; } = 0.50m;
     public decimal GeminiOutputPricePerMillionUsd { get; init; } = 3.00m;
     public string LlmUsageStatePath { get; init; } = "/tmp/omninode_llm_usage.json";
@@ -49,6 +51,8 @@ public sealed class AppConfig
     public string CodeRunsRootDir { get; init; } = "/tmp/omninode_code_runs";
     public int CodeExecutionTimeoutSec { get; init; } = 120;
     public string WorkspaceRootDir { get; init; } = ResolveDefaultWorkspaceRootDir();
+    public string RoutineStatePath { get; init; } = "/tmp/omninode_routines.json";
+    public string RoutinePromptDir { get; init; } = "/tmp/omninode_routine_prompts";
     public int CodingAgentMaxIterations { get; init; } = 6;
     public int CodingAgentMaxActionsPerIteration { get; init; } = 8;
     public int CodingCopilotMaxActionsPerIteration { get; init; } = 2;
@@ -86,10 +90,11 @@ public sealed class AppConfig
 
     public static AppConfig LoadFromEnvironment()
     {
+        var pathResolver = DefaultStatePathResolver.CreateDefault();
         return new AppConfig
         {
             WebSocketPort = GetIntEnv("OMNINODE_WS_PORT", 8080),
-            CoreSocketPath = GetStringEnv("OMNINODE_CORE_SOCKET_PATH", ResolveDefaultCoreSocketPath()),
+            CoreSocketPath = GetStringEnv("OMNINODE_CORE_SOCKET_PATH", pathResolver.CoreSocketPath),
             TelegramBotToken = SecretLoader.ResolveApiKey(
                 providerName: "telegram_bot_token",
                 directEnvKey: "OMNINODE_TELEGRAM_BOT_TOKEN",
@@ -112,9 +117,11 @@ public sealed class AppConfig
             CopilotCliBinary = GetStringEnv("OMNINODE_COPILOT_BIN", "gh"),
             CopilotDirectBinary = GetStringEnv("OMNINODE_COPILOT_DIRECT_BIN", "copilot"),
             CopilotModel = GetStringEnv("OMNINODE_COPILOT_MODEL", "gpt-5-mini"),
+            CodexBinary = GetStringEnv("OMNINODE_CODEX_BIN", "codex"),
+            CodexModel = GetStringEnv("OMNINODE_CODEX_MODEL", "gpt-5.4"),
             PythonBinary = GetStringEnv("OMNINODE_PYTHON_BIN", "python3"),
             SandboxExecutorPath = GetStringEnv("OMNINODE_SANDBOX_EXECUTOR", "../omninode-sandbox/executor.py"),
-            DashboardIndexPath = GetStringEnv("OMNINODE_DASHBOARD_INDEX", ResolveDefaultDashboardIndexPath()),
+            DashboardIndexPath = GetStringEnv("OMNINODE_DASHBOARD_INDEX", pathResolver.DashboardIndexPath),
             EnableDynamicCode = GetBoolEnv("OMNINODE_ENABLE_DYNAMIC_CODE", false),
             GroqApiKey = SecretLoader.ResolveApiKey(
                 providerName: "groq",
@@ -153,19 +160,30 @@ public sealed class AppConfig
                 defaultKeychainService: CerebrasApiKeyService,
                 defaultKeychainAccount: DefaultKeychainAccount
             ),
+            CodexApiKey = SecretLoader.ResolveApiKey(
+                providerName: "codex",
+                directEnvKey: "OMNINODE_CODEX_API_KEY",
+                fileEnvKey: "OMNINODE_CODEX_API_KEY_FILE",
+                keychainServiceEnvKey: "OMNINODE_CODEX_KEYCHAIN_SERVICE",
+                keychainAccountEnvKey: "OMNINODE_CODEX_KEYCHAIN_ACCOUNT",
+                defaultKeychainService: CodexApiKeyService,
+                defaultKeychainAccount: DefaultKeychainAccount
+            ),
             GeminiInputPricePerMillionUsd = GetDecimalEnv("OMNINODE_GEMINI_INPUT_PRICE_PER_MILLION_USD", 0.50m),
             GeminiOutputPricePerMillionUsd = GetDecimalEnv("OMNINODE_GEMINI_OUTPUT_PRICE_PER_MILLION_USD", 3.00m),
-            LlmUsageStatePath = GetStringEnv("OMNINODE_LLM_USAGE_STATE_PATH", BuildDefaultStateFilePath("llm_usage.json")),
-            CopilotUsageStatePath = GetStringEnv("OMNINODE_COPILOT_USAGE_STATE_PATH", BuildDefaultStateFilePath("copilot_usage.json")),
-            ConversationStatePath = GetStringEnv("OMNINODE_CONVERSATION_STATE_PATH", BuildDefaultStateFilePath("conversations.json")),
-            AuthSessionStatePath = GetStringEnv("OMNINODE_AUTH_SESSION_STATE_PATH", BuildDefaultStateFilePath("auth_sessions.json")),
-            MemoryNotesRootDir = GetStringEnv("OMNINODE_MEMORY_NOTES_DIR", Path.Combine(BuildDefaultStateDir(), "memory-notes")),
+            LlmUsageStatePath = GetStringEnv("OMNINODE_LLM_USAGE_STATE_PATH", pathResolver.ResolveStateFilePath("llm_usage.json")),
+            CopilotUsageStatePath = GetStringEnv("OMNINODE_COPILOT_USAGE_STATE_PATH", pathResolver.ResolveStateFilePath("copilot_usage.json")),
+            ConversationStatePath = GetStringEnv("OMNINODE_CONVERSATION_STATE_PATH", pathResolver.ResolveStateFilePath("conversations.json")),
+            AuthSessionStatePath = GetStringEnv("OMNINODE_AUTH_SESSION_STATE_PATH", pathResolver.ResolveStateFilePath("auth_sessions.json")),
+            MemoryNotesRootDir = GetStringEnv("OMNINODE_MEMORY_NOTES_DIR", pathResolver.ResolveStateDirectoryPath("memory-notes")),
             ConversationCompressChars = GetIntEnv("OMNINODE_CONVERSATION_COMPRESS_CHARS", 12000),
             ConversationKeepRecentMessages = GetIntEnv("OMNINODE_CONVERSATION_KEEP_RECENT_MESSAGES", 16),
             ConversationHistoryMessages = GetIntEnv("OMNINODE_CONVERSATION_HISTORY_MESSAGES", 18),
-            CodeRunsRootDir = GetStringEnv("OMNINODE_CODE_RUNS_DIR", Path.Combine(BuildDefaultStateDir(), "code-runs")),
+            CodeRunsRootDir = GetStringEnv("OMNINODE_CODE_RUNS_DIR", pathResolver.ResolveStateDirectoryPath("code-runs")),
             CodeExecutionTimeoutSec = GetIntEnv("OMNINODE_CODE_EXEC_TIMEOUT_SEC", 120),
-            WorkspaceRootDir = GetStringEnv("OMNINODE_WORKSPACE_ROOT", ResolveDefaultWorkspaceRootDir()),
+            WorkspaceRootDir = GetStringEnv("OMNINODE_WORKSPACE_ROOT", pathResolver.WorkspaceRootDir),
+            RoutineStatePath = GetStringEnv("OMNINODE_ROUTINE_STATE_PATH", pathResolver.ResolveStateFilePath("routines.json")),
+            RoutinePromptDir = GetStringEnv("OMNINODE_ROUTINE_PROMPT_DIR", pathResolver.RoutinePromptDir),
             CodingAgentMaxIterations = GetIntEnv("OMNINODE_CODING_AGENT_MAX_ITERATIONS", 6),
             CodingAgentMaxActionsPerIteration = GetIntEnv("OMNINODE_CODING_AGENT_MAX_ACTIONS", 8),
             CodingCopilotMaxActionsPerIteration = GetIntEnv("OMNINODE_CODING_COPILOT_MAX_ACTIONS", 2),
@@ -189,9 +207,9 @@ public sealed class AppConfig
             GuardAlertLogCollectorUrl = GetStringEnv("OMNINODE_GUARD_ALERT_LOG_COLLECTOR_URL", string.Empty),
             GuardAlertDispatchTimeoutMs = Math.Clamp(GetIntEnv("OMNINODE_GUARD_ALERT_DISPATCH_TIMEOUT_MS", 3500), 500, 120000),
             GuardAlertDispatchMaxAttempts = Math.Clamp(GetIntEnv("OMNINODE_GUARD_ALERT_DISPATCH_MAX_ATTEMPTS", 2), 1, 5),
-            GuardRetryTimelineStatePath = GetStringEnv("OMNINODE_GUARD_RETRY_TIMELINE_STATE_PATH", BuildDefaultStateFilePath("guard_retry_timeline.json")),
-            GatewayHealthStatePath = GetStringEnv("OMNINODE_GATEWAY_HEALTH_STATE_PATH", BuildDefaultStateFilePath("gateway_health.json")),
-            GatewayStartupProbeStatePath = GetStringEnv("OMNINODE_GATEWAY_STARTUP_PROBE_STATE_PATH", BuildDefaultStateFilePath("gateway_startup_probe.json")),
+            GuardRetryTimelineStatePath = GetStringEnv("OMNINODE_GUARD_RETRY_TIMELINE_STATE_PATH", pathResolver.ResolveStateFilePath("guard_retry_timeline.json")),
+            GatewayHealthStatePath = GetStringEnv("OMNINODE_GATEWAY_HEALTH_STATE_PATH", pathResolver.ResolveStateFilePath("gateway_health.json")),
+            GatewayStartupProbeStatePath = GetStringEnv("OMNINODE_GATEWAY_STARTUP_PROBE_STATE_PATH", pathResolver.ResolveStateFilePath("gateway_startup_probe.json")),
             EnableHealthEndpoint = GetBoolEnv("OMNINODE_ENABLE_HEALTH_ENDPOINT", true),
             EnableGatewayStartupProbe = GetBoolEnv("OMNINODE_GATEWAY_STARTUP_PROBE", false),
             GatewayStartupProbeDelayMs = Math.Max(0, GetIntEnv("OMNINODE_GATEWAY_STARTUP_PROBE_DELAY_MS", 250)),
@@ -236,99 +254,16 @@ public sealed class AppConfig
 
     private static string ResolveDefaultDashboardIndexPath()
     {
-        var baseDir = AppContext.BaseDirectory;
-        var cwd = Directory.GetCurrentDirectory();
-        var candidates = new[]
-        {
-            Path.GetFullPath(Path.Combine(baseDir, "../../../../omninode-dashboard/index.html")),
-            Path.GetFullPath(Path.Combine(cwd, "omninode-dashboard/index.html")),
-            Path.GetFullPath(Path.Combine(cwd, "../omninode-dashboard/index.html"))
-        };
-
-        foreach (var candidate in candidates)
-        {
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return candidates[0];
+        return DefaultStatePathResolver.CreateDefault().DashboardIndexPath;
     }
 
     private static string ResolveDefaultCoreSocketPath()
     {
-        try
-        {
-            var uid = GetCurrentUnixUid();
-            return $"/tmp/omninode_core.{uid}.sock";
-        }
-        catch
-        {
-            return "/tmp/omninode_core.sock";
-        }
+        return DefaultStatePathResolver.CreateDefault().CoreSocketPath;
     }
 
     private static string ResolveDefaultWorkspaceRootDir()
     {
-        var baseDir = AppContext.BaseDirectory;
-        var cwd = Directory.GetCurrentDirectory();
-        var candidates = new[]
-        {
-            Path.GetFullPath(Path.Combine(baseDir, "../../../../coding")),
-            Path.GetFullPath(Path.Combine(cwd, "coding")),
-            Path.GetFullPath(Path.Combine(cwd, "../Omni-node/coding")),
-            Path.GetFullPath(Path.Combine(cwd, "../coding"))
-        };
-
-        foreach (var candidate in candidates)
-        {
-            var parent = Directory.GetParent(candidate);
-            if (parent != null && Directory.Exists(parent.FullName))
-            {
-                return candidate;
-            }
-        }
-
-        return candidates[0];
-    }
-
-    private static uint GetCurrentUnixUid()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            return 0;
-        }
-
-        try
-        {
-            return PosixNative.getuid();
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private static class PosixNative
-    {
-        [DllImport("libc", SetLastError = true)]
-        internal static extern uint getuid();
-    }
-
-    private static string BuildDefaultStateFilePath(string fileName)
-    {
-        return Path.Combine(BuildDefaultStateDir(), fileName);
-    }
-
-    private static string BuildDefaultStateDir()
-    {
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (string.IsNullOrWhiteSpace(home))
-        {
-            return "/tmp";
-        }
-
-        return Path.Combine(home, ".omninode");
+        return DefaultStatePathResolver.CreateDefault().WorkspaceRootDir;
     }
 }

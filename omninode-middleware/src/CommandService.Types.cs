@@ -20,7 +20,9 @@ public sealed record LlmMultiChatResult(
     string CerebrasModel,
     string CopilotModel,
     string RequestedSummaryProvider,
-    string ResolvedSummaryProvider
+    string ResolvedSummaryProvider,
+    string CodexText = "",
+    string CodexModel = ""
 );
 public sealed record InputAttachment(
     string Name,
@@ -71,7 +73,8 @@ public sealed record ChatRequest(
     string? CerebrasModel = null,
     IReadOnlyList<InputAttachment>? Attachments = null,
     IReadOnlyList<string>? WebUrls = null,
-    bool WebSearchEnabled = true
+    bool WebSearchEnabled = true,
+    string? CodexModel = null
 );
 public sealed record MultiChatRequest(
     string Input,
@@ -91,7 +94,8 @@ public sealed record MultiChatRequest(
     IReadOnlyList<string>? LinkedMemoryNotes,
     IReadOnlyList<InputAttachment>? Attachments = null,
     IReadOnlyList<string>? WebUrls = null,
-    bool WebSearchEnabled = true
+    bool WebSearchEnabled = true,
+    string? CodexModel = null
 );
 public sealed record ChatStreamUpdate(
     string Scope,
@@ -147,7 +151,9 @@ public sealed record ConversationMultiResult(
     SearchAnswerGuardFailure? GuardFailure = null,
     IReadOnlyList<SearchCitationReference>? Citations = null,
     IReadOnlyList<SearchCitationSentenceMapping>? CitationMappings = null,
-    SearchCitationValidationSummary? CitationValidation = null
+    SearchCitationValidationSummary? CitationValidation = null,
+    string CodexText = "",
+    string CodexModel = ""
 );
 public sealed record CodingRunRequest(
     string Input,
@@ -169,7 +175,8 @@ public sealed record CodingRunRequest(
     string? CopilotModel = null,
     IReadOnlyList<InputAttachment>? Attachments = null,
     IReadOnlyList<string>? WebUrls = null,
-    bool WebSearchEnabled = true
+    bool WebSearchEnabled = true,
+    string? CodexModel = null
 );
 public sealed record CodingWorkerResult(
     string Provider,
@@ -239,7 +246,18 @@ public sealed record RoutineSummary(
     string Id,
     string Title,
     string Request,
+    string ExecutionMode,
+    string ResolvedExecutionMode,
+    string? AgentProvider,
+    string? AgentModel,
+    string? AgentStartUrl,
+    int? AgentTimeoutSeconds,
+    bool AgentUsePlaywright,
     string ScheduleText,
+    string ScheduleSourceMode,
+    int MaxRetries,
+    int RetryDelaySeconds,
+    string NotifyPolicy,
     bool Enabled,
     string NextRunLocal,
     string LastRunLocal,
@@ -261,11 +279,46 @@ public sealed record RoutineRunSummary(
     long Ts,
     string RunAtLocal,
     string Status,
+    string Source,
+    int AttemptCount,
     string Summary,
     string? Error,
+    string? TelegramStatus,
+    string? ArtifactPath,
+    string? AgentSessionId,
+    string? AgentRunId,
+    string? AgentProvider,
+    string? AgentModel,
+    string? ToolProfile,
+    string? StartUrl,
+    string? FinalUrl,
+    string? PageTitle,
+    string? ScreenshotPath,
     long? DurationMs,
     string DurationText,
     string? NextRunLocal
+);
+public sealed record RoutineRunDetailResult(
+    bool Ok,
+    string RoutineId,
+    long Ts,
+    string Title,
+    string Status,
+    string Source,
+    int AttemptCount,
+    string? TelegramStatus,
+    string? ArtifactPath,
+    string? AgentSessionId,
+    string? AgentRunId,
+    string? AgentProvider,
+    string? AgentModel,
+    string? ToolProfile,
+    string? StartUrl,
+    string? FinalUrl,
+    string? PageTitle,
+    string? ScreenshotPath,
+    string? Error,
+    string Content
 );
 public sealed record CronToolStatusResult(
     bool Enabled,
@@ -345,8 +398,12 @@ public sealed record CronToolRunLogEntry(
     string JobId,
     string Action,
     string? Status,
+    string? Source,
+    int AttemptCount,
     string? Error,
     string? Summary,
+    string? TelegramStatus,
+    string? ArtifactPath,
     long? RunAtMs,
     long? DurationMs,
     long? NextRunAtMs,
@@ -397,7 +454,18 @@ internal sealed class RoutineDefinition
     public string Id { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
     public string Request { get; set; } = string.Empty;
+    public string ExecutionMode { get; set; } = string.Empty;
+    public string? AgentProvider { get; set; }
+    public string? AgentModel { get; set; }
+    public string? AgentStartUrl { get; set; }
+    public int? AgentTimeoutSeconds { get; set; }
+    public bool AgentUsePlaywright { get; set; }
     public string ScheduleText { get; set; } = string.Empty;
+    public string ScheduleSourceMode { get; set; } = string.Empty;
+    public int MaxRetries { get; set; }
+    public int RetryDelaySeconds { get; set; } = 15;
+    public string NotifyPolicy { get; set; } = "always";
+    public string? LastNotifiedFingerprint { get; set; }
     public string TimezoneId { get; set; } = TimeZoneInfo.Local.Id;
     public int Hour { get; set; }
     public int Minute { get; set; }
@@ -413,6 +481,7 @@ internal sealed class RoutineDefinition
     public string Planner { get; set; } = string.Empty;
     public string PlannerModel { get; set; } = string.Empty;
     public string CoderModel { get; set; } = string.Empty;
+    public bool NotifyTelegram { get; set; }
     public string? CronDescription { get; set; }
     public string CronSessionTarget { get; set; } = "main";
     public string CronWakeMode { get; set; } = "next-heartbeat";
@@ -436,12 +505,44 @@ internal sealed class RoutineRunLogEntry
     public string JobId { get; set; } = string.Empty;
     public string Action { get; set; } = "finished";
     public string? Status { get; set; }
+    public string? Source { get; set; }
+    public int AttemptCount { get; set; } = 1;
     public string? Error { get; set; }
     public string? Summary { get; set; }
+    public string? TelegramStatus { get; set; }
+    public string? ArtifactPath { get; set; }
+    public string? AgentSessionId { get; set; }
+    public string? AgentRunId { get; set; }
+    public string? AgentProvider { get; set; }
+    public string? AgentModel { get; set; }
+    public string? ToolProfile { get; set; }
+    public string? StartUrl { get; set; }
+    public string? FinalUrl { get; set; }
+    public string? PageTitle { get; set; }
+    public string? ScreenshotPath { get; set; }
     public long? RunAtMs { get; set; }
     public long? DurationMs { get; set; }
     public long? NextRunAtMs { get; set; }
 }
+
+internal sealed record RoutineAgentExecutionMetadata(
+    string? SessionKey,
+    string? RunId,
+    string? Provider,
+    string? Model,
+    string? ToolProfile,
+    string? StartUrl,
+    string? FinalUrl,
+    string? PageTitle,
+    string? ScreenshotPath
+);
+
+internal sealed record RoutineExecutionOutcome(
+    string Output,
+    string Status,
+    string? Error,
+    RoutineAgentExecutionMetadata? AgentMetadata = null
+);
 
 internal sealed class TelegramLlmPreferences
 {

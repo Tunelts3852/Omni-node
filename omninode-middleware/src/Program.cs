@@ -15,6 +15,10 @@ internal static class Program
         using var groqModelCatalog = new GroqModelCatalog(config, runtimeSettings);
         var memoryNoteStore = new MemoryNoteStore(config.MemoryNotesRootDir);
         var conversationStore = new ConversationStore(config.ConversationStatePath);
+        IMemoryNoteStore memoryNoteStoreService = memoryNoteStore;
+        IConversationStore conversationStoreService = conversationStore;
+        IAuthSessionStore authSessionStore = sessionManager;
+        IRoutineStore routineStore = new FileRoutineStore(config.RoutineStatePath);
         var codeRunner = new UniversalCodeRunner(config.CodeRunsRootDir, config.CodeExecutionTimeoutSec);
         var copilotWrapper = new CopilotCliWrapper(
             config.CopilotCliBinary,
@@ -23,17 +27,30 @@ internal static class Program
             config.CopilotUsageStatePath,
             Math.Max(config.LlmTimeoutSec, 120)
         );
-        var providerRegistry = new ProviderRegistry(llmRouter, copilotWrapper);
+        var codexWrapper = new CodexCliWrapper(
+            config.CodexBinary,
+            runtimeSettings,
+            config.WorkspaceRootDir,
+            config.CodexModel,
+            Math.Max(config.LlmTimeoutSec, 120)
+        );
+        var providerRegistry = new ProviderRegistry(llmRouter, copilotWrapper, codexWrapper);
         var toolRegistry = new ToolRegistry(runtimeSettings);
         var geminiGroundedRetriever = new GeminiGroundedRetriever(config, runtimeSettings);
-        var searchGateway = new LegacyGeminiGroundingSearchGateway(geminiGroundedRetriever);
+        var searchEvidencePackBuilder = new DefaultSearchEvidencePackBuilder();
+        var searchGuard = new DefaultSearchGuard();
+        var searchGateway = new LegacyGeminiGroundingSearchGateway(geminiGroundedRetriever, searchEvidencePackBuilder);
         var webFetchTool = new WebFetchTool(config);
         var memorySearchTool = new MemorySearchTool(config);
         var memoryGetTool = new MemoryGetTool(config);
         var sessionListTool = new SessionListTool(conversationStore);
         var sessionHistoryTool = new SessionHistoryTool(conversationStore);
         var sessionSendTool = new SessionSendTool(conversationStore);
-        var acpSessionBindingAdapter = new AcpSessionBindingAdapter(config.WorkspaceRootDir);
+        var acpSessionBindingAdapter = new AcpSessionBindingAdapter(
+            config.WorkspaceRootDir,
+            config.CodexBinary,
+            runtimeSettings
+        );
         var sessionSpawnTool = new SessionSpawnTool(conversationStore, acpSessionBindingAdapter);
         var browserTool = new BrowserTool(config);
         var canvasTool = new CanvasTool(config);
@@ -80,6 +97,7 @@ internal static class Program
             providerRegistry,
             toolRegistry,
             searchGateway,
+            searchGuard,
             webFetchTool,
             memorySearchTool,
             memoryGetTool,
@@ -91,9 +109,11 @@ internal static class Program
             canvasTool,
             nodesTool,
             copilotWrapper,
+            codexWrapper,
             sandboxClient,
-            memoryNoteStore,
-            conversationStore,
+            memoryNoteStoreService,
+            conversationStoreService,
+            routineStore,
             codeRunner,
             auditLogger
         );
@@ -101,7 +121,7 @@ internal static class Program
         var webSocketGateway = new WebSocketGateway(
             config,
             config.WebSocketPort,
-            sessionManager,
+            authSessionStore,
             telegramClient,
             commandService,
             llmRouter,

@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace OmniNode.Middleware;
 
-public sealed class SessionManager
+public sealed class SessionManager : IAuthSessionStore
 {
     private readonly ConcurrentDictionary<string, SessionRecord> _sessions = new();
     private readonly ConcurrentDictionary<string, TrustedSessionRecord> _trustedSessions = new();

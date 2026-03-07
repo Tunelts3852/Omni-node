@@ -310,11 +310,16 @@ public sealed class SessionSpawnTool
                 );
             }
 
+            var finalReply = string.IsNullOrWhiteSpace(dispatchResult.RawOutput)
+                ? AcpRunAnnounceReply
+                : dispatchResult.RawOutput.Trim();
             _ = _conversationStore.AppendMessage(
                 created.Id,
                 "assistant",
-                AcpRunAnnounceReply,
-                "sessions_spawn_acp_announced"
+                finalReply,
+                string.IsNullOrWhiteSpace(dispatchResult.RawOutput)
+                    ? "sessions_spawn_acp_announced"
+                    : "sessions_spawn_acp_result"
             );
             _ = _conversationStore.AppendMessage(
                 created.Id,

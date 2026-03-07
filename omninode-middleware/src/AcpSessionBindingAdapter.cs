@@ -32,18 +32,25 @@ public sealed class AcpSessionBindingAdapter
 {
     private const int DefaultAdapterTimeoutMs = 15_000;
     private const int MaxAdapterTimeoutMs = 300_000;
+    private const string BundledCodexAdapterRelativePath = "omninode-middleware/tools/acp-adapter-codex-exec.js";
     private readonly string _workspaceRoot;
+    private readonly string _codexBinaryPath;
+    private readonly RuntimeSettings _runtimeSettings;
     private readonly string _configuredMode;
     private readonly string? _configuredCommand;
 
-    public AcpSessionBindingAdapter(string workspaceRoot)
+    public AcpSessionBindingAdapter(string workspaceRoot, string? codexBinaryPath, RuntimeSettings runtimeSettings)
     {
         _workspaceRoot = string.IsNullOrWhiteSpace(workspaceRoot)
             ? Directory.GetCurrentDirectory()
             : workspaceRoot;
+        _codexBinaryPath = string.IsNullOrWhiteSpace(codexBinaryPath) ? "codex" : codexBinaryPath.Trim();
+        _runtimeSettings = runtimeSettings;
         _configuredMode = NormalizeMode(Environment.GetEnvironmentVariable("OMNINODE_ACP_ADAPTER_MODE"));
         var configuredCommand = (Environment.GetEnvironmentVariable("OMNINODE_ACP_ADAPTER_COMMAND") ?? string.Empty).Trim();
-        _configuredCommand = string.IsNullOrWhiteSpace(configuredCommand) ? null : configuredCommand;
+        _configuredCommand = string.IsNullOrWhiteSpace(configuredCommand)
+            ? ResolveBundledAdapterCommand(_workspaceRoot)
+            : configuredCommand;
     }
 
     public AcpSessionBindingDispatchResult Dispatch(AcpSessionBindingDispatchRequest request)
@@ -111,6 +118,12 @@ public sealed class AcpSessionBindingAdapter
             UseShellExecute = false,
             CreateNoWindow = true
         };
+        startInfo.Environment["OMNINODE_ACP_ADAPTER_CODEX_BIN"] = _codexBinaryPath;
+        var codexApiKey = _runtimeSettings.GetCodexApiKey();
+        if (!string.IsNullOrWhiteSpace(codexApiKey))
+        {
+            startInfo.Environment["OPENAI_API_KEY"] = codexApiKey.Trim();
+        }
 
         using var process = new Process { StartInfo = startInfo };
         try
@@ -199,7 +212,7 @@ public sealed class AcpSessionBindingAdapter
                 Error: resolvedError,
                 BackendSessionId: parsed?.BackendSessionId,
                 ThreadBindingKey: parsed?.ThreadBindingKey,
-                RawOutput: TrimRawOutput(stdout)
+                RawOutput: parsed?.RawOutput ?? TrimRawOutput(stdout)
             );
         }
 
@@ -214,7 +227,7 @@ public sealed class AcpSessionBindingAdapter
                 Error: parsed.Error,
                 BackendSessionId: parsed.BackendSessionId,
                 ThreadBindingKey: parsed.ThreadBindingKey,
-                RawOutput: TrimRawOutput(stdout)
+                RawOutput: parsed.RawOutput ?? TrimRawOutput(stdout)
             );
         }
 
@@ -285,7 +298,8 @@ public sealed class AcpSessionBindingAdapter
                     : TrimLine(message),
                 Error: string.IsNullOrWhiteSpace(error) ? null : TrimLine(error),
                 BackendSessionId: NormalizeOptional(ReadString(root, "backendSessionId")),
-                ThreadBindingKey: NormalizeOptional(ReadString(root, "threadBindingKey"))
+                ThreadBindingKey: NormalizeOptional(ReadString(root, "threadBindingKey")),
+                RawOutput: NormalizeOptional(ReadString(root, "rawOutput"))
             );
         }
         catch (JsonException)
@@ -340,6 +354,70 @@ public sealed class AcpSessionBindingAdapter
             "staged" => "staged",
             _ => "auto"
         };
+    }
+
+    private static string? ResolveBundledAdapterCommand(string workspaceRoot)
+    {
+        if (!CommandExistsOnPath("codex"))
+        {
+            return null;
+        }
+
+        foreach (var candidate in EnumerateBundledAdapterCandidates(workspaceRoot))
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> EnumerateBundledAdapterCandidates(string workspaceRoot)
+    {
+        var yielded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentDir = Directory.GetCurrentDirectory();
+        foreach (var path in new[]
+                 {
+                     Path.Combine(currentDir, BundledCodexAdapterRelativePath),
+                     Path.Combine(currentDir, "tools", "acp-adapter-codex-exec.js"),
+                     Path.Combine(workspaceRoot, "..", BundledCodexAdapterRelativePath),
+                     Path.Combine(workspaceRoot, "..", "tools", "acp-adapter-codex-exec.js"),
+                     Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "tools", "acp-adapter-codex-exec.js")
+                 })
+        {
+            var fullPath = Path.GetFullPath(path);
+            if (yielded.Add(fullPath))
+            {
+                yield return fullPath;
+            }
+        }
+    }
+
+    private static bool CommandExistsOnPath(string command)
+    {
+        var pathValue = Environment.GetEnvironmentVariable("PATH");
+        if (string.IsNullOrWhiteSpace(pathValue))
+        {
+            return false;
+        }
+
+        foreach (var rawSegment in pathValue.Split(Path.PathSeparator))
+        {
+            if (string.IsNullOrWhiteSpace(rawSegment))
+            {
+                continue;
+            }
+
+            var candidate = Path.Combine(rawSegment.Trim(), command);
+            if (File.Exists(candidate))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static string? ReadString(JsonElement root, string key)
@@ -411,7 +489,8 @@ public sealed class AcpSessionBindingAdapter
         string Message,
         string? Error,
         string? BackendSessionId,
-        string? ThreadBindingKey
+        string? ThreadBindingKey,
+        string? RawOutput
     );
 
     private static string BuildCommandPayloadJson(AcpSessionBindingDispatchRequest request)

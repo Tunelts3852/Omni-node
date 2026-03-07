@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 
 namespace OmniNode.Middleware;
 
-public sealed class ConversationStore
+public sealed class ConversationStore : IConversationStore
 {
     private static readonly Regex UnsafeTokenRegex = new("[^a-z0-9._-]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private readonly string _statePath;

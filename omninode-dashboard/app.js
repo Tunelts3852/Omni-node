@@ -1,147 +1,35 @@
+import {
+  CHAT_MODES,
+  CODING_LANGUAGES,
+  CODING_MODES,
+  CODEX_MODEL_CHOICES,
+  DEFAULT_CODEX_MODEL,
+  DEFAULT_MOBILE_PANES,
+  DEFAULT_ROUTINE_AGENT_MODEL,
+  DEFAULT_ROUTINE_AGENT_PROVIDER,
+  ROUTINE_WEEKDAY_OPTIONS
+} from "./modules/dashboard-constants.js";
+import {
+  buildRoutineImagePreviewUrl,
+  buildRoutinePayloadFromForm,
+  createRoutineFormState,
+  formatRoutineExecutionModeLabel,
+  formatRoutineSchedulePreview,
+  getRoutineAgentModelFallback,
+  getRoutineLocalTimezone,
+  getViewportSnapshot,
+  hydrateRoutineFormFromRoutine,
+  normalizeRoutineExecutionModeValue,
+  normalizeRoutineNotifyPolicy,
+  normalizeRoutineScheduleSourceMode,
+  normalizeRoutineWeekdays
+  ,
+  resolveRoutineVisibleExecutionMode
+} from "./modules/routine-utils.js";
+
 (function () {
   const { useEffect, useMemo, useRef, useState } = React;
   const e = React.createElement;
-
-  const CHAT_MODES = [
-    { key: "single", label: "단일 모델" },
-    { key: "orchestration", label: "오케스트레이션" },
-    { key: "multi", label: "다중 LLM" }
-  ];
-
-  const CODING_MODES = [
-    { key: "single", label: "단일 코딩" },
-    { key: "orchestration", label: "오케스트레이션 코딩" },
-    { key: "multi", label: "다중 코딩" }
-  ];
-
-  const CODING_LANGUAGES = [
-    ["auto", "자동"],
-    ["python", "Python"],
-    ["javascript", "JavaScript"],
-    ["c", "C"],
-    ["cpp", "C++"],
-    ["csharp", "C#"],
-    ["java", "Java"],
-    ["kotlin", "Kotlin"],
-    ["html", "HTML"],
-    ["css", "CSS"],
-    ["bash", "Bash"]
-  ];
-  const ROUTINE_WEEKDAY_OPTIONS = [
-    { value: 1, label: "월" },
-    { value: 2, label: "화" },
-    { value: 3, label: "수" },
-    { value: 4, label: "목" },
-    { value: 5, label: "금" },
-    { value: 6, label: "토" },
-    { value: 0, label: "일" }
-  ];
-
-  function getRoutineLocalTimezone() {
-    try {
-      return Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Seoul";
-    } catch (_err) {
-      return "Asia/Seoul";
-    }
-  }
-
-  function normalizeRoutineWeekdays(values) {
-    if (!Array.isArray(values)) {
-      return [];
-    }
-
-    const normalized = values
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value))
-      .map((value) => (value === 7 ? 0 : value))
-      .filter((value) => value >= 0 && value <= 6);
-    const unique = Array.from(new Set(normalized));
-    unique.sort((a, b) => {
-      const normalizedA = a === 0 ? 7 : a;
-      const normalizedB = b === 0 ? 7 : b;
-      return normalizedA - normalizedB;
-    });
-    return unique;
-  }
-
-  function formatRoutineWeekdayLabel(value) {
-    switch (value) {
-      case 0: return "일";
-      case 1: return "월";
-      case 2: return "화";
-      case 3: return "수";
-      case 4: return "목";
-      case 5: return "금";
-      case 6: return "토";
-      default: return "월";
-    }
-  }
-
-  function createRoutineFormState(overrides = {}) {
-    return {
-      title: "",
-      request: "",
-      scheduleKind: "daily",
-      scheduleTime: "08:00",
-      dayOfMonth: 1,
-      weekdays: [1, 2, 3, 4, 5],
-      timezoneId: getRoutineLocalTimezone(),
-      ...overrides
-    };
-  }
-
-  function hydrateRoutineFormFromRoutine(routine) {
-    if (!routine) {
-      return createRoutineFormState();
-    }
-
-    return createRoutineFormState({
-      title: routine.title || "",
-      request: routine.request || "",
-      scheduleKind: routine.scheduleKind || "daily",
-      scheduleTime: routine.timeOfDay || "08:00",
-      dayOfMonth: Number.isFinite(routine.dayOfMonth) ? Number(routine.dayOfMonth) : 1,
-      weekdays: normalizeRoutineWeekdays(routine.weekdays || []),
-      timezoneId: routine.timezoneId || getRoutineLocalTimezone()
-    });
-  }
-
-  function buildRoutinePayloadFromForm(form) {
-    const scheduleKind = (form?.scheduleKind || "daily").trim().toLowerCase();
-    const weekdays = scheduleKind === "weekly"
-      ? normalizeRoutineWeekdays(form?.weekdays || [])
-      : [];
-    const dayOfMonth = scheduleKind === "monthly"
-      ? Math.min(31, Math.max(1, Number(form?.dayOfMonth || 1) || 1))
-      : null;
-    return {
-      title: (form?.title || "").trim(),
-      text: (form?.request || "").trim(),
-      scheduleKind,
-      scheduleTime: (form?.scheduleTime || "08:00").trim() || "08:00",
-      dayOfMonth,
-      weekdays,
-      timezoneId: (form?.timezoneId || getRoutineLocalTimezone()).trim() || getRoutineLocalTimezone()
-    };
-  }
-
-  function formatRoutineSchedulePreview(form) {
-    const kind = (form?.scheduleKind || "daily").trim().toLowerCase();
-    const timeOfDay = (form?.scheduleTime || "08:00").trim() || "08:00";
-    const timezoneId = (form?.timezoneId || getRoutineLocalTimezone()).trim() || getRoutineLocalTimezone();
-    const suffix = timezoneId === getRoutineLocalTimezone() ? "" : ` · ${timezoneId}`;
-    if (kind === "weekly") {
-      const labels = normalizeRoutineWeekdays(form?.weekdays || []).map((value) => formatRoutineWeekdayLabel(value));
-      return `매주 ${labels.length > 0 ? labels.join(", ") : "월"} ${timeOfDay}${suffix}`;
-    }
-
-    if (kind === "monthly") {
-      const dayOfMonth = Math.min(31, Math.max(1, Number(form?.dayOfMonth || 1) || 1));
-      return `매월 ${dayOfMonth}일 ${timeOfDay}${suffix}`;
-    }
-
-    return `매일 ${timeOfDay}${suffix}`;
-  }
   const NONE_MODEL = "none";
   const DEFAULT_GROQ_SINGLE_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct";
   const DEFAULT_GROQ_WORKER_MODEL = "openai/gpt-oss-120b";
@@ -263,7 +151,7 @@
     { key: "tool", label: "tool" },
     { key: "rag", label: "rag" }
   ];
-  const PROVIDER_RUNTIME_KEYS = ["groq", "gemini", "cerebras", "copilot", "auto", "unknown"];
+  const PROVIDER_RUNTIME_KEYS = ["groq", "gemini", "cerebras", "copilot", "codex", "auto", "unknown"];
   const GUARD_OBS_CHANNEL_KEYS = ["chat", "coding", "telegram", "search", "other"];
   const GUARD_RETRY_TIMELINE_SCHEMA_VERSION = "guard_retry_timeline.v1";
   const GUARD_RETRY_TIMELINE_CHANNELS = ["chat", "coding", "telegram"];
@@ -423,11 +311,13 @@
             gemini: this._toText(msg && msg.gemini),
             cerebras: this._toText(msg && msg.cerebras),
             copilot: this._toText(msg && msg.copilot),
+            codex: this._toText(msg && msg.codex),
             summary: this._toText(msg && msg.summary),
             groqModel: this._toMetaText(msg && msg.groqModel),
             geminiModel: this._toMetaText(msg && msg.geminiModel),
             cerebrasModel: this._toMetaText(msg && msg.cerebrasModel),
             copilotModel: this._toMetaText(msg && msg.copilotModel),
+            codexModel: this._toMetaText(msg && msg.codexModel),
             requestedSummaryProvider: this._toMetaText(msg && msg.requestedSummaryProvider),
             resolvedSummaryProvider: this._toMetaText(msg && msg.resolvedSummaryProvider)
           };
@@ -439,6 +329,7 @@
             geminiLabel: result && result.geminiModel ? `Gemini (${result.geminiModel})` : "Gemini",
             cerebrasLabel: result && result.cerebrasModel ? `Cerebras (${result.cerebrasModel})` : "Cerebras",
             copilotLabel: result && result.copilotModel ? `Copilot (${result.copilotModel})` : "Copilot",
+            codexLabel: result && result.codexModel ? `Codex (${result.codexModel})` : "Codex",
             summaryLabel: result && (result.requestedSummaryProvider || result.resolvedSummaryProvider)
               ? `요약 (요청=${result.requestedSummaryProvider || "-"}, 실제=${result.resolvedSummaryProvider || "-"})`
               : "요약"
@@ -447,16 +338,20 @@
         buildChatMultiRenderSnapshot(value) {
           const normalized = this.normalizeChatMultiResultMessage(value);
           const labels = this.buildChatMultiDisplayLabels(normalized);
+          const sections = [
+            { provider: "groq", heading: labels.groqLabel, body: normalized.groq || "-" },
+            { provider: "gemini", heading: labels.geminiLabel, body: normalized.gemini || "-" },
+            { provider: "cerebras", heading: labels.cerebrasLabel, body: normalized.cerebras || "-" },
+            { provider: "copilot", heading: labels.copilotLabel, body: normalized.copilot || "-" }
+          ];
+          if ((normalized.codex || "").trim() || (normalized.codexModel || "").trim()) {
+            sections.push({ provider: "codex", heading: labels.codexLabel, body: normalized.codex || "-" });
+          }
+          sections.push({ provider: "summary", heading: labels.summaryLabel, body: normalized.summary || "-" });
           return {
             normalized,
             labels,
-            sections: [
-              { provider: "groq", heading: labels.groqLabel, body: normalized.groq || "-" },
-              { provider: "gemini", heading: labels.geminiLabel, body: normalized.gemini || "-" },
-              { provider: "cerebras", heading: labels.cerebrasLabel, body: normalized.cerebras || "-" },
-              { provider: "copilot", heading: labels.copilotLabel, body: normalized.copilot || "-" },
-              { provider: "summary", heading: labels.summaryLabel, body: normalized.summary || "-" }
-            ]
+            sections
           };
         }
       };
@@ -1220,6 +1115,9 @@
     if (lowered.includes("copilot")) {
       return "copilot";
     }
+    if (lowered.includes("codex")) {
+      return "codex";
+    }
     if (lowered === "auto") {
       return "auto";
     }
@@ -1283,7 +1181,8 @@
         { key: "groq", model: msg.groqModel, text: msg.groq },
         { key: "gemini", model: msg.geminiModel, text: msg.gemini },
         { key: "cerebras", model: msg.cerebrasModel, text: msg.cerebras },
-        { key: "copilot", model: msg.copilotModel, text: msg.copilot }
+        { key: "copilot", model: msg.copilotModel, text: msg.copilot },
+        { key: "codex", model: msg.codexModel, text: msg.codex }
       ];
       const events = [];
       providers.forEach((item) => {
@@ -1966,11 +1865,13 @@
       groqApiKeySet: false,
       geminiApiKeySet: false,
       cerebrasApiKeySet: false,
+      codexApiKeySet: false,
       telegramBotTokenMasked: "",
       telegramChatIdMasked: "",
       groqApiKeyMasked: "",
       geminiApiKeyMasked: "",
-      cerebrasApiKeyMasked: ""
+      cerebrasApiKeyMasked: "",
+      codexApiKeyMasked: ""
     });
 
     const [telegramBotToken, setTelegramBotToken] = useState("");
@@ -1978,10 +1879,13 @@
     const [groqApiKey, setGroqApiKey] = useState("");
     const [geminiApiKey, setGeminiApiKey] = useState("");
     const [cerebrasApiKey, setCerebrasApiKey] = useState("");
+    const [codexApiKey, setCodexApiKey] = useState("");
     const [persist, setPersist] = useState(true);
 
     const [copilotStatus, setCopilotStatus] = useState("확인 전");
     const [copilotDetail, setCopilotDetail] = useState("-");
+    const [codexStatus, setCodexStatus] = useState("확인 전");
+    const [codexDetail, setCodexDetail] = useState("-");
     const [groqModels, setGroqModels] = useState([]);
     const [copilotModels, setCopilotModels] = useState([]);
     const [selectedGroqModel, setSelectedGroqModel] = useState("");
@@ -2033,6 +1937,7 @@
     const [metaTags, setMetaTags] = useState("");
     const [codingResultByConversation, setCodingResultByConversation] = useState({});
     const [memoryPreview, setMemoryPreview] = useState({ open: false, name: "", content: "" });
+    const [routineOutputPreview, setRoutineOutputPreview] = useState({ open: false, title: "", content: "", imagePath: "", imageAlt: "" });
     const [memoryPickerOpen, setMemoryPickerOpen] = useState(false);
     const [threadInfoOpenByScope, setThreadInfoOpenByScope] = useState({ chat: false, coding: false });
 
@@ -2059,10 +1964,12 @@
     const [chatOrchGeminiModel, setChatOrchGeminiModel] = useState(DEFAULT_GEMINI_WORKER_MODEL);
     const [chatOrchCerebrasModel, setChatOrchCerebrasModel] = useState(DEFAULT_CEREBRAS_MODEL);
     const [chatOrchCopilotModel, setChatOrchCopilotModel] = useState(NONE_MODEL);
+    const [chatOrchCodexModel, setChatOrchCodexModel] = useState(NONE_MODEL);
     const [chatMultiGroqModel, setChatMultiGroqModel] = useState(DEFAULT_GROQ_WORKER_MODEL);
     const [chatMultiGeminiModel, setChatMultiGeminiModel] = useState(DEFAULT_GEMINI_WORKER_MODEL);
     const [chatMultiCerebrasModel, setChatMultiCerebrasModel] = useState(DEFAULT_CEREBRAS_MODEL);
     const [chatMultiCopilotModel, setChatMultiCopilotModel] = useState(NONE_MODEL);
+    const [chatMultiCodexModel, setChatMultiCodexModel] = useState(NONE_MODEL);
     const [chatMultiSummaryProvider, setChatMultiSummaryProvider] = useState("gemini");
     const [chatMultiResultByConversation, setChatMultiResultByConversation] = useState({});
 
@@ -2081,6 +1988,7 @@
     const [codingOrchGeminiModel, setCodingOrchGeminiModel] = useState(DEFAULT_GEMINI_WORKER_MODEL);
     const [codingOrchCerebrasModel, setCodingOrchCerebrasModel] = useState(DEFAULT_CEREBRAS_MODEL);
     const [codingOrchCopilotModel, setCodingOrchCopilotModel] = useState(NONE_MODEL);
+    const [codingOrchCodexModel, setCodingOrchCodexModel] = useState(NONE_MODEL);
 
     const [codingMultiProvider, setCodingMultiProvider] = useState("gemini");
     const [codingMultiModel, setCodingMultiModel] = useState("");
@@ -2089,6 +1997,7 @@
     const [codingMultiGeminiModel, setCodingMultiGeminiModel] = useState(DEFAULT_GEMINI_WORKER_MODEL);
     const [codingMultiCerebrasModel, setCodingMultiCerebrasModel] = useState(DEFAULT_CEREBRAS_MODEL);
     const [codingMultiCopilotModel, setCodingMultiCopilotModel] = useState(NONE_MODEL);
+    const [codingMultiCodexModel, setCodingMultiCodexModel] = useState(NONE_MODEL);
 
     const [command, setCommand] = useState("/metrics");
     const [metrics, setMetrics] = useState("메트릭 대기 중");
@@ -2136,6 +2045,9 @@
     const [routineEditForm, setRoutineEditForm] = useState(() => createRoutineFormState());
     const [routineSelectedId, setRoutineSelectedId] = useState("");
     const [groqUsageWindowBaseByModel, setGroqUsageWindowBaseByModel] = useState({});
+    const [viewportSize, setViewportSize] = useState(() => getViewportSnapshot());
+    const [mainShellViewportTop, setMainShellViewportTop] = useState(0);
+    const [mobilePaneByTab, setMobilePaneByTab] = useState(() => ({ ...DEFAULT_MOBILE_PANES }));
 
     const wsRef = useRef(null);
     const workerRef = useRef(null);
@@ -2148,6 +2060,8 @@
     const attachmentDragDepthRef = useRef(0);
     const currentKeyRef = useRef("");
     const groqAutoRefreshWindowRef = useRef({ minute: "", hour: "", day: "" });
+    const routineBrowserAgentPreviewRef = useRef("");
+    const mainShellRef = useRef(null);
 
     const scope = rootTab === "coding" ? "coding" : "chat";
     const mode = rootTab === "coding" ? codingMode : chatMode;
@@ -2178,6 +2092,15 @@
     const attachmentFileInputId = `attachment-file-input-${currentKey.replace(/[^a-z0-9_-]/gi, "-")}`;
     const threadInfoScopeKey = rootTab === "coding" ? "coding" : "chat";
     const threadInfoOpen = !!threadInfoOpenByScope[threadInfoScopeKey];
+    const responsiveWorkspaceKey = rootTab === "coding" ? "coding" : "chat";
+    const isPortraitMobileLayout = viewportSize.width <= 920 && viewportSize.height > viewportSize.width;
+    const mobileWorkspaceHeight = isPortraitMobileLayout
+      ? Math.max(360, viewportSize.height - Math.max(0, mainShellViewportTop) - 12)
+      : 0;
+    const currentWorkspacePane = mobilePaneByTab[responsiveWorkspaceKey]
+      || (currentConversationId ? "thread" : "list");
+    const currentRoutinePane = mobilePaneByTab.routine || (routineSelectedId ? "detail" : "overview");
+    const currentSettingsPane = mobilePaneByTab.settings || "auth";
     const groupedConversationList = useMemo(() => {
       const keyword = currentConversationFilter.trim().toLowerCase();
       const groups = {};
@@ -2233,18 +2156,119 @@
       return Array.from(ids);
     }, [conversationDetails, currentConversationList, currentSelectedConversationIds, currentSelectedFolders]);
 
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return undefined;
+      }
+
+      let frameId = 0;
+      const syncViewportMetrics = () => {
+        setViewportSize(getViewportSnapshot());
+        const top = Math.max(0, Math.round(mainShellRef.current?.getBoundingClientRect().top || 0));
+        setMainShellViewportTop(top);
+      };
+      const handleResize = () => {
+        if (frameId) {
+          window.cancelAnimationFrame(frameId);
+        }
+        frameId = window.requestAnimationFrame(() => {
+          syncViewportMetrics();
+        });
+      };
+
+      syncViewportMetrics();
+      window.addEventListener("resize", handleResize);
+      return () => {
+        if (frameId) {
+          window.cancelAnimationFrame(frameId);
+        }
+        window.removeEventListener("resize", handleResize);
+      };
+    }, []);
+
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return;
+      }
+      const frameId = window.requestAnimationFrame(() => {
+        const top = Math.max(0, Math.round(mainShellRef.current?.getBoundingClientRect().top || 0));
+        setMainShellViewportTop(top);
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }, [rootTab, isPortraitMobileLayout, currentWorkspacePane]);
+
+    useEffect(() => {
+      if (!isPortraitMobileLayout) {
+        return;
+      }
+
+      if (currentWorkspacePane === "composer") {
+        setMobilePaneByTab((prev) => ({ ...prev, [responsiveWorkspaceKey]: "thread" }));
+      }
+
+      if (!routineSelectedId && currentRoutinePane === "detail") {
+        setMobilePaneByTab((prev) => ({ ...prev, routine: "overview" }));
+      }
+    }, [
+      currentRoutinePane,
+      currentWorkspacePane,
+      isPortraitMobileLayout,
+      responsiveWorkspaceKey,
+      routineSelectedId
+    ]);
+
+    function setResponsivePane(tabKey, paneKey) {
+      if (!tabKey || !paneKey) {
+        return;
+      }
+      setMobilePaneByTab((prev) => {
+        if (prev[tabKey] === paneKey) {
+          return prev;
+        }
+        return {
+          ...prev,
+          [tabKey]: paneKey
+        };
+      });
+    }
+
+    function renderResponsiveSectionTabs(items, activeKey, onSelect, extraClassName = "") {
+      return e(
+        "div",
+        { className: `responsive-section-tabs ${extraClassName}`.trim() },
+        items.map((item) => e(
+          "button",
+          {
+            key: item.key,
+            type: "button",
+            className: `responsive-section-tab-btn ${activeKey === item.key ? "active" : ""}`,
+            onClick: () => onSelect(item.key)
+          },
+          item.label
+        ))
+      );
+    }
+
     function toggleThreadInfoPanel() {
+      const next = !threadInfoOpen;
       setThreadInfoOpenByScope((prev) => ({
         ...prev,
-        [threadInfoScopeKey]: !prev[threadInfoScopeKey]
+        [threadInfoScopeKey]: next
       }));
+      if (isPortraitMobileLayout && next) {
+        setResponsivePane(responsiveWorkspaceKey, "support");
+      }
     }
 
     function toggleAttachmentPanel() {
+      const nextValue = !attachmentPanelOpen;
       setAttachmentPanelOpenByKey((prev) => ({
         ...prev,
-        [currentKey]: !prev[currentKey]
+        [currentKey]: nextValue
       }));
+      if (isPortraitMobileLayout && nextValue) {
+        setResponsivePane(responsiveWorkspaceKey, "thread");
+      }
     }
 
     function hasDraggedFiles(dataTransfer) {
@@ -2646,6 +2670,10 @@
       const copilotReady = copilotText.startsWith("설치/인증 완료");
       const copilotAuthRequired = copilotText.includes("미인증");
       const copilotMissing = copilotText === "미설치";
+      const codexText = (codexStatus || "").trim();
+      const codexReady = codexText.startsWith("설치/인증 완료");
+      const codexAuthRequired = codexText.includes("미인증");
+      const codexMissing = codexText === "미설치";
       return [
         {
           provider: "groq",
@@ -2678,10 +2706,22 @@
             : (copilotAuthRequired
               ? "GitHub 인증 필요"
               : (copilotMissing ? "Copilot 미설치" : (copilotText || "상태 확인 필요")))
+        },
+        {
+          provider: "codex",
+          statusLabel: codexReady ? "ready" : (codexAuthRequired ? "auth_required" : (codexMissing ? "not_installed" : "unavailable")),
+          statusTone: codexReady ? "ok" : (codexAuthRequired ? "warn" : "error"),
+          ready: codexReady,
+          reason: codexReady
+            ? "설치/인증 완료"
+            : (codexAuthRequired
+              ? "Codex OAuth 또는 API Key 필요"
+              : (codexMissing ? "Codex 미설치" : (codexText || "상태 확인 필요")))
         }
       ];
     }, [
       copilotStatus,
+      codexStatus,
       settingsState.groqApiKeySet,
       settingsState.geminiApiKeySet,
       settingsState.cerebrasApiKeySet
@@ -2992,8 +3032,14 @@
       if (!chatMultiCopilotModel && selectedCopilotModel) {
         setChatMultiCopilotModel(selectedCopilotModel);
       }
+      if (!chatMultiCodexModel) {
+        setChatMultiCodexModel(DEFAULT_CODEX_MODEL);
+      }
       if (!chatOrchCopilotModel && selectedCopilotModel) {
         setChatOrchCopilotModel(selectedCopilotModel);
+      }
+      if (!chatOrchCodexModel) {
+        setChatOrchCodexModel(DEFAULT_CODEX_MODEL);
       }
       if (codingSingleProvider === "copilot" && !codingSingleModel && selectedCopilotModel) {
         setCodingSingleModel(selectedCopilotModel);
@@ -3004,20 +3050,30 @@
       if (!codingOrchCopilotModel && selectedCopilotModel) {
         setCodingOrchCopilotModel(selectedCopilotModel);
       }
+      if (!codingOrchCodexModel) {
+        setCodingOrchCodexModel(DEFAULT_CODEX_MODEL);
+      }
       if (codingMultiProvider === "copilot" && !codingMultiModel && selectedCopilotModel) {
         setCodingMultiModel(selectedCopilotModel);
+      }
+      if (!codingMultiCodexModel) {
+        setCodingMultiCodexModel(DEFAULT_CODEX_MODEL);
       }
     }, [
       selectedCopilotModel,
       chatMultiCopilotModel,
+      chatMultiCodexModel,
       chatOrchCopilotModel,
+      chatOrchCodexModel,
       codingSingleProvider,
       codingSingleModel,
       codingOrchProvider,
       codingOrchModel,
       codingOrchCopilotModel,
+      codingOrchCodexModel,
       codingMultiProvider,
-      codingMultiModel
+      codingMultiModel,
+      codingMultiCodexModel
     ]);
 
     useEffect(() => {
@@ -3289,6 +3345,7 @@
 
       send({ type: "get_settings" });
       send({ type: "get_copilot_status" });
+      send({ type: "get_codex_status" });
       send({ type: "get_groq_models" });
       send({ type: "get_copilot_models" });
       send({ type: "get_usage_stats" });
@@ -3724,7 +3781,21 @@
     function selectConversation(item) {
       const key = `${item.scope}:${item.mode}`;
       setActiveConversationByKey((prev) => ({ ...prev, [key]: item.id }));
+      if (isPortraitMobileLayout) {
+        setResponsivePane(item.scope === "coding" ? "coding" : "chat", "thread");
+      }
       requestConversationDetail(item.id);
+    }
+
+    function buildThreadPreviewMeta() {
+      const previewTags = parseTags(metaTags).slice(0, 6);
+      const previewProject = metaProject.trim() || "기본";
+      const previewCategory = metaCategory.trim() || "일반";
+      return {
+        previewTags,
+        previewProject,
+        previewCategory
+      };
     }
 
     function toggleSelectionMode() {
@@ -3801,6 +3872,8 @@
         ? (chatSingleModel || selectedGroqModel || undefined)
         : chatSingleProvider === "copilot"
           ? (chatSingleModel || selectedCopilotModel || undefined)
+          : chatSingleProvider === "codex"
+            ? (chatSingleModel || DEFAULT_CODEX_MODEL)
           : chatSingleProvider === "gemini"
             ? (isNoneModel(chatSingleModel) ? DEFAULT_GEMINI_WORKER_MODEL : (chatSingleModel || DEFAULT_GEMINI_WORKER_MODEL))
           : chatSingleProvider === "cerebras"
@@ -3851,6 +3924,8 @@
         ? (chatOrchModel || selectedGroqModel || undefined)
         : chatOrchProvider === "copilot"
           ? (chatOrchModel || selectedCopilotModel || undefined)
+          : chatOrchProvider === "codex"
+            ? (chatOrchModel || chatOrchCodexModel || DEFAULT_CODEX_MODEL)
           : chatOrchProvider === "gemini"
             ? ((!isNoneModel(chatOrchModel) ? chatOrchModel : "")
               || (!isNoneModel(chatOrchGeminiModel) ? chatOrchGeminiModel : DEFAULT_GEMINI_WORKER_MODEL))
@@ -3861,6 +3936,7 @@
       const workerGeminiModel = normalizeModelChoice(chatOrchGeminiModel, DEFAULT_GEMINI_WORKER_MODEL);
       const workerCerebrasModel = normalizeModelChoice(chatOrchCerebrasModel, DEFAULT_CEREBRAS_MODEL);
       const workerCopilotModel = normalizeModelChoice(chatOrchCopilotModel, NONE_MODEL);
+      const workerCodexModel = normalizeModelChoice(chatOrchCodexModel, DEFAULT_CODEX_MODEL);
       const conversationId = activeConversationByKey["chat:orchestration"] || "";
       beginPendingRequest("chat:orchestration", effectiveText, false, conversationId);
       setChatInputOrch("");
@@ -3880,6 +3956,7 @@
         geminiModel: workerGeminiModel,
         cerebrasModel: workerCerebrasModel,
         copilotModel: workerCopilotModel,
+        codexModel: workerCodexModel,
         memoryNotes: currentMemoryNotes,
         attachments: rich.attachments,
         webUrls: rich.webUrls,
@@ -3923,6 +4000,7 @@
         geminiModel: normalizeModelChoice(chatMultiGeminiModel, DEFAULT_GEMINI_WORKER_MODEL),
         cerebrasModel: normalizeModelChoice(chatMultiCerebrasModel, DEFAULT_CEREBRAS_MODEL),
         copilotModel: normalizeModelChoice(chatMultiCopilotModel, NONE_MODEL),
+        codexModel: normalizeModelChoice(chatMultiCodexModel, DEFAULT_CODEX_MODEL),
         summaryProvider: chatMultiSummaryProvider,
         memoryNotes: currentMemoryNotes,
         attachments: rich.attachments,
@@ -3966,7 +4044,9 @@
         provider: codingSingleProvider,
         model: codingSingleProvider === "gemini"
           ? (isNoneModel(codingSingleModel) ? DEFAULT_GEMINI_WORKER_MODEL : (codingSingleModel || DEFAULT_GEMINI_WORKER_MODEL))
-          : (codingSingleModel || undefined),
+          : codingSingleProvider === "codex"
+            ? (codingSingleModel || DEFAULT_CODEX_MODEL)
+            : (codingSingleModel || undefined),
         language: codingSingleLanguage,
         memoryNotes: currentMemoryNotes,
         attachments: rich.attachments,
@@ -3995,6 +4075,8 @@
         ? (codingOrchModel || selectedGroqModel || undefined)
         : codingOrchProvider === "copilot"
           ? (codingOrchModel || selectedCopilotModel || undefined)
+          : codingOrchProvider === "codex"
+            ? (codingOrchModel || codingOrchCodexModel || DEFAULT_CODEX_MODEL)
           : codingOrchProvider === "cerebras"
             ? (codingOrchModel || codingOrchCerebrasModel || DEFAULT_CEREBRAS_MODEL)
           : codingOrchProvider === "gemini"
@@ -4022,6 +4104,7 @@
         geminiModel: normalizeModelChoice(codingOrchGeminiModel, DEFAULT_GEMINI_WORKER_MODEL),
         cerebrasModel: normalizeModelChoice(codingOrchCerebrasModel, DEFAULT_CEREBRAS_MODEL),
         copilotModel: normalizeModelChoice(codingOrchCopilotModel, NONE_MODEL),
+        codexModel: normalizeModelChoice(codingOrchCodexModel, DEFAULT_CODEX_MODEL),
         language: codingOrchLanguage,
         memoryNotes: currentMemoryNotes,
         attachments: rich.attachments,
@@ -4065,11 +4148,14 @@
         provider: codingMultiProvider,
         model: codingMultiProvider === "gemini"
           ? (isNoneModel(codingMultiModel) ? DEFAULT_GEMINI_WORKER_MODEL : (codingMultiModel || DEFAULT_GEMINI_WORKER_MODEL))
+          : codingMultiProvider === "codex"
+            ? (codingMultiModel || DEFAULT_CODEX_MODEL)
           : (isNoneModel(codingMultiModel) ? undefined : (codingMultiModel || undefined)),
         groqModel: normalizeModelChoice(codingMultiGroqModel, DEFAULT_GROQ_WORKER_MODEL),
         geminiModel: normalizeModelChoice(codingMultiGeminiModel, DEFAULT_GEMINI_WORKER_MODEL),
         cerebrasModel: normalizeModelChoice(codingMultiCerebrasModel, DEFAULT_CEREBRAS_MODEL),
         copilotModel: normalizeModelChoice(codingMultiCopilotModel, NONE_MODEL),
+        codexModel: normalizeModelChoice(codingMultiCodexModel, DEFAULT_CODEX_MODEL),
         language: codingMultiLanguage,
         memoryNotes: currentMemoryNotes,
         attachments: rich.attachments,
@@ -4641,11 +4727,13 @@
           groqApiKeySet: !!msg.groqApiKeySet,
           geminiApiKeySet: !!msg.geminiApiKeySet,
           cerebrasApiKeySet: !!msg.cerebrasApiKeySet,
+          codexApiKeySet: !!msg.codexApiKeySet,
           telegramBotTokenMasked: msg.telegramBotTokenMasked || "",
           telegramChatIdMasked: msg.telegramChatIdMasked || "",
           groqApiKeyMasked: msg.groqApiKeyMasked || "",
           geminiApiKeyMasked: msg.geminiApiKeyMasked || "",
-          cerebrasApiKeyMasked: msg.cerebrasApiKeyMasked || ""
+          cerebrasApiKeyMasked: msg.cerebrasApiKeyMasked || "",
+          codexApiKeyMasked: msg.codexApiKeyMasked || ""
         });
         return;
       }
@@ -4653,6 +4741,7 @@
       if (msg.type === "settings_result") {
         log(msg.message || "설정 적용 완료");
         send({ type: "get_settings" });
+        send({ type: "get_codex_status" });
         send({ type: "get_groq_models" });
         send({ type: "get_copilot_models" });
         send({ type: "get_usage_stats" });
@@ -4722,6 +4811,40 @@
         log(`Copilot 로그인 결과: ${msg.message || "-"}`);
         send({ type: "get_copilot_status" });
         send({ type: "get_copilot_models" });
+        return;
+      }
+
+      if (msg.type === "codex_status") {
+        const installed = !!msg.installed;
+        const authenticated = !!msg.authenticated;
+        const text = installed
+          ? (authenticated ? `설치/인증 완료 (${msg.mode || "-"})` : `설치됨, 미인증 (${msg.mode || "-"})`)
+          : "미설치";
+        setCodexStatus(text);
+        setCodexDetail(msg.detail || "-");
+        return;
+      }
+
+      if (msg.type === "codex_login_result") {
+        const resultMessage = msg.message || "-";
+        log(`Codex 로그인 결과: ${resultMessage}`);
+        if (/code=.*url=/i.test(resultMessage)) {
+          setCodexStatus("설치됨, 미인증 (device_auth)");
+          setCodexDetail(resultMessage);
+        } else if (/failed|429|Too Many Requests|error/i.test(resultMessage)) {
+          setCodexStatus("설치됨, 미인증 (codex)");
+          setCodexDetail(resultMessage);
+        }
+        send({ type: "get_codex_status" });
+        return;
+      }
+
+      if (msg.type === "codex_logout_result") {
+        const resultMessage = msg.message || "-";
+        log(`Codex 로그아웃 결과: ${resultMessage}`);
+        setCodexStatus("설치됨, 미인증 (codex)");
+        setCodexDetail(resultMessage);
+        send({ type: "get_codex_status" });
         return;
       }
 
@@ -5045,6 +5168,9 @@
           }
           return items.length > 0 ? (items[0].id || "") : "";
         });
+        if (isPortraitMobileLayout && items.length === 0) {
+          setResponsivePane("routine", "overview");
+        }
         return;
       }
 
@@ -5055,8 +5181,68 @@
         setError("routine:main", ok ? "" : `오류: ${messageText}`);
         if (msg.routine && msg.routine.id) {
           setRoutineSelectedId(msg.routine.id);
+          if (isPortraitMobileLayout) {
+            setResponsivePane("routine", "detail");
+          }
+        }
+        if (routineBrowserAgentPreviewRef.current
+          && msg.routine
+          && msg.routine.id === routineBrowserAgentPreviewRef.current) {
+          const newestRun = Array.isArray(msg.routine.runs) && msg.routine.runs.length > 0
+            ? msg.routine.runs[0]
+            : null;
+          routineBrowserAgentPreviewRef.current = "";
+          if (newestRun && newestRun.ts) {
+            send({ type: "get_routine_run_detail", routineId: msg.routine.id, ts: newestRun.ts });
+          } else {
+            setRoutineOutputPreview({
+              open: true,
+              title: `${msg.routine.title || msg.routine.id} · 브라우저 에이전트 테스트`,
+              content: msg.message || "출력 없음",
+              imagePath: "",
+              imageAlt: ""
+            });
+          }
         }
         send({ type: "get_routines" });
+        return;
+      }
+
+      if (msg.type === "routine_run_detail") {
+        const ok = !!msg.ok;
+        if (!ok) {
+          const errorText = msg.error || "실행 이력을 불러오지 못했습니다.";
+          setError("routine:main", `오류: ${errorText}`);
+          log(errorText, "error");
+          return;
+        }
+
+        const titleParts = [
+          msg.title || "루틴 실행 상세",
+          msg.runAtLocal || "",
+          msg.status || ""
+        ].filter(Boolean);
+        const meta = [
+          msg.source ? `source=${msg.source}` : "",
+          Number.isFinite(Number(msg.attemptCount)) ? `attempts=${Number(msg.attemptCount)}` : "",
+          msg.telegramStatus ? `telegram=${msg.telegramStatus}` : "",
+          msg.artifactPath ? `artifact=${msg.artifactPath}` : "",
+          msg.agentSessionId ? `agentSessionId=${msg.agentSessionId}` : "",
+          msg.agentRunId ? `agentRunId=${msg.agentRunId}` : "",
+          msg.agentProvider || msg.agentModel ? `agent=${msg.agentProvider || "-"}:${msg.agentModel || "-"}` : "",
+          msg.toolProfile ? `toolProfile=${msg.toolProfile}` : "",
+          msg.startUrl ? `startUrl=${msg.startUrl}` : "",
+          msg.finalUrl ? `finalUrl=${msg.finalUrl}` : "",
+          msg.pageTitle ? `pageTitle=${msg.pageTitle}` : "",
+          msg.screenshotPath ? `screenshot=${msg.screenshotPath}` : ""
+        ].filter(Boolean).join("\n");
+        setRoutineOutputPreview({
+          open: true,
+          title: titleParts.join(" · "),
+          content: meta ? `${meta}\n\n${msg.content || ""}` : (msg.content || ""),
+          imagePath: msg.screenshotPath || "",
+          imageAlt: msg.pageTitle || msg.title || "루틴 스크린샷"
+        });
         return;
       }
 
@@ -5313,6 +5499,16 @@
       const ok = send({ type: "create_routine", ...payload });
       if (ok) {
         setRoutineCreateForm((prev) => createRoutineFormState({
+          executionMode: prev.executionMode,
+          agentProvider: prev.agentProvider,
+          agentModel: prev.agentModel,
+          agentStartUrl: prev.agentStartUrl,
+          agentTimeoutSeconds: prev.agentTimeoutSeconds,
+          agentUsePlaywright: prev.agentUsePlaywright !== false,
+          scheduleSourceMode: normalizeRoutineScheduleSourceMode(prev.scheduleSourceMode, "auto"),
+          maxRetries: Math.min(5, Math.max(0, Number(prev.maxRetries ?? 1) || 0)),
+          retryDelaySeconds: Math.min(300, Math.max(0, Number(prev.retryDelaySeconds ?? 15) || 0)),
+          notifyPolicy: normalizeRoutineNotifyPolicy(prev.notifyPolicy, "always"),
           scheduleKind: prev.scheduleKind,
           scheduleTime: prev.scheduleTime,
           dayOfMonth: prev.dayOfMonth,
@@ -5348,6 +5544,52 @@
 
       setError("routine:main", "");
       if (!send({ type: "run_routine", routineId })) {
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function testRoutineTelegram(routineId) {
+      if (!ensureAuthed() || !routineId) {
+        return;
+      }
+
+      setError("routine:main", "");
+      if (!send({ type: "test_routine_telegram", routineId })) {
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function testRoutineBrowserAgent(routineId) {
+      if (!ensureAuthed() || !routineId) {
+        return;
+      }
+
+      routineBrowserAgentPreviewRef.current = routineId;
+      setError("routine:main", "");
+      if (!send({ type: "test_browser_agent_routine", routineId })) {
+        routineBrowserAgentPreviewRef.current = "";
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function openRoutineRunDetail(routineId, ts) {
+      if (!ensureAuthed() || !routineId || !ts) {
+        return;
+      }
+
+      setError("routine:main", "");
+      if (!send({ type: "get_routine_run_detail", routineId, ts })) {
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function resendRoutineRunTelegram(routineId, ts) {
+      if (!ensureAuthed() || !routineId || !ts) {
+        return;
+      }
+
+      setError("routine:main", "");
+      if (!send({ type: "resend_routine_run_telegram", routineId, ts })) {
         setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
       }
     }
@@ -5557,11 +5799,29 @@
       return copilotModels.map((x) => e("option", { key: x.id, value: x.id }, x.id));
     }, [copilotModels]);
 
+    const codexModelOptions = useMemo(() => {
+      return CODEX_MODEL_CHOICES.map((item) =>
+        e("option", { key: `codex-${item.id}`, value: item.id }, item.label)
+      );
+    }, []);
+
     const geminiModelOptions = useMemo(() => {
       return GEMINI_MODEL_CHOICES.map((item) =>
         e("option", { key: `gemini-${item.id}`, value: item.id }, item.label)
       );
     }, []);
+
+    const routineAgentProviderOptions = useMemo(() => ([
+      e("option", { key: "routine-agent-provider-codex", value: DEFAULT_ROUTINE_AGENT_PROVIDER }, "Codex")
+    ]), []);
+
+    const routineAgentModelOptions = useMemo(() => ([
+      e(
+        "option",
+        { key: `routine-agent-model-${DEFAULT_ROUTINE_AGENT_MODEL}`, value: DEFAULT_ROUTINE_AGENT_MODEL },
+        `Codex 기본: ${DEFAULT_ROUTINE_AGENT_MODEL}`
+      )
+    ]), []);
 
     const groqWorkerModelOptions = useMemo(() => {
       const seen = new Set();
@@ -5601,6 +5861,15 @@
       });
       return options;
     }, [copilotModels]);
+
+    const codexWorkerModelOptions = useMemo(() => {
+      return [
+        e("option", { key: "xw-none", value: NONE_MODEL }, "Codex: 선택 안함"),
+        ...CODEX_MODEL_CHOICES.map((item) =>
+          e("option", { key: `xw-${item.id}`, value: item.id }, item.label)
+        )
+      ];
+    }, []);
 
     const groqRows = useMemo(() => {
       if (groqModels.length === 0) {
@@ -5715,6 +5984,9 @@
       const cerebrasLabel = settingsState.cerebrasApiKeySet
         ? DEFAULT_CEREBRAS_MODEL
         : "미설정";
+      const codexLabel = (codexStatus || "").trim().startsWith("설치/인증 완료")
+        ? DEFAULT_CODEX_MODEL
+        : codexStatus;
       return e(
         "aside",
         { className: "global-nav" },
@@ -5735,6 +6007,7 @@
           e("div", null, `Gemini: ${geminiLabel}`),
           e("div", null, `Cerebras: ${cerebrasLabel}`),
           e("div", null, `Copilot: ${selectedCopilotModel || "-"}`),
+          e("div", null, `Codex: ${codexLabel || "-"}`),
           e("div", null, copilotStatus)
         )
       );
@@ -5954,15 +6227,91 @@
       );
     }
 
-    function renderThreadHeader() {
-      const previewTags = parseTags(metaTags).slice(0, 6);
-      const previewProject = metaProject.trim() || "기본";
-      const previewCategory = metaCategory.trim() || "일반";
+    function renderThreadInfoPanel(previewMeta) {
+      const previewTags = previewMeta.previewTags || [];
+      const previewProject = previewMeta.previewProject || "기본";
+      const previewCategory = previewMeta.previewCategory || "일반";
+      return e("div", { className: "thread-info-panel" },
+        e("div", { className: "thread-info-grid" },
+          e("label", { className: "meta-field" },
+            e("span", { className: "meta-label" }, "대화방 이름"),
+            e("input", {
+              className: "input compact",
+              value: metaTitle,
+              onChange: (event) => setMetaTitle(event.target.value),
+              placeholder: "대화방 이름"
+            })
+          ),
+          e("label", { className: "meta-field" },
+            e("span", { className: "meta-label" }, "프로젝트 폴더"),
+            e("input", {
+              className: "input compact",
+              value: metaProject,
+              onChange: (event) => setMetaProject(event.target.value),
+              placeholder: "예: Omni-node 운영"
+            })
+          ),
+          e("label", { className: "meta-field" },
+            e("span", { className: "meta-label" }, "카테고리"),
+            e("input", {
+              className: "input compact",
+              value: metaCategory,
+              onChange: (event) => setMetaCategory(event.target.value),
+              placeholder: "예: 설계, 버그, 문서"
+            })
+          ),
+          e("label", { className: "meta-field" },
+            e("span", { className: "meta-label" }, "태그"),
+            e("input", {
+              className: "input compact",
+              value: metaTags,
+              onChange: (event) => setMetaTags(event.target.value),
+              placeholder: "예: backend,urgent,release"
+            })
+          )
+        ),
+        e("div", { className: "thread-info-footer" },
+          e("div", { className: "meta-preview-row" },
+            e("span", { className: "folder-pill" }, `폴더 · ${previewProject}`),
+            e("span", { className: `meta-chip category-${toneForCategory(previewCategory)}` }, previewCategory),
+            previewTags.length > 0
+              ? previewTags.map((tag) => e("span", { key: `info-${tag}`, className: "tag-chip" }, `#${tag}`))
+              : e("span", { className: "meta-chip neutral" }, "태그 없음")
+          ),
+          e("button", {
+            className: "btn primary thread-save-btn",
+            disabled: !currentConversationId,
+            onClick: saveConversationMeta
+          }, "메타 저장")
+        )
+      );
+    }
+
+    function renderThreadModebar(extraClassName = "") {
+      return e("div", { className: `thread-modebar ${extraClassName}`.trim() },
+        e("div", { className: "thread-modebar-copy" },
+          e("div", { className: "thread-mode-kicker" }, rootTab === "coding" ? "코딩 워크플로" : "응답 전략"),
+          e("div", { className: "thread-mode-hint" }, rootTab === "coding"
+            ? "단일 실행부터 오케스트레이션, 다중 코딩까지 한 흐름으로 관리합니다."
+            : "단일 답변, 오케스트레이션, 다중 LLM을 대화 흐름 안에서 전환합니다.")
+        ),
+        renderModeTabs()
+      );
+    }
+
+    function renderThreadHeader(options = {}) {
+      const previewMeta = buildThreadPreviewMeta();
+      const previewTags = previewMeta.previewTags;
+      const previewProject = previewMeta.previewProject;
+      const previewCategory = previewMeta.previewCategory;
       const summaryTokens = [
         previewProject,
         previewCategory,
         `연결된 메모리 ${currentMemoryNotes.length}개`
       ];
+      const showInfoPanel = options.showInfoPanel !== false && threadInfoOpen;
+      const showActionButtons = options.showActionButtons !== false;
+      const showModebar = options.showModebar !== false;
       return e(
         "div",
         { className: "thread-header-shell" },
@@ -5986,83 +6335,30 @@
               )
             )
           ),
-          e("div", { className: "thread-actions" },
-            e("button", {
-              className: `btn ghost thread-action-btn ${threadInfoOpen ? "active" : ""}`,
-              disabled: !currentConversationId,
-              onClick: toggleThreadInfoPanel
-            }, threadInfoOpen ? "정보 닫기" : "정보"),
-            e("button", {
-              className: "btn ghost thread-action-btn",
-              disabled: !currentConversationId,
-              onClick: () => setMemoryPickerOpen((prev) => !prev)
-            }, memoryPickerOpen ? "메모리 닫기" : "메모리")
-          )
-        ),
-        e("div", { className: "thread-modebar" },
-          e("div", { className: "thread-modebar-copy" },
-            e("div", { className: "thread-mode-kicker" }, rootTab === "coding" ? "코딩 워크플로" : "응답 전략"),
-            e("div", { className: "thread-mode-hint" }, rootTab === "coding"
-              ? "단일 실행부터 오케스트레이션, 다중 코딩까지 한 흐름으로 관리합니다."
-              : "단일 답변, 오케스트레이션, 다중 LLM을 대화 흐름 안에서 전환합니다.")
-          ),
-          renderModeTabs()
-        ),
-        threadInfoOpen
-          ? e("div", { className: "thread-info-panel" },
-            e("div", { className: "thread-info-grid" },
-              e("label", { className: "meta-field" },
-                e("span", { className: "meta-label" }, "대화방 이름"),
-                e("input", {
-                  className: "input compact",
-                  value: metaTitle,
-                  onChange: (event) => setMetaTitle(event.target.value),
-                  placeholder: "대화방 이름"
-                })
-              ),
-              e("label", { className: "meta-field" },
-                e("span", { className: "meta-label" }, "프로젝트 폴더"),
-                e("input", {
-                  className: "input compact",
-                  value: metaProject,
-                  onChange: (event) => setMetaProject(event.target.value),
-                  placeholder: "예: Omni-node 운영"
-                })
-              ),
-              e("label", { className: "meta-field" },
-                e("span", { className: "meta-label" }, "카테고리"),
-                e("input", {
-                  className: "input compact",
-                  value: metaCategory,
-                  onChange: (event) => setMetaCategory(event.target.value),
-                  placeholder: "예: 설계, 버그, 문서"
-                })
-              ),
-              e("label", { className: "meta-field" },
-                e("span", { className: "meta-label" }, "태그"),
-                e("input", {
-                  className: "input compact",
-                  value: metaTags,
-                  onChange: (event) => setMetaTags(event.target.value),
-                  placeholder: "예: backend,urgent,release"
-                })
-              )
-            ),
-            e("div", { className: "thread-info-footer" },
-              e("div", { className: "meta-preview-row" },
-                e("span", { className: "folder-pill" }, `폴더 · ${previewProject}`),
-                e("span", { className: `meta-chip category-${toneForCategory(previewCategory)}` }, previewCategory),
-                previewTags.length > 0
-                  ? previewTags.map((tag) => e("span", { key: `info-${tag}`, className: "tag-chip" }, `#${tag}`))
-                  : e("span", { className: "meta-chip neutral" }, "태그 없음")
-              ),
+          showActionButtons
+            ? e("div", { className: "thread-actions" },
               e("button", {
-                className: "btn primary thread-save-btn",
+                className: `btn ghost thread-action-btn ${threadInfoOpen ? "active" : ""}`,
                 disabled: !currentConversationId,
-                onClick: saveConversationMeta
-              }, "메타 저장")
+                onClick: toggleThreadInfoPanel
+              }, threadInfoOpen ? "정보 닫기" : "정보"),
+              e("button", {
+                className: "btn ghost thread-action-btn",
+                disabled: !currentConversationId,
+                onClick: () => {
+                  const next = !memoryPickerOpen;
+                  setMemoryPickerOpen(next);
+                  if (isPortraitMobileLayout && next) {
+                    setResponsivePane(responsiveWorkspaceKey, "support");
+                  }
+                }
+              }, memoryPickerOpen ? "메모리 닫기" : "메모리")
             )
-          )
+            : null
+        ),
+        showModebar ? renderThreadModebar() : null,
+        showInfoPanel
+          ? renderThreadInfoPanel(previewMeta)
           : null
       );
     }
@@ -6380,7 +6676,7 @@
       );
     }
 
-    function renderThreadSupportStack() {
+    function buildThreadSupportSlots() {
       const slots = [];
       const multiResult = renderChatMultiResult();
       if (multiResult) {
@@ -6396,11 +6692,39 @@
         slots.push(e("div", { key: "support-memory", className: "thread-support-slot" }, renderMemoryPicker()));
       }
 
+      return slots;
+    }
+
+    function renderThreadSupportStack() {
+      const slots = buildThreadSupportSlots();
       if (slots.length === 0) {
         return null;
       }
 
       return e("div", { className: "thread-support-stack" }, slots);
+    }
+
+    function renderResponsiveWorkspaceSupportPane() {
+      const blocks = [];
+      if (currentConversationId) {
+        blocks.push(e("div", { key: "support-modebar", className: "thread-support-slot" }, renderThreadModebar("thread-modebar-support")));
+        blocks.push(e("div", { key: "support-info", className: "thread-support-slot" }, renderThreadInfoPanel(buildThreadPreviewMeta())));
+        blocks.push(e("div", { key: "support-memory", className: "thread-support-slot" }, renderMemoryPicker()));
+      }
+      const multiResult = renderChatMultiResult();
+      if (multiResult) {
+        blocks.push(e("div", { key: "support-multi", className: "thread-support-slot" }, multiResult));
+      }
+      const codingResult = renderCodingResult();
+      if (codingResult) {
+        blocks.push(e("div", { key: "support-coding", className: "thread-support-slot" }, codingResult));
+      }
+      if (blocks.length === 0) {
+        return e("div", { className: "thread-support-stack thread-support-stack-mobile" },
+          e("div", { className: "support-card responsive-empty-card" }, "이 화면에서는 응답 전략, 정보, 메모리, 실행 결과 같은 보조 요소를 따로 확인합니다.")
+        );
+      }
+      return e("div", { className: "thread-support-stack thread-support-stack-mobile" }, blocks);
     }
 
     function renderChatComposer() {
@@ -6419,6 +6743,8 @@
                   setChatSingleModel(selectedGroqModel || DEFAULT_GROQ_SINGLE_MODEL);
                 } else if (value === "copilot") {
                   setChatSingleModel(selectedCopilotModel || "");
+                } else if (value === "codex") {
+                  setChatSingleModel(DEFAULT_CODEX_MODEL);
                 } else if (value === "gemini") {
                   setChatSingleModel(DEFAULT_GEMINI_WORKER_MODEL);
                 } else if (value === "cerebras") {
@@ -6431,7 +6757,8 @@
             e("option", { value: "groq" }, "Groq"),
             e("option", { value: "gemini" }, "Gemini"),
             e("option", { value: "cerebras" }, "Cerebras"),
-            e("option", { value: "copilot" }, "Copilot")),
+            e("option", { value: "copilot" }, "Copilot"),
+            e("option", { value: "codex" }, "Codex")),
             chatSingleProvider === "groq"
               ? e("select", {
                 className: "input compact",
@@ -6444,6 +6771,12 @@
                   value: chatSingleModel || selectedCopilotModel,
                   onChange: (event) => setChatSingleModel(event.target.value)
                 }, copilotModelOptions.length === 0 ? e("option", { value: "" }, "Copilot 모델 로딩 전") : copilotModelOptions)
+              : chatSingleProvider === "codex"
+                ? e("select", {
+                  className: "input compact",
+                  value: chatSingleModel || DEFAULT_CODEX_MODEL,
+                  onChange: (event) => setChatSingleModel(event.target.value)
+                }, codexModelOptions)
               : chatSingleProvider === "cerebras"
                   ? e("select", {
                     className: "input compact",
@@ -6484,6 +6817,8 @@
                   setChatOrchModel(selectedGroqModel || "");
                 } else if (value === "copilot") {
                   setChatOrchModel(selectedCopilotModel || "");
+                } else if (value === "codex") {
+                  setChatOrchModel(chatOrchCodexModel || DEFAULT_CODEX_MODEL);
                 } else if (value === "gemini") {
                   setChatOrchModel(
                     isNoneModel(chatOrchGeminiModel) ? DEFAULT_GEMINI_WORKER_MODEL : (chatOrchGeminiModel || DEFAULT_GEMINI_WORKER_MODEL)
@@ -6499,7 +6834,8 @@
             e("option", { value: "groq" }, "Groq"),
             e("option", { value: "gemini" }, "Gemini"),
             e("option", { value: "cerebras" }, "Cerebras"),
-            e("option", { value: "copilot" }, "Copilot")),
+            e("option", { value: "copilot" }, "Copilot"),
+            e("option", { value: "codex" }, "Codex")),
             chatOrchProvider === "groq"
               ? e("select", {
                 className: "input compact",
@@ -6520,6 +6856,12 @@
                   value: chatOrchModel || selectedCopilotModel,
                   onChange: (event) => setChatOrchModel(event.target.value)
                 }, copilotModelOptions.length === 0 ? e("option", { value: "" }, "Copilot 모델 로딩 전") : copilotModelOptions)
+              : chatOrchProvider === "codex"
+                ? e("select", {
+                  className: "input compact",
+                  value: chatOrchModel || chatOrchCodexModel || DEFAULT_CODEX_MODEL,
+                  onChange: (event) => setChatOrchModel(event.target.value)
+                }, codexModelOptions)
               : chatOrchProvider === "gemini"
                 ? e("select", {
                   className: "input compact",
@@ -6555,7 +6897,12 @@
               className: "input compact",
               value: chatOrchCopilotModel,
               onChange: (event) => setChatOrchCopilotModel(event.target.value)
-            }, copilotWorkerModelOptions)
+            }, copilotWorkerModelOptions),
+            e("select", {
+              className: "input compact",
+              value: chatOrchCodexModel,
+              onChange: (event) => setChatOrchCodexModel(event.target.value)
+            }, codexWorkerModelOptions)
           ),
           renderComposerInputBar({
             value: chatInputOrch,
@@ -6599,6 +6946,11 @@
           }, copilotWorkerModelOptions),
           e("select", {
             className: "input compact",
+            value: chatMultiCodexModel,
+            onChange: (event) => setChatMultiCodexModel(event.target.value)
+          }, codexWorkerModelOptions),
+          e("select", {
+            className: "input compact",
             value: chatMultiSummaryProvider,
             onChange: (event) => setChatMultiSummaryProvider(event.target.value)
           },
@@ -6606,7 +6958,8 @@
           e("option", { value: "gemini" }, "요약: Gemini"),
           e("option", { value: "groq" }, "요약: Groq"),
           e("option", { value: "cerebras" }, "요약: Cerebras"),
-          e("option", { value: "copilot" }, "요약: Copilot"))
+          e("option", { value: "copilot" }, "요약: Copilot"),
+          e("option", { value: "codex" }, "요약: Codex"))
         ),
         renderComposerInputBar({
           value: chatInputMulti,
@@ -6636,6 +6989,8 @@
                   setCodingSingleModel(DEFAULT_CEREBRAS_MODEL);
                 } else if (value === "copilot") {
                   setCodingSingleModel(selectedCopilotModel || "");
+                } else if (value === "codex") {
+                  setCodingSingleModel(DEFAULT_CODEX_MODEL);
                 } else if (value === "gemini") {
                   setCodingSingleModel(DEFAULT_GEMINI_WORKER_MODEL);
                 } else {
@@ -6647,7 +7002,8 @@
             e("option", { value: "groq" }, "Groq"),
             e("option", { value: "gemini" }, "Gemini"),
             e("option", { value: "cerebras" }, "Cerebras"),
-            e("option", { value: "copilot" }, "Copilot")),
+            e("option", { value: "copilot" }, "Copilot"),
+            e("option", { value: "codex" }, "Codex")),
             codingSingleProvider === "groq"
               ? e("select", {
                 className: "input compact",
@@ -6660,6 +7016,12 @@
                   value: codingSingleModel || selectedCopilotModel,
                   onChange: (event) => setCodingSingleModel(event.target.value)
                 }, copilotModelOptions.length === 0 ? e("option", { value: "" }, "Copilot 모델 로딩 전") : copilotModelOptions)
+                : codingSingleProvider === "codex"
+                  ? e("select", {
+                    className: "input compact",
+                    value: codingSingleModel || DEFAULT_CODEX_MODEL,
+                    onChange: (event) => setCodingSingleModel(event.target.value)
+                  }, codexModelOptions)
                 : codingSingleProvider === "cerebras"
                   ? e("select", {
                     className: "input compact",
@@ -6707,6 +7069,8 @@
                   setCodingOrchModel(selectedGroqModel || "");
                 } else if (value === "copilot") {
                   setCodingOrchModel(selectedCopilotModel || "");
+                } else if (value === "codex") {
+                  setCodingOrchModel(codingOrchCodexModel || DEFAULT_CODEX_MODEL);
                 } else if (value === "cerebras") {
                   setCodingOrchModel(codingOrchCerebrasModel || DEFAULT_CEREBRAS_MODEL);
                 } else if (value === "gemini") {
@@ -6722,7 +7086,8 @@
             e("option", { value: "groq" }, "집계: Groq"),
             e("option", { value: "gemini" }, "집계: Gemini"),
             e("option", { value: "cerebras" }, "집계: Cerebras"),
-            e("option", { value: "copilot" }, "집계: Copilot")),
+            e("option", { value: "copilot" }, "집계: Copilot"),
+            e("option", { value: "codex" }, "집계: Codex")),
             codingOrchProvider === "groq"
               ? e("select", {
                 className: "input compact",
@@ -6735,6 +7100,12 @@
                   value: codingOrchModel || selectedCopilotModel,
                   onChange: (event) => setCodingOrchModel(event.target.value)
                 }, copilotModelOptions.length === 0 ? e("option", { value: "" }, "Copilot 모델 로딩 전") : copilotModelOptions)
+                : codingOrchProvider === "codex"
+                  ? e("select", {
+                    className: "input compact",
+                    value: codingOrchModel || codingOrchCodexModel || DEFAULT_CODEX_MODEL,
+                    onChange: (event) => setCodingOrchModel(event.target.value)
+                  }, codexModelOptions)
                 : codingOrchProvider === "cerebras"
                   ? e("select", {
                     className: "input compact",
@@ -6783,7 +7154,12 @@
               className: "input compact",
               value: codingOrchCopilotModel,
               onChange: (event) => setCodingOrchCopilotModel(event.target.value)
-            }, copilotWorkerModelOptions)
+            }, copilotWorkerModelOptions),
+            e("select", {
+              className: "input compact",
+              value: codingOrchCodexModel,
+              onChange: (event) => setCodingOrchCodexModel(event.target.value)
+            }, codexWorkerModelOptions)
           ),
           renderComposerInputBar({
             value: codingInputOrch,
@@ -6812,6 +7188,8 @@
                 setCodingMultiModel(codingMultiCerebrasModel || DEFAULT_CEREBRAS_MODEL);
               } else if (value === "copilot") {
                 setCodingMultiModel(selectedCopilotModel || "");
+              } else if (value === "codex") {
+                setCodingMultiModel(codingMultiCodexModel || DEFAULT_CODEX_MODEL);
               } else if (value === "gemini") {
                 setCodingMultiModel(DEFAULT_GEMINI_WORKER_MODEL);
               } else {
@@ -6823,7 +7201,8 @@
           e("option", { value: "groq" }, "요약: Groq"),
           e("option", { value: "gemini" }, "요약: Gemini"),
           e("option", { value: "cerebras" }, "요약: Cerebras"),
-          e("option", { value: "copilot" }, "요약: Copilot")),
+          e("option", { value: "copilot" }, "요약: Copilot"),
+          e("option", { value: "codex" }, "요약: Codex")),
           codingMultiProvider === "groq"
             ? e("select", {
               className: "input compact",
@@ -6836,6 +7215,12 @@
                 value: codingMultiModel || selectedCopilotModel,
                 onChange: (event) => setCodingMultiModel(event.target.value)
               }, copilotModelOptions.length === 0 ? e("option", { value: "" }, "Copilot 모델 로딩 전") : copilotModelOptions)
+            : codingMultiProvider === "codex"
+              ? e("select", {
+                className: "input compact",
+                value: codingMultiModel || codingMultiCodexModel || DEFAULT_CODEX_MODEL,
+                onChange: (event) => setCodingMultiModel(event.target.value)
+              }, codexModelOptions)
               : codingMultiProvider === "cerebras"
                 ? e("select", {
                   className: "input compact",
@@ -6883,7 +7268,12 @@
             className: "input compact",
             value: codingMultiCopilotModel,
             onChange: (event) => setCodingMultiCopilotModel(event.target.value)
-          }, copilotWorkerModelOptions)
+          }, copilotWorkerModelOptions),
+          e("select", {
+            className: "input compact",
+            value: codingMultiCodexModel,
+            onChange: (event) => setCodingMultiCodexModel(event.target.value)
+          }, codexWorkerModelOptions)
         ),
         renderComposerInputBar({
           value: codingInputMulti,
@@ -6896,6 +7286,53 @@
     }
 
     function renderWorkspace() {
+      const composer = rootTab === "chat" ? renderChatComposer() : renderCodingComposer();
+      const mobileWorkspaceSections = [
+        { key: "list", label: rootTab === "coding" ? "작업함" : "보관함" },
+        { key: "thread", label: "대화" },
+        { key: "support", label: rootTab === "coding" ? "결과" : "보조" }
+      ];
+
+      if (isPortraitMobileLayout) {
+        const mobileThreadPanelHeight = Math.max(300, mobileWorkspaceHeight - 58);
+        return e(
+          "div",
+          {
+            className: "workspace-mobile-shell",
+            style: mobileWorkspaceHeight > 0 ? { minHeight: `${mobileWorkspaceHeight}px` } : undefined
+          },
+          renderResponsiveSectionTabs(
+            mobileWorkspaceSections,
+            currentWorkspacePane,
+            (paneKey) => setResponsivePane(responsiveWorkspaceKey, paneKey),
+            "workspace-mobile-tabs"
+          ),
+          currentWorkspacePane === "list"
+            ? renderConversationPanel()
+            : e(
+              "section",
+              {
+                className: "chat-panel chat-panel-mobile",
+                style: currentWorkspacePane === "thread" && mobileWorkspaceHeight > 0
+                  ? { height: `${mobileThreadPanelHeight}px`, minHeight: `${mobileThreadPanelHeight}px` }
+                  : undefined
+              },
+              renderThreadHeader({ showInfoPanel: false, showActionButtons: false, showModebar: false }),
+              errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
+              currentWorkspacePane === "thread"
+                ? e(
+                  React.Fragment,
+                  null,
+                  renderMessages(),
+                  composer
+                )
+                : null,
+              currentWorkspacePane === "support" ? renderResponsiveWorkspaceSupportPane() : null,
+              null
+            )
+        );
+      }
+
       return e(
         "div",
         { className: "workspace-grid" },
@@ -6907,12 +7344,13 @@
           errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
           renderMessages(),
           renderThreadSupportStack(),
-          rootTab === "chat" ? renderChatComposer() : renderCodingComposer()
+          composer
         )
       );
     }
 
     function renderRoutineScheduleBuilder(form, formType) {
+      const scheduleSourceMode = normalizeRoutineScheduleSourceMode(form.scheduleSourceMode, "auto");
       const scheduleKind = form.scheduleKind || "daily";
       return e(
         "div",
@@ -6921,62 +7359,177 @@
           e("div", { className: "routine-editor-title" }, "스케줄"),
           e("div", { className: "routine-editor-subtitle" }, formatRoutineSchedulePreview(form))
         ),
-        e("div", { className: "routine-segmented-control" },
-          ["daily", "weekly", "monthly"].map((kind) => e("button", {
-            key: `${formType}-${kind}`,
+        e("div", { className: "routine-segmented-control routine-source-control" },
+          e("button", {
             type: "button",
-            className: `routine-segment-btn ${scheduleKind === kind ? "active" : ""}`,
-            onClick: () => patchRoutineForm(formType, { scheduleKind: kind })
-          }, kind === "daily" ? "매일" : kind === "weekly" ? "주간" : "월간"))
+            className: `routine-segment-btn ${scheduleSourceMode === "auto" ? "active" : ""}`,
+            onClick: () => patchRoutineForm(formType, { scheduleSourceMode: "auto" })
+          }, "자동(요청 원문)"),
+          e("button", {
+            type: "button",
+            className: `routine-segment-btn ${scheduleSourceMode === "manual" ? "active" : ""}`,
+            onClick: () => patchRoutineForm(formType, { scheduleSourceMode: "manual" })
+          }, "수동")
         ),
-        e("div", { className: "routine-form-grid routine-form-grid-tight" },
-          e("label", { className: "routine-field" },
-            e("span", { className: "routine-field-label" }, "실행 시간"),
-            e("input", {
-              className: "input",
-              type: "time",
-              value: form.scheduleTime || "08:00",
-              onChange: (event) => patchRoutineForm(formType, { scheduleTime: event.target.value })
-            })
-          ),
-          e("label", { className: "routine-field" },
-            e("span", { className: "routine-field-label" }, "시간대"),
-            e("input", {
-              className: "input",
-              value: form.timezoneId || getRoutineLocalTimezone(),
-              onChange: (event) => patchRoutineForm(formType, { timezoneId: event.target.value })
-            })
+        scheduleSourceMode === "auto"
+          ? e("div", { className: "routine-auto-schedule-note" },
+            e("strong", null, "요청 원문 우선"),
+            e("span", null, "요청에 적은 매일, 요일, 시간 표현을 그대로 사용합니다. 수동으로 바꾸면 아래 스케줄 설정이 요청 원문보다 우선합니다.")
           )
-        ),
-        scheduleKind === "weekly"
-          ? e("div", { className: "routine-weekday-picker" },
-            ROUTINE_WEEKDAY_OPTIONS.map((item) => {
-              const active = normalizeRoutineWeekdays(form.weekdays || []).includes(item.value);
-              return e("button", {
-                key: `${formType}-weekday-${item.value}`,
+          : e(
+            React.Fragment,
+            null,
+            e("div", { className: "routine-segmented-control" },
+              ["daily", "weekly", "monthly"].map((kind) => e("button", {
+                key: `${formType}-${kind}`,
                 type: "button",
-                className: `routine-weekday-btn ${active ? "active" : ""}`,
-                onClick: () => toggleRoutineWeekday(formType, item.value)
-              }, item.label);
+                className: `routine-segment-btn ${scheduleKind === kind ? "active" : ""}`,
+                onClick: () => patchRoutineForm(formType, { scheduleKind: kind })
+              }, kind === "daily" ? "매일" : kind === "weekly" ? "주간" : "월간"))
+            ),
+            e("div", { className: "routine-form-grid routine-form-grid-tight" },
+              e("label", { className: "routine-field" },
+                e("span", { className: "routine-field-label" }, "실행 시간"),
+                e("input", {
+                  className: "input",
+                  type: "time",
+                  value: form.scheduleTime || "08:00",
+                  onChange: (event) => patchRoutineForm(formType, { scheduleTime: event.target.value })
+                })
+              ),
+              e("label", { className: "routine-field" },
+                e("span", { className: "routine-field-label" }, "시간대"),
+                e("input", {
+                  className: "input",
+                  value: form.timezoneId || getRoutineLocalTimezone(),
+                  onChange: (event) => patchRoutineForm(formType, { timezoneId: event.target.value })
+                })
+              )
+            ),
+            scheduleKind === "weekly"
+              ? e("div", { className: "routine-weekday-picker" },
+                ROUTINE_WEEKDAY_OPTIONS.map((item) => {
+                  const active = normalizeRoutineWeekdays(form.weekdays || []).includes(item.value);
+                  return e("button", {
+                    key: `${formType}-weekday-${item.value}`,
+                    type: "button",
+                    className: `routine-weekday-btn ${active ? "active" : ""}`,
+                    onClick: () => toggleRoutineWeekday(formType, item.value)
+                  }, item.label);
+                })
+              )
+              : null,
+            scheduleKind === "monthly"
+              ? e("label", { className: "routine-field" },
+                e("span", { className: "routine-field-label" }, "실행 날짜"),
+                e("select", {
+                  className: "input",
+                  value: `${Math.min(31, Math.max(1, Number(form.dayOfMonth || 1) || 1))}`,
+                  onChange: (event) => patchRoutineForm(formType, { dayOfMonth: Number(event.target.value) || 1 })
+                }, Array.from({ length: 31 }, (_, index) => index + 1).map((value) =>
+                  e("option", { key: `${formType}-dom-${value}`, value }, `${value}일`)
+                ))
+              )
+              : null
+          )
+      );
+    }
+
+    function renderRoutineExecutionModeBuilder(form, formType) {
+      const visibleMode = resolveRoutineVisibleExecutionMode(form);
+      const explicitMode = normalizeRoutineExecutionModeValue(form.executionMode);
+      const agentProvider = (form.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER).trim().toLowerCase() || DEFAULT_ROUTINE_AGENT_PROVIDER;
+      const agentModelOptions = routineAgentModelOptions;
+      return e(
+        "div",
+        { className: "routine-editor-card routine-execution-editor" },
+        e("div", { className: "routine-editor-section-head" },
+          e("div", { className: "routine-editor-title" }, "실행 모드"),
+          e("div", { className: "routine-editor-subtitle" }, `${formatRoutineExecutionModeLabel(visibleMode)} · ${explicitMode ? "명시 선택" : "요청 기반 자동 감지"}`)
+        ),
+        e("div", { className: "routine-segmented-control routine-mode-control" },
+          [
+            ["", "자동"],
+            ["web", "일반 답변"],
+            ["url", "URL 참조"],
+            ["script", "스크립트"],
+            ["browser_agent", "브라우저 에이전트"]
+          ].map(([value, label]) => e("button", {
+            key: `${formType}-mode-${value}`,
+            type: "button",
+            className: `routine-segment-btn ${value ? (explicitMode === value ? "active" : "") : (!explicitMode ? "active" : "")}`,
+            onClick: () => patchRoutineForm(formType, {
+              executionMode: value,
+              agentProvider: value === "browser_agent" ? (form.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER) : form.agentProvider,
+              agentModel: value === "browser_agent"
+                ? ((form.agentModel || "").trim() || getRoutineAgentModelFallback(form.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER))
+                : form.agentModel,
+              agentUsePlaywright: value === "browser_agent"
             })
+          }, value === "browser_agent"
+            ? e(React.Fragment, null, "브라우저", e("br"), "에이전트")
+            : label))
+        ),
+        !form.executionMode
+          ? e("div", { className: "routine-auto-schedule-note routine-auto-execution-note" },
+            e("strong", null, "자동 감지 중"),
+            e("span", null, "URL이 있으면 URL 참조, 최신 정보 질의면 일반 답변, 그 외는 스크립트로 처리합니다. 브라우저 에이전트는 명시 선택일 때만 사용합니다.")
           )
           : null,
-        scheduleKind === "monthly"
-          ? e("label", { className: "routine-field" },
-            e("span", { className: "routine-field-label" }, "실행 날짜"),
-            e("select", {
-              className: "input",
-              value: `${Math.min(31, Math.max(1, Number(form.dayOfMonth || 1) || 1))}`,
-              onChange: (event) => patchRoutineForm(formType, { dayOfMonth: Number(event.target.value) || 1 })
-            }, Array.from({ length: 31 }, (_, index) => index + 1).map((value) =>
-              e("option", { key: `${formType}-dom-${value}`, value }, `${value}일`)
-            ))
+        visibleMode === "browser_agent"
+          ? e("div", { className: "routine-form-grid routine-form-grid-agent" },
+            e("label", { className: "routine-field" },
+              e("span", { className: "routine-field-label" }, "에이전트 제공자"),
+              e("select", {
+                className: "input",
+                value: agentProvider,
+                onChange: (event) => {
+                  const nextProvider = event.target.value || DEFAULT_ROUTINE_AGENT_PROVIDER;
+                  patchRoutineForm(formType, {
+                    agentProvider: nextProvider,
+                    agentModel: getRoutineAgentModelFallback(nextProvider)
+                  });
+                }
+              }, routineAgentProviderOptions)
+            ),
+            e("label", { className: "routine-field" },
+              e("span", { className: "routine-field-label" }, "에이전트 모델"),
+              e("select", {
+                className: "input",
+                value: (form.agentModel || "").trim() || getRoutineAgentModelFallback(agentProvider),
+                onChange: (event) => patchRoutineForm(formType, { agentModel: event.target.value })
+              }, agentModelOptions)
+            ),
+            e("label", { className: "routine-field routine-field-full" },
+              e("span", { className: "routine-field-label" }, "시작 URL"),
+              e("input", {
+                className: "input",
+                value: form.agentStartUrl || "",
+                onChange: (event) => patchRoutineForm(formType, { agentStartUrl: event.target.value }),
+                placeholder: "비워두면 요청 원문에 포함된 첫 URL 사용"
+              })
+            ),
+            e("label", { className: "routine-field" },
+              e("span", { className: "routine-field-label" }, "타임아웃(초)"),
+              e("input", {
+                className: "input",
+                type: "number",
+                min: 30,
+                max: 1800,
+                value: `${Math.min(1800, Math.max(30, Number(form.agentTimeoutSeconds ?? 180) || 180))}`,
+                onChange: (event) => patchRoutineForm(formType, { agentTimeoutSeconds: Number(event.target.value) || 180 })
+              })
+            ),
+            e("div", { className: "routine-auto-schedule-note routine-agent-note" },
+              e("strong", null, "Playwright 전용"),
+              e("span", null, "브라우저 자동화는 Playwright만 사용합니다. 로그인, 다운로드, 데스크톱 전체 제어는 허용하지 않습니다.")
+            )
           )
           : null
       );
     }
 
-    function renderRoutineRunHistory(runs) {
+    function renderRoutineRunHistory(routineId, runs) {
       if (!Array.isArray(runs) || runs.length === 0) {
         return e("div", { className: "empty routine-history-empty" }, "실행 이력이 아직 없습니다.");
       }
@@ -6988,11 +7541,30 @@
               e("span", { className: `meta-chip ${run.status === "error" ? "error" : run.status === "success" ? "ok" : "neutral"}` }, run.status || "-"),
               e("strong", null, run.runAtLocal || "-")
             ),
-            e("div", { className: "routine-run-meta" }, run.durationText || "-")
+            e("div", { className: "routine-run-meta" }, `${run.source || "-"} · ${run.durationText || "-"} · ${Math.max(1, Number(run.attemptCount || 1))}회`)
           ),
           e("div", { className: "routine-run-summary" }, run.summary || "요약 없음"),
           run.error ? e("div", { className: "routine-run-error" }, run.error) : null,
-          run.nextRunLocal ? e("div", { className: "routine-run-next" }, `다음 실행 ${run.nextRunLocal}`) : null
+          run.agentProvider || run.agentModel
+            ? e("div", { className: "routine-run-next" }, `agent ${run.agentProvider || "-"}:${run.agentModel || "-"}`)
+            : null,
+          run.finalUrl ? e("div", { className: "routine-run-next" }, `최종 URL ${run.finalUrl}`) : null,
+          run.pageTitle ? e("div", { className: "routine-run-next" }, `페이지 ${run.pageTitle}`) : null,
+          run.screenshotPath ? e("div", { className: "routine-run-next" }, `스크린샷 ${run.screenshotPath}`) : null,
+          run.telegramStatus ? e("div", { className: "routine-run-next" }, `텔레그램 ${run.telegramStatus}`) : null,
+          run.nextRunLocal ? e("div", { className: "routine-run-next" }, `다음 실행 ${run.nextRunLocal}`) : null,
+          e("div", { className: "routine-run-actions" },
+            e("button", {
+              type: "button",
+              className: "btn",
+              onClick: () => openRoutineRunDetail(routineId, run.ts)
+            }, "상세"),
+            e("button", {
+              type: "button",
+              className: "btn",
+              onClick: () => resendRoutineRunTelegram(routineId, run.ts)
+            }, "텔레그램 재전송")
+          )
         ))
       );
     }
@@ -7000,130 +7572,254 @@
     function renderRoutine() {
       const selected = routines.find((item) => item.id === routineSelectedId) || null;
       const selectedRuns = Array.isArray(selected?.runs) ? selected.runs : [];
-      return e(
-        "section",
-        { className: "routine-tab" },
-        e("div", { className: "routine-hero" },
-          e("div", { className: "routine-hero-kicker" }, "Routine Studio"),
-          e("h2", null, "반복 작업을 일정, 코드, 실행 이력까지 한 화면에서 관리합니다."),
-          e("p", null, "루틴은 생성 즉시 1회 실행되고, 이후에는 매일/주간/월간 스케줄대로 자동 실행됩니다.")
+      const enabledCount = routines.filter((item) => !!item.enabled).length;
+      const browserAgentCount = routines.filter((item) =>
+        normalizeRoutineExecutionModeValue(item.resolvedExecutionMode || item.executionMode) === "browser_agent"
+      ).length;
+      const failedCount = routines.filter((item) =>
+        /error|fail|timeout|blocked/i.test(`${item && item.lastStatus ? item.lastStatus : ""}`)
+      ).length;
+      const scheduledCount = routines.filter((item) => `${item && item.nextRunLocal ? item.nextRunLocal : ""}`.trim().length > 0).length;
+      const selectedModeLabel = selected
+        ? formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script")
+        : "루틴 선택 대기";
+      const selectedScheduleSource = selected
+        ? (normalizeRoutineScheduleSourceMode(selected.scheduleSourceMode, "manual") === "auto" ? "요청 원문 기준" : "수동 스케줄")
+        : "왼쪽 목록에서 선택";
+      const selectedHeadline = selected
+        ? `${selected.scheduleText || "-"} · ${selected.lastStatus || "실행 전"}`
+        : "루틴을 선택하면 실행 상태와 스케줄을 한눈에 확인할 수 있습니다.";
+      const selectedRequestPreview = selected && `${selected.request || ""}`.trim()
+        ? selected.request
+        : "선택된 루틴이 없으면 이 영역에 요청 원문과 최근 상태가 표시됩니다.";
+      const routineMobileSections = [
+        { key: "overview", label: "개요" },
+        { key: "create", label: "생성" },
+        { key: "list", label: "목록" },
+        { key: "detail", label: "상세" }
+      ];
+      const overviewCards = e("div", { className: "routine-overview-grid" },
+        e("div", { className: "routine-overview-card routine-overview-card-selected" },
+          e("div", { className: "routine-overview-label" }, selected ? "선택된 루틴" : "상세 패널"),
+          e("div", { className: "routine-overview-value routine-overview-value-lg" }, selected ? (selected.title || selected.id) : selectedModeLabel),
+          e("div", { className: "routine-overview-note" }, `${selectedScheduleSource} · ${selectedModeLabel}`),
+          e("div", { className: "routine-overview-note routine-overview-note-strong" }, selectedHeadline)
         ),
-        e("div", { className: "routine-layout" },
-          e("div", { className: "routine-left-column" },
-            e("section", { className: "routine-list-panel routine-create-panel" },
-              e("div", { className: "routine-head" },
-                e("div", null,
-                  e("div", { className: "routine-head-kicker" }, "새 루틴"),
-                  e("h2", null, "자동화 생성")
-                ),
-                e("button", { className: "btn", onClick: refreshRoutines }, "새로고침")
-              ),
-              e("p", { className: "hint" }, "요청을 입력하면 계획 생성, 코드 저장, 즉시 1회 실행까지 이어집니다."),
-              errorByKey["routine:main"] ? e("div", { className: "error-banner" }, errorByKey["routine:main"]) : null,
-              e("div", { className: "routine-editor-card" },
-                e("div", { className: "routine-form-grid" },
-                  e("label", { className: "routine-field" },
-                    e("span", { className: "routine-field-label" }, "루틴 이름"),
-                    e("input", {
-                      className: "input",
-                      value: routineCreateForm.title,
-                      onChange: (event) => patchRoutineForm("create", { title: event.target.value }),
-                      placeholder: "비워두면 요청 기반으로 자동 생성"
-                    })
-                  ),
-                  e("label", { className: "routine-field routine-field-full" },
-                    e("span", { className: "routine-field-label" }, "요청 원문"),
-                    e("textarea", {
-                      className: "textarea routine-input",
-                      value: routineCreateForm.request,
-                      onChange: (event) => patchRoutineForm("create", { request: event.target.value }),
-                      onKeyDown: (event) => onInputKeyDown(event, createRoutineFromUi),
-                      placeholder: "예: 매일 오전 8시에 주요 기사와 서버 상태를 요약해줘"
-                    })
-                  )
-                )
-              ),
-              renderRoutineScheduleBuilder(routineCreateForm, "create"),
-              e("div", { className: "routine-submit-row" },
-                e("button", { className: "btn primary routine-submit-btn", onClick: createRoutineFromUi }, "루틴 생성")
-              )
+        e("div", { className: "routine-overview-card" },
+          e("div", { className: "routine-overview-label" }, "전체 루틴"),
+          e("div", { className: "routine-overview-value" }, `${routines.length}`),
+          e("div", { className: "routine-overview-note" }, "등록된 자동화 작업 수")
+        ),
+        e("div", { className: "routine-overview-card" },
+          e("div", { className: "routine-overview-label" }, "활성 루틴"),
+          e("div", { className: "routine-overview-value" }, `${enabledCount}`),
+          e("div", { className: "routine-overview-note" }, `비활성 ${Math.max(0, routines.length - enabledCount)}개`)
+        ),
+        e("div", { className: "routine-overview-card" },
+          e("div", { className: "routine-overview-label" }, "예약 대기"),
+          e("div", { className: "routine-overview-value" }, `${scheduledCount}`),
+          e("div", { className: "routine-overview-note" }, "다음 실행 시간이 잡힌 루틴")
+        ),
+        e("div", { className: "routine-overview-card" },
+          e("div", { className: "routine-overview-label" }, "브라우저 에이전트"),
+          e("div", { className: "routine-overview-value" }, `${browserAgentCount}`),
+          e("div", { className: "routine-overview-note" }, "Playwright 기반 자동화")
+        ),
+        e("div", { className: "routine-overview-card" },
+          e("div", { className: "routine-overview-label" }, "최근 오류"),
+          e("div", { className: "routine-overview-value" }, `${failedCount}`),
+          e("div", { className: "routine-overview-note" }, "마지막 실행 기준 오류/타임아웃")
+        ),
+        e("button", {
+          type: "button",
+          className: "routine-overview-card routine-overview-action-card",
+          onClick: refreshRoutines
+        },
+          e("div", { className: "routine-overview-label" }, "새로고침"),
+          e("div", { className: "routine-overview-value" }, "동기화"),
+          e("div", { className: "routine-overview-note" }, "루틴 상태와 실행 이력 다시 조회")
+        )
+      );
+      const createPanel = e("section", { className: "routine-list-panel routine-create-panel" },
+        e("div", { className: "routine-head" },
+          e("div", null,
+            e("div", { className: "routine-head-kicker" }, "새 루틴"),
+            e("h2", null, "루틴 만들기")
+          )
+        ),
+        e("p", { className: "hint routine-panel-hint" }, "활성화된 루틴은 스케줄 시 자동으로 텔레그램 봇에 전송됩니다. 생성 직후에는 즉시 1회 실행합니다."),
+        errorByKey["routine:main"] ? e("div", { className: "error-banner" }, errorByKey["routine:main"]) : null,
+        e("div", { className: "routine-section-card routine-create-card" },
+          e("div", { className: "routine-form-grid routine-form-grid-primary" },
+            e("label", { className: "routine-field" },
+              e("span", { className: "routine-field-label" }, "루틴 이름"),
+              e("input", {
+                className: "input",
+                value: routineCreateForm.title,
+                onChange: (event) => patchRoutineForm("create", { title: event.target.value }),
+                placeholder: "비워두면 요청 기반으로 자동 생성"
+              })
             ),
-            e("section", { className: "routine-list-panel routine-library-panel" },
-              e("div", { className: "routine-head" },
-                e("div", null,
-                  e("div", { className: "routine-head-kicker" }, "등록 목록"),
-                  e("h2", null, `${routines.length}개 루틴`)
-                )
-              ),
-              e("div", { className: "routine-list" },
-                routines.length === 0
-                  ? e("div", { className: "empty" }, "등록된 루틴이 없습니다.")
-                  : routines.map((item) => e(
-                    "button",
-                    {
-                      key: item.id,
-                      className: `routine-item ${routineSelectedId === item.id ? "active" : ""}`,
-                      onClick: () => setRoutineSelectedId(item.id)
-                    },
-                    e("div", { className: "routine-item-head" },
-                      e("div", { className: "routine-item-title" }, item.title || item.id),
-                      e("span", { className: `meta-chip ${item.enabled ? "ok" : "neutral"}` }, item.enabled ? "ON" : "OFF")
-                    ),
-                    e("div", { className: "routine-item-meta" },
-                      e("span", { className: "meta-chip neutral" }, item.scheduleText || "-"),
-                      e("span", { className: "meta-chip neutral" }, item.lastRunLocal ? `최근 ${item.lastRunLocal}` : "실행 전")
-                    ),
-                    e("div", { className: "item-preview" }, item.request || "")
-                  ))
-              )
+            e("label", { className: "routine-field routine-field-full" },
+              e("span", { className: "routine-field-label" }, "요청 원문"),
+              e("textarea", {
+                className: "textarea routine-input",
+                value: routineCreateForm.request,
+                onChange: (event) => patchRoutineForm("create", { request: event.target.value }),
+                onKeyDown: (event) => onInputKeyDown(event, createRoutineFromUi),
+                placeholder: "예: 매일 오전 8시에 주요 기사와 서버 상태를 요약해줘"
+              })
             )
           ),
-          e("section", { className: "routine-detail-panel" },
-            !selected
-              ? e("div", { className: "empty routine-empty-state" }, "왼쪽 목록에서 루틴을 선택하면 수정, 실행, 이력 확인이 가능합니다.")
-              : e(
-                React.Fragment,
-                null,
-                e("div", { className: "routine-detail-head" },
-                  e("div", { className: "routine-detail-copy" },
-                    e("div", { className: "routine-head-kicker" }, "선택된 루틴"),
-                    e("strong", null, selected.title || selected.id),
-                    e("div", { className: "routine-item-meta" },
-                      e("span", { className: `meta-chip ${selected.enabled ? "ok" : "neutral"}` }, selected.enabled ? "활성" : "비활성"),
-                      e("span", { className: "meta-chip neutral" }, selected.scheduleText || "-"),
-                      e("span", { className: "meta-chip neutral" }, selected.language || "-")
-                    )
-                  ),
-                  e("div", { className: "routine-action-row" },
-                    e("button", { className: "btn primary", onClick: () => runRoutineNow(selected.id) }, "지금 실행"),
-                    e("button", { className: "btn", onClick: () => setRoutineEnabled(selected.id, !selected.enabled) }, selected.enabled ? "비활성화" : "활성화"),
-                    e("button", { className: "btn ghost", onClick: () => deleteRoutineById(selected.id) }, "삭제")
+          e("div", { className: "routine-execution-config-stack" },
+            renderRoutineExecutionModeBuilder(routineCreateForm, "create"),
+            e("div", { className: "routine-form-grid" },
+              e("label", { className: "routine-field" },
+                e("span", { className: "routine-field-label" }, "실패 재시도"),
+                e("input", {
+                  className: "input",
+                  type: "number",
+                  min: 0,
+                  max: 5,
+                  value: `${Math.min(5, Math.max(0, Number(routineCreateForm.maxRetries ?? 1) || 0))}`,
+                  onChange: (event) => patchRoutineForm("create", { maxRetries: Number(event.target.value) || 0 })
+                })
+              ),
+              e("label", { className: "routine-field" },
+                e("span", { className: "routine-field-label" }, "재시도 간격(초)"),
+                e("input", {
+                  className: "input",
+                  type: "number",
+                  min: 0,
+                  max: 300,
+                  value: `${Math.min(300, Math.max(0, Number(routineCreateForm.retryDelaySeconds ?? 15) || 0))}`,
+                  onChange: (event) => patchRoutineForm("create", { retryDelaySeconds: Number(event.target.value) || 0 })
+                })
+              ),
+              e("label", { className: "routine-field routine-field-full" },
+                e("span", { className: "routine-field-label" }, "텔레그램 알림"),
+                e("select", {
+                  className: "input",
+                  value: normalizeRoutineNotifyPolicy(routineCreateForm.notifyPolicy, "always"),
+                  onChange: (event) => patchRoutineForm("create", { notifyPolicy: event.target.value })
+                },
+                e("option", { value: "always" }, "항상"),
+                e("option", { value: "on_change" }, "변경 시만"),
+                e("option", { value: "error_only" }, "오류 시만"),
+                e("option", { value: "never" }, "보내지 않음"))
+              )
+            )
+          )
+        ),
+        renderRoutineScheduleBuilder(routineCreateForm, "create"),
+        e("div", { className: "routine-submit-row" },
+          e("button", { className: "btn primary routine-submit-btn", onClick: createRoutineFromUi }, "루틴 생성")
+        )
+      );
+      const listPanel = e("section", { className: "routine-list-panel routine-library-panel" },
+        e("div", { className: "routine-head" },
+          e("div", null,
+            e("div", { className: "routine-head-kicker" }, "목록"),
+            e("h2", null, `${routines.length}개 루틴`)
+          ),
+          e("div", { className: "routine-library-meta" }, `${enabledCount}개 활성`)
+        ),
+        e("div", { className: "routine-list" },
+          routines.length === 0
+            ? e("div", { className: "empty routine-empty-state" }, "등록된 루틴이 없습니다.")
+            : routines.map((item) => e(
+              "button",
+              {
+                key: item.id,
+                className: `routine-item ${routineSelectedId === item.id ? "active" : ""}`,
+                onClick: () => {
+                  setRoutineSelectedId(item.id);
+                  if (isPortraitMobileLayout) {
+                    setResponsivePane("routine", "detail");
+                  }
+                }
+              },
+              e("div", { className: "routine-item-head" },
+                e("div", { className: "routine-item-title" }, item.title || item.id),
+                e("span", { className: `meta-chip ${item.enabled ? "ok" : "neutral"}` }, item.enabled ? "ON" : "OFF")
+              ),
+              e("div", { className: "routine-item-meta" },
+                e("span", { className: "meta-chip neutral" }, formatRoutineExecutionModeLabel(item.resolvedExecutionMode || item.executionMode || "script")),
+                e("span", { className: "meta-chip neutral" }, normalizeRoutineScheduleSourceMode(item.scheduleSourceMode, "manual") === "auto" ? "자동" : "수동"),
+                e("span", { className: "meta-chip neutral" }, item.scheduleText || "-"),
+                e("span", { className: "meta-chip neutral" }, item.lastRunLocal ? `최근 ${item.lastRunLocal}` : "실행 전")
+              ),
+              e("div", { className: "item-preview" }, item.request || "")
+            ))
+        )
+      );
+      const detailPanel = e("section", { className: "routine-detail-panel" },
+        !selected
+          ? e("div", { className: "routine-section-card routine-empty-card" },
+            e("div", { className: "empty routine-empty-state" }, "왼쪽 목록에서 루틴을 선택하면 상세 설정과 실행 이력을 볼 수 있습니다.")
+          )
+          : e(
+            React.Fragment,
+            null,
+            e("div", { className: "routine-section-card routine-detail-header-card" },
+              e("div", { className: "routine-detail-head" },
+                e("div", { className: "routine-detail-copy" },
+                  e("div", { className: "routine-head-kicker" }, "루틴 상세"),
+                  e("strong", null, selected.title || selected.id),
+                  e("div", { className: "routine-item-meta" },
+                    e("span", { className: `meta-chip ${selected.enabled ? "ok" : "neutral"}` }, selected.enabled ? "활성" : "비활성"),
+                    e("span", { className: "meta-chip neutral" }, formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script")),
+                    e("span", { className: "meta-chip neutral" }, normalizeRoutineScheduleSourceMode(selected.scheduleSourceMode, "manual") === "auto" ? "자동" : "수동"),
+                    e("span", { className: "meta-chip neutral" }, selected.scheduleText || "-"),
+                    e("span", { className: "meta-chip neutral" }, selected.language || "-")
                   )
                 ),
-                e("div", { className: "routine-stats-grid" },
-                  e("div", { className: "routine-stat-card" },
-                    e("span", { className: "routine-stat-label" }, "다음 실행"),
-                    e("strong", null, selected.nextRunLocal || "-")
-                  ),
-                  e("div", { className: "routine-stat-card" },
-                    e("span", { className: "routine-stat-label" }, "마지막 실행"),
-                    e("strong", null, selected.lastRunLocal || "-")
-                  ),
-                  e("div", { className: "routine-stat-card" },
-                    e("span", { className: "routine-stat-label" }, "상태"),
-                    e("strong", null, selected.lastStatus || "-")
-                  ),
-                  e("div", { className: "routine-stat-card" },
-                    e("span", { className: "routine-stat-label" }, "생성 모델"),
-                    e("strong", null, selected.coderModel || "-")
-                  )
-                ),
-                e("div", { className: "routine-editor-card" },
+                e("div", { className: "routine-action-row" },
+                  e("button", { className: "btn primary", onClick: () => runRoutineNow(selected.id) }, "웹 테스트"),
+                  (selected.resolvedExecutionMode || selected.executionMode) === "browser_agent"
+                    ? e("button", { className: "btn", onClick: () => testRoutineBrowserAgent(selected.id) }, "브라우저 에이전트 테스트")
+                    : null,
+                  e("button", { className: "btn", onClick: () => testRoutineTelegram(selected.id) }, "텔레그램 테스트"),
+                  e("button", { className: "btn", onClick: () => setRoutineEnabled(selected.id, !selected.enabled) }, selected.enabled ? "비활성화" : "활성화"),
+                  e("button", { className: "btn ghost", onClick: () => deleteRoutineById(selected.id) }, "삭제")
+                )
+              ),
+              e("div", { className: "routine-request-preview" }, selectedRequestPreview)
+            ),
+            e("div", { className: "routine-stats-grid" },
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "다음 실행"),
+                e("strong", null, selected.nextRunLocal || "-")
+              ),
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "마지막 실행"),
+                e("strong", null, selected.lastRunLocal || "-")
+              ),
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "상태"),
+                e("strong", null, selected.lastStatus || "-")
+              ),
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "생성 모델"),
+                e("strong", null, selected.coderModel || "-")
+              ),
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "실행 모드"),
+                e("strong", null, formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script"))
+              ),
+              e("div", { className: "routine-stat-card" },
+                e("span", { className: "routine-stat-label" }, "알림 정책"),
+                e("strong", null, normalizeRoutineNotifyPolicy(selected.notifyPolicy, "always"))
+              )
+            ),
+            e("div", { className: "routine-detail-grid" },
+              e("div", { className: "routine-primary-column" },
+                e("div", { className: "routine-section-card routine-edit-card" },
                   e("div", { className: "routine-editor-section-head" },
                     e("div", { className: "routine-editor-title" }, "루틴 수정"),
-                    e("div", { className: "routine-editor-subtitle" }, "요청과 스케줄을 바꾸면 코드가 다시 생성됩니다.")
+                    e("div", { className: "routine-editor-subtitle" }, "요청이나 스케줄을 바꾸면 실행 코드를 다시 만듭니다.")
                   ),
-                  e("div", { className: "routine-form-grid" },
+                  e("div", { className: "routine-form-grid routine-form-grid-primary" },
                     e("label", { className: "routine-field" },
                       e("span", { className: "routine-field-label" }, "루틴 이름"),
                       e("input", {
@@ -7142,24 +7838,123 @@
                       })
                     )
                   ),
+                  e("div", { className: "routine-execution-config-stack" },
+                    renderRoutineExecutionModeBuilder(routineEditForm, "edit"),
+                    e("div", { className: "routine-form-grid" },
+                      e("label", { className: "routine-field" },
+                        e("span", { className: "routine-field-label" }, "실패 재시도"),
+                        e("input", {
+                          className: "input",
+                          type: "number",
+                          min: 0,
+                          max: 5,
+                          value: `${Math.min(5, Math.max(0, Number(routineEditForm.maxRetries ?? 1) || 0))}`,
+                          onChange: (event) => patchRoutineForm("edit", { maxRetries: Number(event.target.value) || 0 })
+                        })
+                      ),
+                      e("label", { className: "routine-field" },
+                        e("span", { className: "routine-field-label" }, "재시도 간격(초)"),
+                        e("input", {
+                          className: "input",
+                          type: "number",
+                          min: 0,
+                          max: 300,
+                          value: `${Math.min(300, Math.max(0, Number(routineEditForm.retryDelaySeconds ?? 15) || 0))}`,
+                          onChange: (event) => patchRoutineForm("edit", { retryDelaySeconds: Number(event.target.value) || 0 })
+                        })
+                      ),
+                      e("label", { className: "routine-field routine-field-full" },
+                        e("span", { className: "routine-field-label" }, "텔레그램 알림"),
+                        e("select", {
+                          className: "input",
+                          value: normalizeRoutineNotifyPolicy(routineEditForm.notifyPolicy, "always"),
+                          onChange: (event) => patchRoutineForm("edit", { notifyPolicy: event.target.value })
+                        },
+                        e("option", { value: "always" }, "항상"),
+                        e("option", { value: "on_change" }, "변경 시만"),
+                        e("option", { value: "error_only" }, "오류 시만"),
+                        e("option", { value: "never" }, "보내지 않음"))
+                      )
+                    )
+                  ),
                   renderRoutineScheduleBuilder(routineEditForm, "edit"),
                   e("div", { className: "routine-submit-row" },
                     e("button", { className: "btn primary routine-submit-btn", onClick: updateRoutineFromUi }, "루틴 수정 저장")
                   )
+                )
+              ),
+              e("div", { className: "routine-secondary-column" },
+                e("div", { className: "routine-section-card" },
+                  e("div", { className: "routine-section-head" },
+                    e("div", { className: "routine-editor-title" }, "실행 이력"),
+                    e("div", { className: "routine-editor-subtitle" }, `${selectedRuns.length}건`)
+                  ),
+                  renderRoutineRunHistory(selected.id, selectedRuns)
                 ),
-                e("div", { className: "routine-subtitle" }, "실행 이력"),
-                renderRoutineRunHistory(selectedRuns),
-                e("div", { className: "routine-kv" },
-                  e("div", null, `ID: ${selected.id}`),
-                  e("div", null, `스크립트: ${selected.scriptPath || "-"}`),
-                  e("div", null, `언어: ${selected.language || "-"}`),
-                  e("div", null, `시간대: ${selected.timezoneId || "-"}`)
-                ),
-                e("div", { className: "routine-subtitle" }, "최근 실행 출력"),
-                e("pre", { className: "routine-output" }, selected.lastOutput || "출력 없음")
+                e("div", { className: "routine-section-card" },
+                  e("div", { className: "routine-section-head" },
+                    e("div", { className: "routine-editor-title" }, "최근 실행 출력"),
+                    e("div", { className: "routine-editor-subtitle" }, selected.lastStatus || "-")
+                  ),
+                  e("div", { className: "routine-kv" },
+                    e("div", null, `ID: ${selected.id}`),
+                    e("div", null, `실행 모드: ${formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script")}`),
+                    e("div", null, `언어: ${selected.language || "-"}`),
+                    e("div", null, `시간대: ${selected.timezoneId || "-"}`),
+                    e("div", null, `재시도: ${Math.max(0, Number(selected.maxRetries || 0))}회 / ${Math.max(0, Number(selected.retryDelaySeconds || 0))}초`),
+                    e("div", null, `알림: ${normalizeRoutineNotifyPolicy(selected.notifyPolicy, "always")}`),
+                    e("div", null, `에이전트: ${(selected.agentProvider || "-")} / ${(selected.agentModel || "-")}`),
+                    e("div", null, `시작 URL: ${selected.agentStartUrl || "-"}`),
+                    e("div", null, `스크립트: ${selected.scriptPath || "-"}`)
+                  ),
+                  e("button", {
+                    type: "button",
+                    className: "routine-output-button",
+                    onClick: () => setRoutineOutputPreview({
+                      open: true,
+                      title: `${selected.title || selected.id} · 최근 실행 출력`,
+                      content: selected.lastOutput || "출력 없음",
+                      imagePath: "",
+                      imageAlt: ""
+                    })
+                  },
+                    e("pre", { className: "routine-output" }, selected.lastOutput || "출력 없음")
+                  )
+                )
               )
+            )
           )
-        )
+      );
+      return e(
+        "section",
+        { className: "routine-tab" },
+        e("div", { className: "routine-hero" },
+          e("div", { className: "routine-hero-copy" },
+            e("div", { className: "routine-hero-kicker" }, "루틴"),
+            e("h2", null, "반복 작업 자동화"),
+            e("p", null, "생성, 스케줄, 상태, 실행 이력을 같은 화면에서 관리하는 운영형 대시보드입니다.")
+          )
+        ),
+        isPortraitMobileLayout
+          ? e(
+            "div",
+            { className: "routine-mobile-shell" },
+            renderResponsiveSectionTabs(routineMobileSections, currentRoutinePane, (paneKey) => setResponsivePane("routine", paneKey), "routine-mobile-tabs"),
+            currentRoutinePane === "overview" ? overviewCards : null,
+            currentRoutinePane === "create" ? createPanel : null,
+            currentRoutinePane === "list" ? listPanel : null,
+            currentRoutinePane === "detail" ? detailPanel : null
+          )
+          : e(
+            React.Fragment,
+            null,
+            overviewCards,
+            e("div", { className: "routine-layout" },
+              createPanel,
+              listPanel,
+              detailPanel
+            )
+          )
       );
     }
 
@@ -7711,395 +8506,448 @@
     }
 
     function renderSettings() {
+      const settingsMobileSections = [
+        { key: "auth", label: "인증" },
+        { key: "integration", label: "연동" },
+        { key: "model", label: "모델" },
+        { key: "ops", label: "운영" }
+      ];
+      const otpPanel = e("section", { className: "panel" },
+        e("h2", null, "OTP 인증"),
+        e("p", { className: "hint" }, authMeta.telegramConfigured ? "OTP 요청 버튼을 눌렀을 때만 Telegram으로 발송됩니다." : "OTP 요청 버튼을 누르면 서버 콘솔 fallback OTP가 출력됩니다."),
+        e("input", {
+          className: "input",
+          value: otp,
+          onChange: (event) => setOtp(event.target.value),
+          placeholder: "OTP 6자리",
+          maxLength: 6
+        }),
+        e("div", { className: "row" },
+          e("button", {
+            className: "btn",
+            onClick: () => send({ type: "request_otp" })
+          }, "OTP 요청"),
+          e("button", {
+            className: "btn primary",
+            onClick: () => {
+              const code = otp.trim();
+              if (code.length !== 6) {
+                log("OTP 6자리를 입력하세요.", "error");
+                return;
+              }
+              const parsedTtl = parseInt(authTtlHours, 10);
+              const ttlHours = Number.isFinite(parsedTtl)
+                ? Math.max(1, Math.min(168, parsedTtl))
+                : 24;
+              setAuthTtlHours(String(ttlHours));
+              send({ type: "auth", otp: code, authTtlHours: ttlHours });
+            }
+          }, "OTP 인증")
+        ),
+        e("div", { className: "row" },
+          e("label", { className: "meta-field" },
+            e("span", { className: "meta-label" }, "인증 유지 시간(시간)"),
+            e("input", {
+              className: "input compact",
+              type: "number",
+              min: 1,
+              max: 168,
+              value: authTtlHours,
+              onChange: (event) => setAuthTtlHours(event.target.value)
+            })
+          ),
+          e("div", { className: "tiny" }, "범위: 1~168시간 (최대 7일)")
+        ),
+        e("div", { className: "tiny" }, `Session: ${authMeta.sessionId || "-"}`),
+        e("div", { className: "tiny" }, `인증 만료(로컬): ${authExpiry || "-"}`),
+        e("div", { className: "tiny" }, `로컬 시간대: ${authLocalOffset || "-"}`)
+      );
+      const telegramPanel = e("section", { className: "panel" },
+        e("h2", null, "Telegram 연동"),
+        e("input", {
+          className: "input",
+          value: telegramBotToken,
+          onChange: (event) => setTelegramBotToken(event.target.value),
+          placeholder: `Bot Token (${settingsState.telegramBotTokenMasked || "미설정"})`
+        }),
+        e("input", {
+          className: "input",
+          value: telegramChatId,
+          onChange: (event) => setTelegramChatId(event.target.value),
+          placeholder: `Chat ID (${settingsState.telegramChatIdMasked || "미설정"})`
+        }),
+        e("label", { className: "check" },
+          e("input", {
+            type: "checkbox",
+            checked: persist,
+            onChange: (event) => setPersist(event.target.checked)
+          }),
+          "보안 저장소 저장/삭제"
+        ),
+        e("div", { className: "row" },
+          e("button", {
+            className: "btn primary",
+            onClick: () => send({
+              type: "set_telegram_credentials",
+              telegramBotToken: telegramBotToken.trim() || undefined,
+              telegramChatId: telegramChatId.trim() || undefined,
+              persist
+            })
+          }, "저장"),
+          e("button", { className: "btn", onClick: () => send({ type: "test_telegram" }) }, "테스트 전송"),
+          e("button", {
+            className: "btn ghost",
+            onClick: () => {
+              send({ type: "delete_telegram_credentials", persist });
+              setTelegramBotToken("");
+              setTelegramChatId("");
+            }
+          }, "연동 삭제")
+        )
+      );
+      const llmPanel = e("section", { className: "panel" },
+        e("h2", null, "LLM / Copilot / Codex"),
+        e("input", {
+          className: "input",
+          value: groqApiKey,
+          onChange: (event) => setGroqApiKey(event.target.value),
+          placeholder: `Groq API Key (${settingsState.groqApiKeyMasked || "미설정"})`
+        }),
+        e("input", {
+          className: "input",
+          value: geminiApiKey,
+          onChange: (event) => setGeminiApiKey(event.target.value),
+          placeholder: `Gemini API Key (${settingsState.geminiApiKeyMasked || "미설정"})`
+        }),
+        e("input", {
+          className: "input",
+          value: cerebrasApiKey,
+          onChange: (event) => setCerebrasApiKey(event.target.value),
+          placeholder: `Cerebras API Key (${settingsState.cerebrasApiKeyMasked || "미설정"})`
+        }),
+        e("input", {
+          className: "input",
+          value: codexApiKey,
+          onChange: (event) => setCodexApiKey(event.target.value),
+          placeholder: `Codex API Key (${settingsState.codexApiKeyMasked || "미설정"})`
+        }),
+        e("div", { className: "row" },
+          e("button", {
+            className: "btn primary",
+            onClick: () => send({
+              type: "set_llm_credentials",
+              groqApiKey: groqApiKey.trim() || undefined,
+              geminiApiKey: geminiApiKey.trim() || undefined,
+              cerebrasApiKey: cerebrasApiKey.trim() || undefined,
+              codexApiKey: codexApiKey.trim() || undefined,
+              persist
+            })
+          }, "키 저장"),
+          e("button", {
+            className: "btn ghost",
+            onClick: () => {
+              send({ type: "delete_llm_credentials", persist });
+              setGroqApiKey("");
+              setGeminiApiKey("");
+              setCerebrasApiKey("");
+              setCodexApiKey("");
+            }
+          }, "키 삭제"),
+          e("button", { className: "btn", onClick: () => send({ type: "get_groq_models" }) }, "Groq 새로고침"),
+          e("button", { className: "btn", onClick: () => send({ type: "get_copilot_models" }) }, "Copilot 새로고침")
+        ),
+        e("div", { className: "meta mt8" }, `Copilot 상태: ${copilotStatus}`),
+        e("div", { className: "tiny" }, `상세: ${copilotDetail}`),
+        e("div", { className: "row mt8" },
+          e("button", { className: "btn", onClick: () => send({ type: "get_copilot_status" }) }, "상태 조회"),
+          e("button", { className: "btn", onClick: () => send({ type: "start_copilot_login" }) }, "로그인 시작")
+        ),
+        e("div", { className: "meta mt8" }, `Codex 상태: ${codexStatus}`),
+        e("div", { className: "tiny" }, `상세: ${codexDetail}`),
+        e("div", { className: "row mt8" },
+          e("button", { className: "btn", onClick: () => send({ type: "get_codex_status" }) }, "상태 조회"),
+          e("button", {
+            className: "btn",
+            onClick: () => {
+              setCodexStatus("로그인 시작 중");
+              setCodexDetail("브라우저 인증 흐름을 시작하는 중입니다...");
+              send({ type: "start_codex_login" });
+            }
+          }, "OAuth 로그인 시작"),
+          e("button", {
+            className: "btn ghost",
+            onClick: () => {
+              setCodexStatus("로그아웃 처리 중");
+              setCodexDetail("Codex 인증 정보를 정리하는 중입니다...");
+              send({ type: "logout_codex" });
+            }
+          }, "OAuth 로그아웃")
+        )
+      );
+      const geminiUsagePanel = e("section", { className: "panel" },
+        e("h2", null, "Gemini 사용량 / 추정 과금"),
+        e("div", { className: "tiny" }, `단가: 입력 $${geminiUsage.input_price_per_million_usd}/1M, 출력 $${geminiUsage.output_price_per_million_usd}/1M`),
+        e("div", { className: "meta mt8" }, `요청 수: ${geminiUsage.requests || 0}`),
+        e("div", { className: "meta" }, `입력 토큰: ${geminiUsage.prompt_tokens || 0}`),
+        e("div", { className: "meta" }, `출력 토큰: ${geminiUsage.completion_tokens || 0}`),
+        e("div", { className: "meta" }, `총 토큰: ${geminiUsage.total_tokens || 0}`),
+        e("div", { className: "meta" }, `예상 비용: $${geminiUsage.estimated_cost_usd || "0.000000"}`),
+        e("button", { className: "btn mt8", onClick: () => send({ type: "get_usage_stats" }) }, "사용량 새로고침")
+      );
+      const copilotPremiumPanel = e("section", { className: "panel span2 ops-panel" },
+        e("h2", null, "GitHub Copilot Premium Requests"),
+        e("div", { className: "tiny" }, "주의: 이 값은 GitHub 계정 월누적이며 Omni-node 외 VS Code/Web/기타 Copilot 사용도 합산됩니다."),
+        e("div", { className: "meta" }, `사용률: ${copilotPremiumUsage.available ? `${formatDecimal(copilotPremiumUsage.percent_used, 2)}%` : "-"}`),
+        e("div", { className: "progress-track mt8" },
+          e("div", {
+            className: "progress-fill",
+            style: { width: `${copilotPremiumPercent}%` }
+          })
+        ),
+        e("div", { className: "meta mt8" }, `사용량: ${copilotPremiumUsage.available ? `${formatDecimal(copilotPremiumUsage.used_requests, 1)} / ${copilotPremiumQuotaText}` : "-"}`),
+        e("div", { className: "tiny" }, `계정: ${copilotPremiumUsage.username || "-"} · 플랜: ${copilotPremiumUsage.plan_name || "-"}`),
+        e("div", { className: "tiny" }, `갱신(로컬): ${copilotPremiumUsage.refreshed_local || "-"}`),
+        !copilotPremiumUsage.available
+          ? e("div", { className: "error-banner" }, `Copilot Premium 조회 실패: ${copilotPremiumUsage.message || "조회 실패"}`)
+          : null,
+        copilotPremiumUsage.requires_user_scope
+          ? e("div", { className: "error-banner" }, "권한 필요: gh auth refresh -h github.com -s user")
+          : null,
+        e("div", { className: "row mt8" },
+          e("button", { className: "btn", onClick: () => send({ type: "get_usage_stats" }) }, "Copilot 사용량 새로고침"),
+          e("button", {
+            className: "btn ghost",
+            onClick: () => window.open(copilotPremiumUsage.features_url || "https://github.com/settings/copilot/features", "_blank", "noopener,noreferrer")
+          }, "Features 열기"),
+          e("button", {
+            className: "btn ghost",
+            onClick: () => window.open(copilotPremiumUsage.billing_url || "https://github.com/settings/billing/premium_requests_usage", "_blank", "noopener,noreferrer")
+          }, "Billing 열기")
+        ),
+        e("div", { className: "meta mt8" }, `Omni-node 로컬 총 요청: ${copilotLocalUsage.total_requests || 0} req`),
+        e("div", { className: "tiny" }, `로컬 선택 모델: ${copilotLocalUsage.selected_model || "-"} (${copilotLocalUsage.selected_model_requests || 0} req)`),
+        e("div", { className: "table-wrap" },
+          e("table", { className: "model-table" },
+            e("thead", null,
+              e("tr", null,
+                e("th", null, "모델"),
+                e("th", null, "사용 횟수"),
+                e("th", null, "비율")
+              )
+            ),
+            e("tbody", null, copilotPremiumRows)
+          )
+        ),
+        e("div", { className: "table-wrap mt8" },
+          e("table", { className: "model-table" },
+            e("thead", null,
+              e("tr", null,
+                e("th", null, "Omni-node 로컬 모델"),
+                e("th", null, "요청 수")
+              )
+            ),
+            e("tbody", null, copilotLocalRows)
+          )
+        )
+      );
+      const copilotModelsPanel = e("section", { className: "panel span2 ops-panel" },
+        e("h2", null, "Copilot 모델"),
+        e("div", { className: "row" },
+          e("select", {
+            className: "input",
+            value: selectedCopilotModel,
+            onChange: (event) => setSelectedCopilotModel(event.target.value)
+          },
+          copilotModels.length === 0
+            ? e("option", { value: "" }, "모델 로딩 중")
+            : copilotModels.map((x) => e("option", { key: x.id, value: x.id }, x.id))),
+          e("button", {
+            className: "btn",
+            onClick: () => {
+              if (!selectedCopilotModel) {
+                return;
+              }
+              send({ type: "set_copilot_model", model: selectedCopilotModel });
+            }
+          }, "모델 적용"),
+          e("button", { className: "btn", onClick: () => send({ type: "get_copilot_models" }) }, "새로고침")
+        ),
+        e("div", { className: "table-wrap" },
+          e("table", { className: "model-table" },
+            e("thead", null,
+              e("tr", null,
+                e("th", null, "모델"),
+                e("th", null, "제공사"),
+                e("th", null, "Premium 배수"),
+                e("th", null, "출력 TPS"),
+                e("th", null, "리미트"),
+                e("th", null, "컨텍스트"),
+                e("th", null, "최대 출력"),
+                e("th", null, "사용량")
+              )
+            ),
+            e("tbody", null, copilotRows)
+          )
+        )
+      );
+      const groqModelsPanel = e("section", { className: "panel span2 ops-panel" },
+        e("h2", null, "Groq 모델 / 제한량 / 사용량"),
+        e("div", { className: "row" },
+          e("select", {
+            className: "input",
+            value: selectedGroqModel,
+            onChange: (event) => setSelectedGroqModel(event.target.value)
+          },
+          groqModels.length === 0
+            ? e("option", { value: "" }, "모델 로딩 중")
+            : groqModels.map((x) => e("option", { key: x.id, value: x.id }, x.id))),
+          e("button", {
+            className: "btn",
+            onClick: () => {
+              if (!selectedGroqModel) {
+                return;
+              }
+              send({ type: "set_groq_model", model: selectedGroqModel });
+            }
+          }, "모델 적용"),
+          e("button", { className: "btn", onClick: () => send({ type: "get_groq_models" }) }, "새로고침")
+        ),
+        e("div", { className: "table-wrap" },
+          e("table", { className: "model-table" },
+            e("thead", null,
+              e("tr", null,
+                e("th", null, "모델"),
+                e("th", null, "Tier"),
+                e("th", null, "출력 TPS"),
+                e("th", null, "컨텍스트"),
+                e("th", null, "최대 출력"),
+                e("th", null, "RPM"),
+                e("th", null, "RPD"),
+                e("th", null, "TPM"),
+                e("th", null, "TPD"),
+                e("th", null, "ASH"),
+                e("th", null, "ASD"),
+                e("th", null, "사용량(분/시/일)"),
+                e("th", null, "라이브 잔여/리셋")
+              )
+            ),
+            e("tbody", null, groqRows)
+          )
+        )
+      );
+      const consolePanel = e("section", { className: "panel span2 ops-panel" },
+        e("h2", null, "운영 콘솔"),
+        e("p", { className: "hint" }, "분류(provider/tool/rag) 필터는 도구 통합 패널 카드와 연동됩니다."),
+        e("div", { className: "row" },
+          e("input", {
+            className: "input",
+            value: command,
+            onChange: (event) => setCommand(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                send({ type: "command", text: command.trim() });
+              }
+            },
+            placeholder: "/metrics, /kill <pid>, /code ..."
+          }),
+          e("button", { className: "btn primary", disabled: !authed, onClick: () => send({ type: "command", text: command.trim() }) }, "명령 실행"),
+          e("button", { className: "btn", disabled: !authed, onClick: () => send({ type: "get_metrics" }) }, "메트릭 조회")
+        ),
+        e("div", { className: "monitor-grid" },
+          e("div", { className: "monitor" },
+            e("div", { className: "monitor-title" }, "실시간 메트릭"),
+            e("pre", { className: "screen metrics" }, metrics)
+          ),
+          e("div", { className: "monitor" },
+            e("div", { className: "monitor-title" }, "시스템 로그"),
+            e("pre", { className: "screen logs" }, logs)
+          )
+        ),
+        e("div", { className: "tool-filter-row mt8" },
+          OPS_DOMAIN_FILTERS.map((domainItem) => {
+            const stat = opsDomainStats[domainItem.key] || { count: 0, errorCount: 0, lastSummary: "-" };
+            return e(
+              "button",
+              {
+                key: domainItem.key,
+                type: "button",
+                className: `btn tool-filter-btn ${opsDomainFilter === domainItem.key ? "active" : ""}`,
+                onClick: () => applyDomainFocus(domainItem.key)
+              },
+              `${domainItem.label} (${stat.count})`
+            );
+          })
+        ),
+        e("div", { className: "table-wrap mt8" },
+          e("table", { className: "model-table" },
+            e("thead", null,
+              e("tr", null,
+                e("th", null, "시각(UTC)"),
+                e("th", null, "도메인"),
+                e("th", null, "소스"),
+                e("th", null, "상태"),
+                e("th", null, "요약")
+              )
+            ),
+            e("tbody", null,
+              filteredOpsFlowItems.length === 0
+                ? e("tr", null, e("td", { colSpan: 5 }, "선택한 도메인에 해당하는 운영 이벤트가 없습니다."))
+                : filteredOpsFlowItems.slice(0, 12).map((item) => e(
+                  "tr",
+                  { key: item.id, className: item.hasError ? "tool-result-row error" : "tool-result-row" },
+                  e("td", null, item.capturedAt || "-"),
+                  e("td", null, item.domain || "-"),
+                  e("td", null, item.source || "-"),
+                  e("td", null, e("span", { className: `tool-status-chip ${item.statusTone || "neutral"}` }, item.statusLabel || "-")),
+                  e("td", null, item.summary || "-")
+                ))
+            )
+          )
+        ),
+        e("div", { className: "tiny mt8" },
+          `전체 ${opsDomainStats.all.count}건 / 오류 ${opsDomainStats.all.errorCount}건 / 최신 ${opsDomainStats.all.lastSummary || "-"}`
+        ),
+        e("button", {
+          className: "btn mt8",
+          onClick: () => {
+            if (workerRef.current) {
+              workerRef.current.postMessage({ type: "clear_logs" });
+            }
+          }
+        }, "로그 비우기")
+      );
+      const toolPanel = renderToolControlPanel();
+      const desktopSettingsGrid = e("div", { className: "settings-grid" },
+        otpPanel,
+        telegramPanel,
+        llmPanel,
+        geminiUsagePanel,
+        copilotPremiumPanel,
+        copilotModelsPanel,
+        groqModelsPanel,
+        consolePanel,
+        toolPanel
+      );
+      const mobileSettingsStack = e("div", { className: "settings-mobile-shell" },
+        renderResponsiveSectionTabs(settingsMobileSections, currentSettingsPane, (paneKey) => setResponsivePane("settings", paneKey), "settings-mobile-tabs"),
+        currentSettingsPane === "auth"
+          ? e("div", { className: "responsive-panel-stack" }, otpPanel)
+          : null,
+        currentSettingsPane === "integration"
+          ? e("div", { className: "responsive-panel-stack" }, telegramPanel, llmPanel, geminiUsagePanel)
+          : null,
+        currentSettingsPane === "model"
+          ? e("div", { className: "responsive-panel-stack" }, copilotPremiumPanel, copilotModelsPanel, groqModelsPanel)
+          : null,
+        currentSettingsPane === "ops"
+          ? e("div", { className: "responsive-panel-stack" }, consolePanel, toolPanel)
+          : null
+      );
       return e(
         "section",
         { className: "settings" },
-        e("div", { className: "settings-grid" },
-          e("section", { className: "panel" },
-            e("h2", null, "OTP 인증"),
-            e("p", { className: "hint" }, authMeta.telegramConfigured ? "OTP 요청 버튼을 눌렀을 때만 Telegram으로 발송됩니다." : "OTP 요청 버튼을 누르면 서버 콘솔 fallback OTP가 출력됩니다."),
-            e("input", {
-              className: "input",
-              value: otp,
-              onChange: (event) => setOtp(event.target.value),
-              placeholder: "OTP 6자리",
-              maxLength: 6
-            }),
-            e("div", { className: "row" },
-              e("button", {
-                className: "btn",
-                onClick: () => send({ type: "request_otp" })
-              }, "OTP 요청"),
-              e("button", {
-                className: "btn primary",
-                onClick: () => {
-                  const code = otp.trim();
-                  if (code.length !== 6) {
-                    log("OTP 6자리를 입력하세요.", "error");
-                    return;
-                  }
-                  const parsedTtl = parseInt(authTtlHours, 10);
-                  const ttlHours = Number.isFinite(parsedTtl)
-                    ? Math.max(1, Math.min(168, parsedTtl))
-                    : 24;
-                  setAuthTtlHours(String(ttlHours));
-                  send({ type: "auth", otp: code, authTtlHours: ttlHours });
-                }
-              }, "OTP 인증")
-            ),
-            e("div", { className: "row" },
-              e("label", { className: "meta-field" },
-                e("span", { className: "meta-label" }, "인증 유지 시간(시간)"),
-                e("input", {
-                  className: "input compact",
-                  type: "number",
-                  min: 1,
-                  max: 168,
-                  value: authTtlHours,
-                  onChange: (event) => setAuthTtlHours(event.target.value)
-                })
-              ),
-              e("div", { className: "tiny" }, "범위: 1~168시간 (최대 7일)")
-            ),
-            e("div", { className: "tiny" }, `Session: ${authMeta.sessionId || "-"}`),
-            e("div", { className: "tiny" }, `인증 만료(로컬): ${authExpiry || "-"}`),
-            e("div", { className: "tiny" }, `로컬 시간대: ${authLocalOffset || "-"}`)
-          ),
-
-          e("section", { className: "panel" },
-            e("h2", null, "Telegram 연동"),
-            e("input", {
-              className: "input",
-              value: telegramBotToken,
-              onChange: (event) => setTelegramBotToken(event.target.value),
-              placeholder: `Bot Token (${settingsState.telegramBotTokenMasked || "미설정"})`
-            }),
-            e("input", {
-              className: "input",
-              value: telegramChatId,
-              onChange: (event) => setTelegramChatId(event.target.value),
-              placeholder: `Chat ID (${settingsState.telegramChatIdMasked || "미설정"})`
-            }),
-            e("label", { className: "check" },
-              e("input", {
-                type: "checkbox",
-                checked: persist,
-                onChange: (event) => setPersist(event.target.checked)
-              }),
-              "보안 저장소 저장/삭제"
-            ),
-            e("div", { className: "row" },
-              e("button", {
-                className: "btn primary",
-                onClick: () => send({
-                  type: "set_telegram_credentials",
-                  telegramBotToken: telegramBotToken.trim() || undefined,
-                  telegramChatId: telegramChatId.trim() || undefined,
-                  persist
-                })
-              }, "저장"),
-              e("button", { className: "btn", onClick: () => send({ type: "test_telegram" }) }, "테스트 전송"),
-              e("button", {
-                className: "btn ghost",
-                onClick: () => {
-                  send({ type: "delete_telegram_credentials", persist });
-                  setTelegramBotToken("");
-                  setTelegramChatId("");
-                }
-              }, "연동 삭제")
-            )
-          ),
-
-          e("section", { className: "panel" },
-            e("h2", null, "LLM / Copilot"),
-            e("input", {
-              className: "input",
-              value: groqApiKey,
-              onChange: (event) => setGroqApiKey(event.target.value),
-              placeholder: `Groq API Key (${settingsState.groqApiKeyMasked || "미설정"})`
-            }),
-            e("input", {
-              className: "input",
-              value: geminiApiKey,
-              onChange: (event) => setGeminiApiKey(event.target.value),
-              placeholder: `Gemini API Key (${settingsState.geminiApiKeyMasked || "미설정"})`
-            }),
-            e("input", {
-              className: "input",
-              value: cerebrasApiKey,
-              onChange: (event) => setCerebrasApiKey(event.target.value),
-              placeholder: `Cerebras API Key (${settingsState.cerebrasApiKeyMasked || "미설정"})`
-            }),
-            e("div", { className: "row" },
-              e("button", {
-                className: "btn primary",
-                onClick: () => send({
-                  type: "set_llm_credentials",
-                  groqApiKey: groqApiKey.trim() || undefined,
-                  geminiApiKey: geminiApiKey.trim() || undefined,
-                  cerebrasApiKey: cerebrasApiKey.trim() || undefined,
-                  persist
-                })
-              }, "키 저장"),
-              e("button", {
-                className: "btn ghost",
-                onClick: () => {
-                  send({ type: "delete_llm_credentials", persist });
-                  setGroqApiKey("");
-                  setGeminiApiKey("");
-                  setCerebrasApiKey("");
-                }
-              }, "키 삭제"),
-              e("button", { className: "btn", onClick: () => send({ type: "get_groq_models" }) }, "Groq 새로고침"),
-              e("button", { className: "btn", onClick: () => send({ type: "get_copilot_models" }) }, "Copilot 새로고침")
-            ),
-            e("div", { className: "meta mt8" }, `Copilot 상태: ${copilotStatus}`),
-            e("div", { className: "tiny" }, `상세: ${copilotDetail}`),
-            e("div", { className: "row mt8" },
-              e("button", { className: "btn", onClick: () => send({ type: "get_copilot_status" }) }, "상태 조회"),
-              e("button", { className: "btn", onClick: () => send({ type: "start_copilot_login" }) }, "로그인 시작")
-            )
-          ),
-
-          e("section", { className: "panel" },
-            e("h2", null, "Gemini 사용량 / 추정 과금"),
-            e("div", { className: "tiny" }, `단가: 입력 $${geminiUsage.input_price_per_million_usd}/1M, 출력 $${geminiUsage.output_price_per_million_usd}/1M`),
-            e("div", { className: "meta mt8" }, `요청 수: ${geminiUsage.requests || 0}`),
-            e("div", { className: "meta" }, `입력 토큰: ${geminiUsage.prompt_tokens || 0}`),
-            e("div", { className: "meta" }, `출력 토큰: ${geminiUsage.completion_tokens || 0}`),
-            e("div", { className: "meta" }, `총 토큰: ${geminiUsage.total_tokens || 0}`),
-            e("div", { className: "meta" }, `예상 비용: $${geminiUsage.estimated_cost_usd || "0.000000"}`),
-            e("button", { className: "btn mt8", onClick: () => send({ type: "get_usage_stats" }) }, "사용량 새로고침")
-          ),
-
-          e("section", { className: "panel span2 ops-panel" },
-            e("h2", null, "GitHub Copilot Premium Requests"),
-            e("div", { className: "tiny" }, "주의: 이 값은 GitHub 계정 월누적이며 Omni-node 외 VS Code/Web/기타 Copilot 사용도 합산됩니다."),
-            e("div", { className: "meta" }, `사용률: ${copilotPremiumUsage.available ? `${formatDecimal(copilotPremiumUsage.percent_used, 2)}%` : "-"}`),
-            e("div", { className: "progress-track mt8" },
-              e("div", {
-                className: "progress-fill",
-                style: { width: `${copilotPremiumPercent}%` }
-              })
-            ),
-            e("div", { className: "meta mt8" }, `사용량: ${copilotPremiumUsage.available ? `${formatDecimal(copilotPremiumUsage.used_requests, 1)} / ${copilotPremiumQuotaText}` : "-"}`),
-            e("div", { className: "tiny" }, `계정: ${copilotPremiumUsage.username || "-"} · 플랜: ${copilotPremiumUsage.plan_name || "-"}`),
-            e("div", { className: "tiny" }, `갱신(로컬): ${copilotPremiumUsage.refreshed_local || "-"}`),
-            !copilotPremiumUsage.available
-              ? e("div", { className: "error-banner" }, `Copilot Premium 조회 실패: ${copilotPremiumUsage.message || "조회 실패"}`)
-              : null,
-            copilotPremiumUsage.requires_user_scope
-              ? e("div", { className: "error-banner" }, "권한 필요: gh auth refresh -h github.com -s user")
-              : null,
-            e("div", { className: "row mt8" },
-              e("button", { className: "btn", onClick: () => send({ type: "get_usage_stats" }) }, "Copilot 사용량 새로고침"),
-              e("button", {
-                className: "btn ghost",
-                onClick: () => window.open(copilotPremiumUsage.features_url || "https://github.com/settings/copilot/features", "_blank", "noopener,noreferrer")
-              }, "Features 열기"),
-              e("button", {
-                className: "btn ghost",
-                onClick: () => window.open(copilotPremiumUsage.billing_url || "https://github.com/settings/billing/premium_requests_usage", "_blank", "noopener,noreferrer")
-              }, "Billing 열기")
-            ),
-            e("div", { className: "meta mt8" }, `Omni-node 로컬 총 요청: ${copilotLocalUsage.total_requests || 0} req`),
-            e("div", { className: "tiny" }, `로컬 선택 모델: ${copilotLocalUsage.selected_model || "-"} (${copilotLocalUsage.selected_model_requests || 0} req)`),
-            e("div", { className: "table-wrap" },
-              e("table", { className: "model-table" },
-                e("thead", null,
-                  e("tr", null,
-                    e("th", null, "모델"),
-                    e("th", null, "사용 횟수"),
-                    e("th", null, "비율")
-                  )
-                ),
-                e("tbody", null, copilotPremiumRows)
-              )
-            ),
-            e("div", { className: "table-wrap mt8" },
-              e("table", { className: "model-table" },
-                e("thead", null,
-                  e("tr", null,
-                    e("th", null, "Omni-node 로컬 모델"),
-                    e("th", null, "요청 수")
-                  )
-                ),
-                e("tbody", null, copilotLocalRows)
-              )
-            )
-          ),
-
-          e("section", { className: "panel span2 ops-panel" },
-            e("h2", null, "Copilot 모델"),
-            e("div", { className: "row" },
-              e("select", {
-                className: "input",
-                value: selectedCopilotModel,
-                onChange: (event) => setSelectedCopilotModel(event.target.value)
-              },
-              copilotModels.length === 0
-                ? e("option", { value: "" }, "모델 로딩 중")
-                : copilotModels.map((x) => e("option", { key: x.id, value: x.id }, x.id))),
-              e("button", {
-                className: "btn",
-                onClick: () => {
-                  if (!selectedCopilotModel) {
-                    return;
-                  }
-                  send({ type: "set_copilot_model", model: selectedCopilotModel });
-                }
-              }, "모델 적용"),
-              e("button", { className: "btn", onClick: () => send({ type: "get_copilot_models" }) }, "새로고침")
-            ),
-            e("div", { className: "table-wrap" },
-              e("table", { className: "model-table" },
-                e("thead", null,
-                  e("tr", null,
-                    e("th", null, "모델"),
-                    e("th", null, "제공사"),
-                    e("th", null, "Premium 배수"),
-                    e("th", null, "출력 TPS"),
-                    e("th", null, "리미트"),
-                    e("th", null, "컨텍스트"),
-                    e("th", null, "최대 출력"),
-                    e("th", null, "사용량")
-                  )
-                ),
-                e("tbody", null, copilotRows)
-              )
-            )
-          ),
-
-          e("section", { className: "panel span2 ops-panel" },
-            e("h2", null, "Groq 모델 / 제한량 / 사용량"),
-            e("div", { className: "row" },
-              e("select", {
-                className: "input",
-                value: selectedGroqModel,
-                onChange: (event) => setSelectedGroqModel(event.target.value)
-              },
-              groqModels.length === 0
-                ? e("option", { value: "" }, "모델 로딩 중")
-                : groqModels.map((x) => e("option", { key: x.id, value: x.id }, x.id))),
-              e("button", {
-                className: "btn",
-                onClick: () => {
-                  if (!selectedGroqModel) {
-                    return;
-                  }
-                  send({ type: "set_groq_model", model: selectedGroqModel });
-                }
-              }, "모델 적용"),
-              e("button", { className: "btn", onClick: () => send({ type: "get_groq_models" }) }, "새로고침")
-            ),
-            e("div", { className: "table-wrap" },
-              e("table", { className: "model-table" },
-                e("thead", null,
-                  e("tr", null,
-                    e("th", null, "모델"),
-                    e("th", null, "Tier"),
-                    e("th", null, "출력 TPS"),
-                    e("th", null, "컨텍스트"),
-                    e("th", null, "최대 출력"),
-                    e("th", null, "RPM"),
-                    e("th", null, "RPD"),
-                    e("th", null, "TPM"),
-                    e("th", null, "TPD"),
-                    e("th", null, "ASH"),
-                    e("th", null, "ASD"),
-                    e("th", null, "사용량(분/시/일)"),
-                    e("th", null, "라이브 잔여/리셋")
-                  )
-                ),
-                e("tbody", null, groqRows)
-              )
-            )
-          ),
-
-          e("section", { className: "panel span2 ops-panel" },
-            e("h2", null, "운영 콘솔"),
-            e("p", { className: "hint" }, "분류(provider/tool/rag) 필터는 도구 통합 패널 카드와 연동됩니다."),
-            e("div", { className: "row" },
-              e("input", {
-                className: "input",
-                value: command,
-                onChange: (event) => setCommand(event.target.value),
-                onKeyDown: (event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    send({ type: "command", text: command.trim() });
-                  }
-                },
-                placeholder: "/metrics, /kill <pid>, /code ..."
-              }),
-              e("button", { className: "btn primary", disabled: !authed, onClick: () => send({ type: "command", text: command.trim() }) }, "명령 실행"),
-              e("button", { className: "btn", disabled: !authed, onClick: () => send({ type: "get_metrics" }) }, "메트릭 조회")
-            ),
-            e("div", { className: "monitor-grid" },
-              e("div", { className: "monitor" },
-                e("div", { className: "monitor-title" }, "실시간 메트릭"),
-                e("pre", { className: "screen metrics" }, metrics)
-              ),
-              e("div", { className: "monitor" },
-                e("div", { className: "monitor-title" }, "시스템 로그"),
-                e("pre", { className: "screen logs" }, logs)
-              )
-            ),
-            e("div", { className: "tool-filter-row mt8" },
-              OPS_DOMAIN_FILTERS.map((domainItem) => {
-                const stat = opsDomainStats[domainItem.key] || { count: 0, errorCount: 0, lastSummary: "-" };
-                return e(
-                  "button",
-                  {
-                    key: domainItem.key,
-                    type: "button",
-                    className: `btn tool-filter-btn ${opsDomainFilter === domainItem.key ? "active" : ""}`,
-                    onClick: () => applyDomainFocus(domainItem.key)
-                  },
-                  `${domainItem.label} (${stat.count})`
-                );
-              })
-            ),
-            e("div", { className: "table-wrap mt8" },
-              e("table", { className: "model-table" },
-                e("thead", null,
-                  e("tr", null,
-                    e("th", null, "시각(UTC)"),
-                    e("th", null, "도메인"),
-                    e("th", null, "소스"),
-                    e("th", null, "상태"),
-                    e("th", null, "요약")
-                  )
-                ),
-                e("tbody", null,
-                  filteredOpsFlowItems.length === 0
-                    ? e("tr", null, e("td", { colSpan: 5 }, "선택한 도메인에 해당하는 운영 이벤트가 없습니다."))
-                    : filteredOpsFlowItems.slice(0, 12).map((item) => e(
-                      "tr",
-                      { key: item.id, className: item.hasError ? "tool-result-row error" : "tool-result-row" },
-                      e("td", null, item.capturedAt || "-"),
-                      e("td", null, item.domain || "-"),
-                      e("td", null, item.source || "-"),
-                      e("td", null, e("span", { className: `tool-status-chip ${item.statusTone || "neutral"}` }, item.statusLabel || "-")),
-                      e("td", null, item.summary || "-")
-                    ))
-                )
-              )
-            ),
-            e("div", { className: "tiny mt8" },
-              `전체 ${opsDomainStats.all.count}건 / 오류 ${opsDomainStats.all.errorCount}건 / 최신 ${opsDomainStats.all.lastSummary || "-"}`
-            ),
-            e("button", {
-              className: "btn mt8",
-              onClick: () => {
-                if (workerRef.current) {
-                  workerRef.current.postMessage({ type: "clear_logs" });
-                }
-              }
-            }, "로그 비우기")
-          ),
-          renderToolControlPanel()
-        )
+        isPortraitMobileLayout ? mobileSettingsStack : desktopSettingsGrid
       );
     }
 
@@ -8109,7 +8957,7 @@
       renderGlobalNav(),
       e(
         "main",
-        { className: "main-shell" },
+        { className: "main-shell", ref: mainShellRef },
         rootTab === "settings"
           ? renderSettings()
           : rootTab === "routine"
@@ -8127,6 +8975,30 @@
               }, "닫기")
             ),
             e("pre", { className: "modal-content" }, memoryPreview.content || "")
+          )
+        )
+        : null,
+      routineOutputPreview.open
+        ? e("div", { className: "modal" },
+          e("div", { className: "modal-card" },
+            e("div", { className: "modal-head" },
+              e("strong", null, routineOutputPreview.title || "실행 출력"),
+              e("button", {
+                className: "btn ghost",
+                onClick: () => setRoutineOutputPreview({ open: false, title: "", content: "", imagePath: "", imageAlt: "" })
+              }, "닫기")
+            ),
+            routineOutputPreview.imagePath
+              ? e("div", { className: "routine-output-preview-image-wrap" },
+                e("div", { className: "tiny" }, routineOutputPreview.imagePath),
+                e("img", {
+                  className: "routine-output-preview-image",
+                  src: buildRoutineImagePreviewUrl(routineOutputPreview.imagePath),
+                  alt: routineOutputPreview.imageAlt || "루틴 스크린샷"
+                })
+              )
+              : null,
+            e("pre", { className: "modal-content" }, routineOutputPreview.content || "출력 없음")
           )
         )
         : null

@@ -16,3 +16,12 @@ publish/
 *.swp
 *.swo
 *.DS_Store
+node_modules/
+.runtime/
+runtime/
+.playwright-cli/
+coding/.playwright-cli/
+coding/venv/
+coding/output/
+coding/routines/
+coding/__pycache__/

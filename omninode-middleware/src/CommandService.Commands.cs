@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -50,6 +51,12 @@ public sealed partial class CommandService
         ["news.naver.com"] = "네이버 뉴스",
         ["korea.kr"] = "대한민국 정책브리핑"
     };
+    private const string RoutineBrowserAgentDefaultProvider = "codex";
+    private const string RoutineBrowserAgentDefaultModel = "gpt-5.4";
+    private static readonly IReadOnlySet<string> RoutineBrowserAgentSupportedModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        RoutineBrowserAgentDefaultModel
+    };
 
     public IReadOnlyList<RoutineSummary> ListRoutines()
     {
@@ -70,14 +77,39 @@ public sealed partial class CommandService
             return new RoutineActionResult(false, "루틴 요청이 비어 있습니다.", null);
         }
 
-        var schedule = ParseDailySchedule(input);
-        var scheduleConfig = BuildDailyRoutineScheduleConfig(schedule.Hour, schedule.Minute, TimeZoneInfo.Local.Id);
-        return await CreateRoutineCoreAsync(input, BuildRoutineTitle(input), scheduleConfig, source, cancellationToken);
+        var scheduleConfig = ResolveRoutineScheduleConfigFromRequest(input, TimeZoneInfo.Local.Id);
+        return await CreateRoutineCoreAsync(
+            input,
+            BuildRoutineTitle(input),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            NormalizeRoutineScheduleSourceMode("auto", input),
+            NormalizeRoutineRetryCount(null),
+            NormalizeRoutineRetryDelaySeconds(null),
+            NormalizeRoutineNotifyPolicy(null),
+            scheduleConfig,
+            source,
+            cancellationToken
+        );
     }
 
     public async Task<RoutineActionResult> CreateRoutineAsync(
         string request,
         string? title,
+        string? executionMode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl,
+        int? agentTimeoutSeconds,
+        bool? agentUsePlaywright,
+        string? scheduleSourceMode,
+        int? maxRetries,
+        int? retryDelaySeconds,
+        string? notifyPolicy,
         string? scheduleKind,
         string? scheduleTime,
         IReadOnlyList<int>? weekdays,
@@ -93,7 +125,10 @@ public sealed partial class CommandService
             return new RoutineActionResult(false, "루틴 요청이 비어 있습니다.", null);
         }
 
-        if (!TryBuildRoutineScheduleConfig(
+        var resolvedScheduleSourceMode = NormalizeRoutineScheduleSourceMode(scheduleSourceMode, input);
+        if (!TryResolveRoutineScheduleConfig(
+                input,
+                resolvedScheduleSourceMode,
                 scheduleKind,
                 scheduleTime,
                 weekdays,
@@ -109,13 +144,39 @@ public sealed partial class CommandService
         var resolvedTitle = string.IsNullOrWhiteSpace(title)
             ? BuildRoutineTitle(input)
             : title.Trim();
-        return await CreateRoutineCoreAsync(input, resolvedTitle, scheduleConfig, source, cancellationToken);
+        return await CreateRoutineCoreAsync(
+            input,
+            resolvedTitle,
+            executionMode,
+            agentProvider,
+            agentModel,
+            agentStartUrl,
+            agentTimeoutSeconds,
+            agentUsePlaywright,
+            resolvedScheduleSourceMode,
+            NormalizeRoutineRetryCount(maxRetries),
+            NormalizeRoutineRetryDelaySeconds(retryDelaySeconds),
+            NormalizeRoutineNotifyPolicy(notifyPolicy),
+            scheduleConfig,
+            source,
+            cancellationToken
+        );
     }
 
     public async Task<RoutineActionResult> UpdateRoutineAsync(
         string routineId,
         string request,
         string? title,
+        string? executionMode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl,
+        int? agentTimeoutSeconds,
+        bool? agentUsePlaywright,
+        string? scheduleSourceMode,
+        int? maxRetries,
+        int? retryDelaySeconds,
+        string? notifyPolicy,
         string? scheduleKind,
         string? scheduleTime,
         IReadOnlyList<int>? weekdays,
@@ -136,7 +197,10 @@ public sealed partial class CommandService
             return new RoutineActionResult(false, "루틴 요청이 비어 있습니다.", null);
         }
 
-        if (!TryBuildRoutineScheduleConfig(
+        var resolvedScheduleSourceMode = NormalizeRoutineScheduleSourceMode(scheduleSourceMode, input);
+        if (!TryResolveRoutineScheduleConfig(
+                input,
+                resolvedScheduleSourceMode,
                 scheduleKind,
                 scheduleTime,
                 weekdays,
@@ -168,14 +232,81 @@ public sealed partial class CommandService
         var resolvedTitle = string.IsNullOrWhiteSpace(title)
             ? BuildRoutineTitle(input)
             : title.Trim();
+        var taskRequest = ResolveRoutineExecutionRequestText(input, resolvedTitle, resolvedScheduleSourceMode);
+        var normalizedExecutionMode = NormalizeRoutineExecutionMode(executionMode);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(taskRequest, normalizedExecutionMode);
+        var nextExecutionRoute = ResolveRoutineExecutionRoute(taskRequest, normalizedExecutionMode);
+        if (resolvedExecutionMode == "browser_agent" && string.IsNullOrWhiteSpace(agentModel))
+        {
+            return new RoutineActionResult(false, "브라우저 에이전트 루틴은 에이전트 모델이 필요합니다.", null);
+        }
+
+        if (!TryNormalizeRoutineAgentStartUrl(agentStartUrl, out var normalizedAgentStartUrl))
+        {
+            return new RoutineActionResult(false, "시작 URL은 http:// 또는 https:// 형식이어야 합니다.", null);
+        }
+
+        var normalizedAgentProvider = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentProvider(agentProvider, agentModel)
+            : null;
+        var normalizedAgentModel = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentModel(agentModel)
+            : null;
+        var normalizedAgentTimeoutSeconds = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentTimeoutSeconds(agentTimeoutSeconds)
+            : null;
+        var normalizedAgentUsePlaywright = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentUsePlaywright(agentUsePlaywright)
+            : false;
+        if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineBrowserAgentModel(normalizedAgentModel))
+        {
+            return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedModelMessage(normalizedAgentModel), null);
+        }
         var requestChanged = !string.Equals(existing.Request, input, StringComparison.Ordinal);
         var titleChanged = !string.Equals(existing.Title, resolvedTitle, StringComparison.Ordinal);
+        var executionModeChanged = !string.Equals(
+            NormalizeRoutineExecutionMode(existing.ExecutionMode),
+            normalizedExecutionMode,
+            StringComparison.Ordinal
+        );
         var scheduleChanged = !RoutineMatchesSchedule(existing, scheduleConfig);
+        var scheduleSourceChanged = !string.Equals(
+            NormalizeRoutineScheduleSourceMode(existing.ScheduleSourceMode, existing.Request),
+            resolvedScheduleSourceMode,
+            StringComparison.Ordinal
+        );
+        var retryCountChanged = existing.MaxRetries != NormalizeRoutineRetryCount(maxRetries);
+        var retryDelayChanged = existing.RetryDelaySeconds != NormalizeRoutineRetryDelaySeconds(retryDelaySeconds);
+        var notifyPolicyChanged = !string.Equals(
+            NormalizeRoutineNotifyPolicy(existing.NotifyPolicy),
+            NormalizeRoutineNotifyPolicy(notifyPolicy),
+            StringComparison.Ordinal
+        );
+        var agentProviderChanged = !string.Equals(
+            NormalizeRoutineAgentProvider(existing.AgentProvider, existing.AgentModel),
+            normalizedAgentProvider,
+            StringComparison.Ordinal
+        );
+        var agentModelChanged = !string.Equals(
+            NormalizeRoutineAgentModel(existing.AgentModel),
+            normalizedAgentModel,
+            StringComparison.Ordinal
+        );
+        var agentStartUrlChanged = !string.Equals(
+            NormalizeRoutineAgentStartUrlOrEmpty(existing.AgentStartUrl),
+            normalizedAgentStartUrl,
+            StringComparison.Ordinal
+        );
+        var agentTimeoutChanged = NormalizeRoutineAgentTimeoutSeconds(existing.AgentTimeoutSeconds)
+            != normalizedAgentTimeoutSeconds;
+        var agentUsePlaywrightChanged = NormalizeRoutineAgentUsePlaywright(existing.AgentUsePlaywright)
+            != normalizedAgentUsePlaywright;
         RoutineGenerationResult? generation = null;
-        if (requestChanged || scheduleChanged)
+        if ((requestChanged || scheduleChanged || scheduleSourceChanged || executionModeChanged)
+            && string.Equals(nextExecutionRoute.Mode, "script", StringComparison.Ordinal))
         {
             generation = await GenerateRoutineImplementationAsync(
-                input,
+                taskRequest,
                 new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
                 cancellationToken
             );
@@ -195,7 +326,17 @@ public sealed partial class CommandService
 
             update.Title = resolvedTitle;
             update.Request = input;
+            update.ExecutionMode = normalizedExecutionMode;
+            update.AgentProvider = normalizedAgentProvider;
+            update.AgentModel = normalizedAgentModel;
+            update.AgentStartUrl = normalizedAgentStartUrl;
+            update.AgentTimeoutSeconds = normalizedAgentTimeoutSeconds;
+            update.AgentUsePlaywright = normalizedAgentUsePlaywright;
             update.ScheduleText = scheduleConfig.Display;
+            update.ScheduleSourceMode = resolvedScheduleSourceMode;
+            update.MaxRetries = NormalizeRoutineRetryCount(maxRetries);
+            update.RetryDelaySeconds = NormalizeRoutineRetryDelaySeconds(retryDelaySeconds);
+            update.NotifyPolicy = NormalizeRoutineNotifyPolicy(notifyPolicy);
             update.TimezoneId = scheduleConfig.TimezoneId;
             update.Hour = scheduleConfig.Hour;
             update.Minute = scheduleConfig.Minute;
@@ -205,6 +346,43 @@ public sealed partial class CommandService
             update.CronScheduleEveryMs = null;
             update.CronScheduleAnchorMs = null;
             update.NextRunUtc = ComputeNextCronBridgeRunUtc(update, DateTimeOffset.UtcNow);
+            update.NotifyTelegram = true;
+            if (resolvedExecutionMode == "browser_agent")
+            {
+                update.ScriptPath = string.Empty;
+                update.Language = "agent";
+                update.Code = string.Empty;
+                update.Planner = "acp";
+                update.PlannerModel = normalizedAgentProvider ?? "acp";
+                update.CoderModel = normalizedAgentModel ?? "browser-agent";
+                update.CronSessionTarget = "isolated";
+                update.CronWakeMode = "next-heartbeat";
+                update.CronPayloadKind = "agentTurn";
+                update.CronPayloadModel = normalizedAgentModel;
+                update.CronPayloadThinking = null;
+                update.CronPayloadTimeoutSeconds = normalizedAgentTimeoutSeconds;
+                update.CronPayloadLightContext = false;
+                update.LastOutput = BuildRoutineExecutionPreview(
+                    resolvedExecutionMode,
+                    normalizedAgentProvider,
+                    normalizedAgentModel,
+                    normalizedAgentStartUrl
+                );
+            }
+
+            if (requestChanged
+                || scheduleChanged
+                || scheduleSourceChanged
+                || notifyPolicyChanged
+                || executionModeChanged
+                || agentProviderChanged
+                || agentModelChanged
+                || agentStartUrlChanged
+                || agentTimeoutChanged
+                || agentUsePlaywrightChanged)
+            {
+                update.LastNotifiedFingerprint = null;
+            }
 
             if (generation != null)
             {
@@ -218,13 +396,38 @@ public sealed partial class CommandService
                 update.Planner = generation.PlannerProvider;
                 update.PlannerModel = generation.PlannerModel;
                 update.CoderModel = generation.CoderModel;
-                if (!update.LastRunUtc.HasValue)
-                {
-                    update.LastOutput = generation.Plan;
-                }
+                update.LastOutput = generation.Plan;
+            }
+            else if (!string.Equals(nextExecutionRoute.Mode, "script", StringComparison.Ordinal)
+                && !string.Equals(nextExecutionRoute.Mode, "browser_agent", StringComparison.Ordinal))
+            {
+                update.ScriptPath = string.Empty;
+                update.Language = "llm";
+                update.Code = string.Empty;
+                update.Planner = "gemini";
+                update.PlannerModel = ResolveRoutineLlmModel(nextExecutionRoute.Mode);
+                update.CoderModel = nextExecutionRoute.Mode;
+                update.CronSessionTarget = "main";
+                update.CronWakeMode = "next-heartbeat";
+                update.CronPayloadKind = "systemEvent";
+                update.CronPayloadModel = null;
+                update.CronPayloadThinking = null;
+                update.CronPayloadTimeoutSeconds = null;
+                update.CronPayloadLightContext = null;
+                update.LastOutput = BuildRoutineExecutionPreview(nextExecutionRoute.Mode, null, null, null);
+            }
+            else if (string.Equals(nextExecutionRoute.Mode, "script", StringComparison.Ordinal))
+            {
+                update.CronSessionTarget = "main";
+                update.CronWakeMode = "next-heartbeat";
+                update.CronPayloadKind = "systemEvent";
+                update.CronPayloadModel = null;
+                update.CronPayloadThinking = null;
+                update.CronPayloadTimeoutSeconds = null;
+                update.CronPayloadLightContext = null;
             }
 
-            if (titleChanged || requestChanged || scheduleChanged)
+            if (titleChanged || requestChanged || scheduleChanged || scheduleSourceChanged || retryCountChanged || retryDelayChanged || notifyPolicyChanged)
             {
                 update.LastStatus = update.LastRunUtc.HasValue
                     ? update.LastStatus
@@ -239,6 +442,16 @@ public sealed partial class CommandService
     private async Task<RoutineActionResult> CreateRoutineCoreAsync(
         string request,
         string title,
+        string? executionMode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl,
+        int? agentTimeoutSeconds,
+        bool? agentUsePlaywright,
+        string scheduleSourceMode,
+        int maxRetries,
+        int retryDelaySeconds,
+        string notifyPolicy,
         RoutineScheduleConfig scheduleConfig,
         string source,
         CancellationToken cancellationToken
@@ -249,19 +462,87 @@ public sealed partial class CommandService
         var runDir = Path.Combine(_config.WorkspaceRootDir, "routines", id);
         Directory.CreateDirectory(runDir);
 
-        var generation = await GenerateRoutineImplementationAsync(
-            request,
-            new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
-            cancellationToken
+        var taskRequest = ResolveRoutineExecutionRequestText(request, title, scheduleSourceMode);
+        var normalizedExecutionMode = NormalizeRoutineExecutionMode(executionMode);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(taskRequest, normalizedExecutionMode);
+        var executionRoute = ResolveRoutineExecutionRoute(taskRequest, normalizedExecutionMode);
+        if (resolvedExecutionMode == "browser_agent" && string.IsNullOrWhiteSpace(agentModel))
+        {
+            return new RoutineActionResult(false, "브라우저 에이전트 루틴은 에이전트 모델이 필요합니다.", null);
+        }
+
+        if (!TryNormalizeRoutineAgentStartUrl(agentStartUrl, out var normalizedAgentStartUrl))
+        {
+            return new RoutineActionResult(false, "시작 URL은 http:// 또는 https:// 형식이어야 합니다.", null);
+        }
+
+        var normalizedAgentProvider = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentProvider(agentProvider, agentModel)
+            : null;
+        var normalizedAgentModel = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentModel(agentModel)
+            : null;
+        var normalizedAgentTimeoutSeconds = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentTimeoutSeconds(agentTimeoutSeconds)
+            : null;
+        var normalizedAgentUsePlaywright = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentUsePlaywright(agentUsePlaywright)
+            : false;
+        if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineBrowserAgentModel(normalizedAgentModel))
+        {
+            return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedModelMessage(normalizedAgentModel), null);
+        }
+        RoutineGenerationResult? generation = null;
+        var scriptPath = string.Empty;
+        var language = resolvedExecutionMode == "browser_agent" ? "agent" : "llm";
+        var code = string.Empty;
+        var planner = resolvedExecutionMode == "browser_agent" ? "acp" : "gemini";
+        var plannerModel = ResolveRoutineLlmModel(executionRoute.Mode);
+        var coderModel = executionRoute.Mode;
+        var lastOutput = BuildRoutineExecutionPreview(
+            executionRoute.Mode,
+            normalizedAgentProvider,
+            normalizedAgentModel,
+            normalizedAgentStartUrl
         );
-        var scriptPath = WriteRoutineScript(runDir, generation.Language, generation.Code);
+
+        if (string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal))
+        {
+            generation = await GenerateRoutineImplementationAsync(
+                taskRequest,
+                new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
+                cancellationToken
+            );
+            scriptPath = WriteRoutineScript(runDir, generation.Language, generation.Code);
+            language = generation.Language;
+            code = generation.Code;
+            planner = generation.PlannerProvider;
+            plannerModel = generation.PlannerModel;
+            coderModel = generation.CoderModel;
+            lastOutput = generation.Plan;
+        }
+        else if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
+        {
+            plannerModel = normalizedAgentProvider ?? "acp";
+            coderModel = normalizedAgentModel ?? "browser-agent";
+        }
 
         var routine = new RoutineDefinition
         {
             Id = id,
             Title = title,
             Request = request,
+            ExecutionMode = normalizedExecutionMode,
+            AgentProvider = normalizedAgentProvider,
+            AgentModel = normalizedAgentModel,
+            AgentStartUrl = normalizedAgentStartUrl,
+            AgentTimeoutSeconds = normalizedAgentTimeoutSeconds,
+            AgentUsePlaywright = normalizedAgentUsePlaywright,
             ScheduleText = scheduleConfig.Display,
+            ScheduleSourceMode = scheduleSourceMode,
+            MaxRetries = maxRetries,
+            RetryDelaySeconds = retryDelaySeconds,
+            NotifyPolicy = notifyPolicy,
             TimezoneId = scheduleConfig.TimezoneId,
             Hour = scheduleConfig.Hour,
             Minute = scheduleConfig.Minute,
@@ -269,13 +550,14 @@ public sealed partial class CommandService
             NextRunUtc = createdAt,
             LastRunUtc = null,
             LastStatus = "created",
-            LastOutput = generation.Plan,
+            LastOutput = lastOutput,
             ScriptPath = scriptPath,
-            Language = generation.Language,
-            Code = generation.Code,
-            Planner = generation.PlannerProvider,
-            PlannerModel = generation.PlannerModel,
-            CoderModel = generation.CoderModel,
+            Language = language,
+            Code = code,
+            Planner = planner,
+            PlannerModel = plannerModel,
+            CoderModel = coderModel,
+            NotifyTelegram = true,
             CronScheduleKind = "cron",
             CronScheduleExpr = scheduleConfig.CronExpr,
             CronScheduleAtMs = null,
@@ -283,6 +565,16 @@ public sealed partial class CommandService
             CronScheduleAnchorMs = null,
             CreatedUtc = createdAt
         };
+        if (string.Equals(resolvedExecutionMode, "browser_agent", StringComparison.Ordinal))
+        {
+            routine.CronSessionTarget = "isolated";
+            routine.CronWakeMode = "next-heartbeat";
+            routine.CronPayloadKind = "agentTurn";
+            routine.CronPayloadModel = normalizedAgentModel;
+            routine.CronPayloadThinking = null;
+            routine.CronPayloadTimeoutSeconds = normalizedAgentTimeoutSeconds;
+            routine.CronPayloadLightContext = false;
+        }
         routine.NextRunUtc = ComputeNextCronBridgeRunUtc(routine, createdAt);
 
         lock (_routineLock)
@@ -326,21 +618,164 @@ public sealed partial class CommandService
         }
 
         var startedAtUtc = DateTimeOffset.UtcNow;
-        CodeExecutionResult exec;
-        if (ShouldRunCronAgentTurnBridge(routine))
+        var taskRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+        var executionRoute = ResolveRoutineExecutionRoute(taskRequest, routine.ExecutionMode);
+        var maxAttempts = NormalizeRoutineRetryCount(routine.MaxRetries) + 1;
+        var retryDelaySeconds = NormalizeRoutineRetryDelaySeconds(routine.RetryDelaySeconds);
+        var attemptCount = 0;
+        string output = string.Empty;
+        string lastStatus = "error";
+        string runStatus = "error";
+        string? runError = null;
+        RoutineAgentExecutionMetadata? agentMetadata = null;
+
+        for (var attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1)
         {
-            exec = ExecuteCronAgentTurnBridge(routine, cancellationToken);
+            attemptCount = attemptIndex + 1;
+
+            if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
+            {
+                var browserExecution = await ExecuteRoutineBrowserAgentAsync(
+                    routine,
+                    taskRequest,
+                    executionRoute.Urls,
+                    cancellationToken
+                );
+                output = browserExecution.Output;
+                lastStatus = browserExecution.Status;
+                runStatus = browserExecution.Status;
+                runError = browserExecution.Error;
+                agentMetadata = browserExecution.AgentMetadata;
+            }
+            else if (!string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal))
+            {
+                var llmExecution = await ExecuteRoutineLlmRouteAsync(
+                    routine,
+                    executionRoute.Mode,
+                    executionRoute.Urls,
+                    source,
+                    cancellationToken
+                );
+                output = llmExecution.Output;
+                lastStatus = llmExecution.Status;
+                runStatus = llmExecution.Status;
+                runError = llmExecution.Error;
+            }
+            else
+            {
+                var normalizedLanguage = NormalizeRoutineScriptLanguage(routine.Language);
+                var normalizedCode = string.IsNullOrWhiteSpace(routine.Code)
+                    ? BuildFallbackRoutineCode(taskRequest, new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText))
+                    : EnsureRoutineShebang(routine.Code, normalizedLanguage);
+                if (!string.Equals(normalizedLanguage, routine.Language, StringComparison.Ordinal)
+                    || !string.Equals(normalizedCode, routine.Code, StringComparison.Ordinal)
+                    || string.IsNullOrWhiteSpace(routine.ScriptPath))
+                {
+                    lock (_routineLock)
+                    {
+                        if (_routinesById.TryGetValue(key, out var update))
+                        {
+                            var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
+                                ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
+                                : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
+                            Directory.CreateDirectory(runDir);
+                            update.ScriptPath = WriteRoutineScript(runDir, normalizedLanguage, normalizedCode);
+                            update.Language = normalizedLanguage;
+                            update.Code = normalizedCode;
+                            SaveRoutineStateLocked();
+                            routine = update;
+                        }
+                    }
+                }
+
+                if (!ShouldRunCronAgentTurnBridge(routine) && RoutineCodeNeedsRepair(routine.Language, routine.Code))
+                {
+                    var regenerated = await GenerateRoutineImplementationAsync(
+                        taskRequest,
+                        new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText),
+                        cancellationToken
+                    );
+
+                    lock (_routineLock)
+                    {
+                        if (_routinesById.TryGetValue(key, out var update))
+                        {
+                            var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
+                                ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
+                                : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
+                            Directory.CreateDirectory(runDir);
+                            update.ScriptPath = WriteRoutineScript(runDir, regenerated.Language, regenerated.Code);
+                            update.Language = regenerated.Language;
+                            update.Code = regenerated.Code;
+                            update.Planner = regenerated.PlannerProvider;
+                            update.PlannerModel = regenerated.PlannerModel;
+                            update.CoderModel = regenerated.CoderModel;
+                            update.LastOutput = regenerated.Plan;
+                            SaveRoutineStateLocked();
+                            routine = update;
+                        }
+                    }
+                }
+
+                CodeExecutionResult exec;
+                if (ShouldRunCronAgentTurnBridge(routine))
+                {
+                    exec = ExecuteCronAgentTurnBridge(routine, cancellationToken);
+                }
+                else
+                {
+                    exec = await _codeRunner.ExecuteAsync(routine.Language, routine.Code, cancellationToken);
+                }
+
+                output = BuildRoutineExecutionText(routine, exec);
+                lastStatus = exec.Status;
+                runStatus = ResolveCronRunEntryStatus(exec);
+                runError = BuildCronRunEntryError(exec, output, runStatus);
+            }
+
+            if (!IsRoutineRetryableStatus(runStatus) || attemptCount >= maxAttempts)
+            {
+                break;
+            }
+
+            if (retryDelaySeconds > 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds), cancellationToken);
+            }
         }
-        else
+
+        var telegramDispatch = await DispatchRoutineResultToTelegramAsync(
+            routine,
+            output,
+            source,
+            runStatus,
+            cancellationToken
+        );
+        if (!string.IsNullOrWhiteSpace(telegramDispatch.Error))
         {
-            exec = await _codeRunner.ExecuteAsync(routine.Language, routine.Code, cancellationToken);
+            output = string.IsNullOrWhiteSpace(output)
+                ? telegramDispatch.Error
+                : $"{output.Trim()}\n\n[telegram]\n{telegramDispatch.Error}";
+            lastStatus = "error";
+            runStatus = "error";
+            runError = telegramDispatch.Error;
         }
-        var output = BuildRoutineExecutionText(routine, exec);
+
         var completedAtUtc = DateTimeOffset.UtcNow;
         var durationMs = Math.Max(0L, (long)(completedAtUtc - startedAtUtc).TotalMilliseconds);
-        var runStatus = ResolveCronRunEntryStatus(exec);
-        var runError = BuildCronRunEntryError(exec, output, runStatus);
         var runSummary = BuildCronRunEntrySummary(output);
+        var artifactPath = WriteRoutineRunArtifact(
+            routine,
+            source,
+            attemptCount,
+            runStatus,
+            output,
+            runError,
+            telegramDispatch.Status,
+            agentMetadata,
+            startedAtUtc,
+            completedAtUtc
+        );
 
         lock (_routineLock)
         {
@@ -348,7 +783,7 @@ public sealed partial class CommandService
             {
                 update.Running = false;
                 update.LastRunUtc = completedAtUtc;
-                update.LastStatus = exec.Status;
+                update.LastStatus = lastStatus;
                 update.LastOutput = output;
                 update.LastDurationMs = durationMs;
                 if (string.Equals(NormalizeCronScheduleKind(update.CronScheduleKind), "at", StringComparison.Ordinal))
@@ -361,14 +796,34 @@ public sealed partial class CommandService
                     update.NextRunUtc = ComputeNextCronBridgeRunUtc(update, completedAtUtc);
                 }
 
+                if (string.Equals(telegramDispatch.Status, "sent", StringComparison.Ordinal)
+                    && source.Equals("scheduler", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(telegramDispatch.Fingerprint))
+                {
+                    update.LastNotifiedFingerprint = telegramDispatch.Fingerprint;
+                }
+
                 AppendRoutineRunLogEntry(update, new RoutineRunLogEntry
                 {
                     Ts = completedAtUtc.ToUnixTimeMilliseconds(),
                     JobId = update.Id,
                     Action = "finished",
                     Status = runStatus,
+                    Source = source,
+                    AttemptCount = Math.Max(1, attemptCount),
                     Error = runError,
                     Summary = runSummary,
+                    TelegramStatus = telegramDispatch.Status,
+                    ArtifactPath = artifactPath,
+                    AgentSessionId = agentMetadata?.SessionKey,
+                    AgentRunId = agentMetadata?.RunId,
+                    AgentProvider = agentMetadata?.Provider,
+                    AgentModel = agentMetadata?.Model,
+                    ToolProfile = agentMetadata?.ToolProfile,
+                    StartUrl = agentMetadata?.StartUrl,
+                    FinalUrl = agentMetadata?.FinalUrl,
+                    PageTitle = agentMetadata?.PageTitle,
+                    ScreenshotPath = agentMetadata?.ScreenshotPath,
                     RunAtMs = startedAtUtc.ToUnixTimeMilliseconds(),
                     DurationMs = durationMs,
                     NextRunAtMs = update.Enabled ? update.NextRunUtc.ToUnixTimeMilliseconds() : null
@@ -378,12 +833,914 @@ public sealed partial class CommandService
             }
         }
 
-        if (_telegramClient.IsConfigured && source.Equals("telegram", StringComparison.OrdinalIgnoreCase))
+        return new RoutineActionResult(true, output, routine == null ? null : ToRoutineSummary(routine));
+    }
+
+    private (string Mode, IReadOnlyList<string> Urls) ResolveRoutineExecutionRoute(string request, string? executionMode)
+    {
+        var normalizedRequest = (request ?? string.Empty).Trim();
+        var urls = ResolveWebUrls(normalizedRequest, null, webSearchEnabled: true);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(normalizedRequest, executionMode);
+        if (resolvedExecutionMode == "browser_agent")
         {
-            _ = _telegramClient.SendMessageAsync(FormatTelegramResponse(output, TelegramMaxResponseChars), cancellationToken);
+            return ("browser_agent", urls);
         }
 
-        return new RoutineActionResult(true, output, routine == null ? null : ToRoutineSummary(routine));
+        if (resolvedExecutionMode == "url")
+        {
+            return ("gemini-url-single", urls);
+        }
+
+        if (resolvedExecutionMode == "web")
+        {
+            return ("gemini-web-single", Array.Empty<string>());
+        }
+
+        return ("script", Array.Empty<string>());
+    }
+
+    private static bool LooksLikeRoutineWebLookupRequest(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0 || LooksLikeRoutineLocalSystemRequest(normalized))
+        {
+            return false;
+        }
+
+        return ContainsAny(
+                   normalized,
+                   "뉴스",
+                   "news",
+                   "헤드라인",
+                   "속보",
+                   "브리핑",
+                   "기사",
+                   "랭킹",
+                   "이슈",
+                   "실시간",
+                   "최신",
+                   "최근",
+                   "오늘",
+                   "현재",
+                   "지금"
+               )
+               || LooksLikeExplicitWebLookupQuestion(normalized)
+               || LooksLikeRealtimeQuestion(normalized);
+    }
+
+    private static bool LooksLikeRoutineLocalSystemRequest(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return ContainsAny(
+            normalized,
+            "서버 상태",
+            "시스템 상태",
+            "local",
+            "로컬",
+            "cpu",
+            "메모리",
+            "ram",
+            "디스크",
+            "storage",
+            "용량",
+            "load",
+            "loadavg",
+            "uptime",
+            "프로세스",
+            "process",
+            "포트",
+            "port",
+            "서비스",
+            "service",
+            "로그",
+            "log",
+            "docker",
+            "컨테이너",
+            "pod",
+            "k8s",
+            "쿠버네티스",
+            "워크스페이스",
+            "파일",
+            "폴더",
+            "디렉터리",
+            "코드",
+            "빌드",
+            "테스트",
+            "git",
+            "브랜치",
+            "커밋",
+            "macos",
+            "linux",
+            "운영체제",
+            "hostname",
+            "호스트"
+        );
+    }
+
+    private static string NormalizeRoutineExecutionMode(string? executionMode)
+    {
+        var normalized = (executionMode ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "web" => "web",
+            "url" => "url",
+            "script" => "script",
+            "browser_agent" => "browser_agent",
+            _ => string.Empty
+        };
+    }
+
+    private static string ResolveRoutineExecutionMode(string? request, string? executionMode)
+    {
+        var normalizedExecutionMode = NormalizeRoutineExecutionMode(executionMode);
+        if (!string.IsNullOrWhiteSpace(normalizedExecutionMode))
+        {
+            return normalizedExecutionMode;
+        }
+
+        var normalizedRequest = (request ?? string.Empty).Trim();
+        var urls = ResolveWebUrls(normalizedRequest, null, webSearchEnabled: true);
+        if (urls.Count > 0)
+        {
+            return "url";
+        }
+
+        return LooksLikeRoutineWebLookupRequest(normalizedRequest)
+            ? "web"
+            : "script";
+    }
+
+    private static bool TryNormalizeRoutineAgentStartUrl(string? raw, out string? normalized)
+    {
+        var trimmed = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            normalized = null;
+            return true;
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri)
+            && (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            normalized = uri.ToString();
+            return true;
+        }
+
+        normalized = null;
+        return false;
+    }
+
+    private static string NormalizeRoutineAgentStartUrlOrEmpty(string? raw)
+    {
+        return TryNormalizeRoutineAgentStartUrl(raw, out var normalized) && !string.IsNullOrWhiteSpace(normalized)
+            ? normalized!
+            : string.Empty;
+    }
+
+    private static string? NormalizeRoutineAgentProvider(string? provider, string? model)
+    {
+        var normalized = (provider ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized is "codex" or "openai")
+        {
+            return RoutineBrowserAgentDefaultProvider;
+        }
+
+        var modelText = NormalizeRoutineAgentModel(model);
+        if (string.IsNullOrWhiteSpace(modelText))
+        {
+            return RoutineBrowserAgentDefaultProvider;
+        }
+
+        return RoutineBrowserAgentDefaultProvider;
+    }
+
+    private static string? NormalizeRoutineAgentModel(string? model)
+    {
+        var normalized = (model ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? RoutineBrowserAgentDefaultModel : normalized;
+    }
+
+    private static int? NormalizeRoutineAgentTimeoutSeconds(int? timeoutSeconds)
+    {
+        if (!timeoutSeconds.HasValue)
+        {
+            return 180;
+        }
+
+        return Math.Clamp(timeoutSeconds.Value, 30, 1800);
+    }
+
+    private static bool NormalizeRoutineAgentUsePlaywright(bool? value)
+    {
+        return true;
+    }
+
+    private static bool IsSupportedRoutineBrowserAgentModel(string? model)
+    {
+        var normalized = NormalizeRoutineAgentModel(model);
+        return !string.IsNullOrWhiteSpace(normalized)
+            && RoutineBrowserAgentSupportedModels.Contains(normalized);
+    }
+
+    private static string BuildRoutineBrowserAgentUnsupportedModelMessage(string? model)
+    {
+        var normalized = NormalizeRoutineAgentModel(model) ?? "-";
+        return $"브라우저 에이전트 모델 '{normalized}'은 현재 지원되지 않습니다. 사용 가능: {string.Join(", ", RoutineBrowserAgentSupportedModels)}";
+    }
+
+    private string ResolveRoutineLlmModel(string mode)
+    {
+        return string.Equals(mode, "gemini-url-single", StringComparison.Ordinal)
+            ? ResolveUrlContextLlmModel()
+            : ResolveSearchLlmModel();
+    }
+
+    private static string BuildRoutineExecutionPreview(
+        string mode,
+        string? agentProvider,
+        string? agentModel,
+        string? agentStartUrl
+    )
+    {
+        return string.Equals(mode, "browser_agent", StringComparison.Ordinal)
+            ? $"이 루틴은 브라우저 에이전트로 실행합니다. provider={agentProvider ?? "acp"} model={agentModel ?? "-"} startUrl={agentStartUrl ?? "(요청 원문 URL 사용)"} tool=playwright"
+            : string.Equals(mode, "gemini-url-single", StringComparison.Ordinal)
+            ? "이 루틴은 실행 시 gemini-url-single 경로로 URL 참조 답변을 생성합니다."
+            : string.Equals(mode, "gemini-web-single", StringComparison.Ordinal)
+                ? "이 루틴은 실행 시 gemini-web-single 경로로 최신 웹검색 답변을 생성합니다."
+                : "이 루틴은 실행 시 생성된 스크립트를 수행합니다.";
+    }
+
+    private async Task<(string Output, string Status, string? Error)> ExecuteRoutineLlmRouteAsync(
+        RoutineDefinition routine,
+        string mode,
+        IReadOnlyList<string> urls,
+        string source,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!_llmRouter.HasGeminiApiKey())
+        {
+            var missingKeyMessage = string.Equals(mode, "gemini-url-single", StringComparison.Ordinal)
+                ? "Gemini API 키가 설정되지 않아 URL 참조 루틴을 실행할 수 없습니다."
+                : "Gemini API 키가 설정되지 않아 웹검색 루틴을 실행할 수 없습니다.";
+            return (missingKeyMessage, "error", missingKeyMessage);
+        }
+
+        var enforceTelegramOutputStyle = source.Equals("telegram", StringComparison.OrdinalIgnoreCase)
+            || (source.Equals("scheduler", StringComparison.OrdinalIgnoreCase) && routine.NotifyTelegram);
+        var taskRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+
+        if (string.Equals(mode, "gemini-url-single", StringComparison.Ordinal))
+        {
+            var urlResult = await GenerateGeminiUrlContextAnswerDetailedAsync(
+                taskRequest,
+                urls,
+                string.Empty,
+                allowMarkdownTable: true,
+                enforceTelegramOutputStyle,
+                streamCallback: null,
+                scope: "routine",
+                mode: "single",
+                conversationId: routine.Id,
+                decisionPath: "routine_url_context",
+                decisionMs: 0,
+                cancellationToken
+            );
+            var output = (urlResult.Response.Text ?? string.Empty).Trim();
+            var failed = IsGeminiUrlContextFailureText(output)
+                || output.StartsWith("요청하신 URL 참조 답변을 생성하지 못했습니다.", StringComparison.Ordinal);
+            return (output, failed ? "error" : "ok", failed ? output : null);
+        }
+
+        var webResult = await GenerateGeminiGroundedWebAnswerDetailedAsync(
+            taskRequest,
+            string.Empty,
+            selfDecideNeedWeb: false,
+            allowMarkdownTable: true,
+            enforceTelegramOutputStyle,
+            streamCallback: null,
+            scope: "routine",
+            mode: "single",
+            conversationId: routine.Id,
+            decisionPath: "routine_web",
+            decisionMs: 0,
+            cancellationToken
+        );
+        var webOutput = (webResult.Response.Text ?? string.Empty).Trim();
+        var webFailed = IsGeminiWebFailureText(webOutput)
+            || webOutput.StartsWith("요청하신 최신 정보를 생성하지 못했습니다.", StringComparison.Ordinal)
+            || webOutput.StartsWith("요청하신 목록을 생성하지 못했습니다.", StringComparison.Ordinal);
+        return (webOutput, webFailed ? "error" : "ok", webFailed ? webOutput : null);
+    }
+
+    private async Task<RoutineExecutionOutcome> ExecuteRoutineBrowserAgentAsync(
+        RoutineDefinition routine,
+        string taskRequest,
+        IReadOnlyList<string> detectedUrls,
+        CancellationToken cancellationToken
+    )
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new RoutineExecutionOutcome(
+                "브라우저 에이전트 실행 전에 요청이 취소되었습니다.",
+                "error",
+                "브라우저 에이전트 실행 전에 요청이 취소되었습니다."
+            );
+        }
+
+        var startUrl = !string.IsNullOrWhiteSpace(routine.AgentStartUrl)
+            ? routine.AgentStartUrl!.Trim()
+            : detectedUrls.FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(startUrl))
+        {
+            const string missingStartUrl = "브라우저 에이전트 루틴은 시작 URL이 필요합니다. 시작 URL을 지정하거나 요청 원문에 URL을 포함하세요.";
+            return new RoutineExecutionOutcome(missingStartUrl, "error", missingStartUrl);
+        }
+
+        var agentModel = NormalizeRoutineAgentModel(routine.AgentModel);
+        if (string.IsNullOrWhiteSpace(agentModel))
+        {
+            const string missingModel = "브라우저 에이전트 루틴은 에이전트 모델이 필요합니다.";
+            return new RoutineExecutionOutcome(missingModel, "error", missingModel);
+        }
+
+        var prompt = BuildRoutineBrowserAgentTaskPrompt(
+            taskRequest,
+            startUrl,
+            detectedUrls,
+            routine.AgentUsePlaywright
+        );
+        var timeoutSeconds = NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) ?? 180;
+        var spawnResult = _sessionSpawnTool.Spawn(
+            task: prompt,
+            label: $"routine-browser-{routine.Title}",
+            runtime: "acp",
+            runTimeoutSeconds: timeoutSeconds,
+            timeoutSeconds: timeoutSeconds,
+            thread: false,
+            mode: "run",
+            acpModel: agentModel,
+            acpThinking: null,
+            acpLightContext: false
+        );
+        if (!string.Equals(spawnResult.Status, "accepted", StringComparison.OrdinalIgnoreCase))
+        {
+            var spawnError = string.IsNullOrWhiteSpace(spawnResult.Error)
+                ? "브라우저 에이전트 세션 시작에 실패했습니다."
+                : $"브라우저 에이전트 세션 시작 실패: {spawnResult.Error}";
+            return new RoutineExecutionOutcome(spawnError, "error", spawnError);
+        }
+
+        var childSession = _conversationStore.Get(spawnResult.ChildSessionKey);
+        var transcriptResult = TryExtractRoutineBrowserAgentResult(childSession);
+        var agentMetadata = new RoutineAgentExecutionMetadata(
+            spawnResult.ChildSessionKey,
+            spawnResult.RunId,
+            NormalizeRoutineAgentProvider(routine.AgentProvider, routine.AgentModel) ?? "acp",
+            agentModel,
+            "playwright",
+            startUrl,
+            transcriptResult.FinalUrl,
+            transcriptResult.PageTitle,
+            transcriptResult.ScreenshotPath
+        );
+
+        if (string.IsNullOrWhiteSpace(transcriptResult.Output))
+        {
+            var noResultMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, spawnResult, childSession);
+            return new RoutineExecutionOutcome(noResultMessage, "error", noResultMessage, agentMetadata);
+        }
+
+        if (IsRoutineBrowserAgentPlaceholderReply(transcriptResult.Output))
+        {
+            var placeholderMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, spawnResult, childSession);
+            return new RoutineExecutionOutcome(placeholderMessage, "error", placeholderMessage, agentMetadata);
+        }
+
+        return new RoutineExecutionOutcome(transcriptResult.Output, "ok", null, agentMetadata);
+    }
+
+    private static string BuildRoutineBrowserAgentTaskPrompt(
+        string request,
+        string startUrl,
+        IReadOnlyList<string> detectedUrls,
+        bool agentUsePlaywright
+    )
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("너는 루틴 전용 브라우저 에이전트다.");
+        builder.AppendLine("- 브라우저 자동화는 Playwright 계열 도구만 사용한다.");
+        builder.AppendLine("- 파일 다운로드, 로그인 시도, 데스크톱 전체 제어, 운영체제 조작은 금지한다.");
+        builder.AppendLine("- 검색 엔진을 임의로 새로 열지 말고, 주어진 시작 URL과 그 안에서 도달 가능한 공개 페이지 범위만 사용한다.");
+        builder.AppendLine("- 실패하면 어디에서 막혔는지 명확히 설명한다.");
+        builder.AppendLine("- 최종 답변은 한국어로 작성한다.");
+        builder.AppendLine();
+        builder.AppendLine($"시작 URL: {startUrl}");
+        builder.AppendLine($"도구 프로필: {(agentUsePlaywright ? "playwright-only" : "playwright-disabled")}");
+        if (detectedUrls.Count > 0)
+        {
+            builder.AppendLine("요청 원문에서 감지한 URL:");
+            foreach (var url in detectedUrls.Distinct(StringComparer.OrdinalIgnoreCase).Take(5))
+            {
+                builder.AppendLine($"- {url}");
+            }
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("사용자 요청:");
+        builder.AppendLine(request);
+        builder.AppendLine();
+        builder.AppendLine("응답 형식:");
+        builder.AppendLine("1. 먼저 사용자가 바로 읽을 수 있는 최종 결과를 완결된 한국어로 작성한다.");
+        builder.AppendLine("2. 마지막에는 아래 메타 블록을 정확히 추가한다.");
+        builder.AppendLine("[ROUTINE_AGENT_META]");
+        builder.AppendLine("final_url: <최종으로 확인한 URL 또는 ->");
+        builder.AppendLine("page_title: <최종 페이지 제목 또는 ->");
+        builder.AppendLine("screenshot_path: <가능하면 저장한 절대경로 또는 ->");
+        builder.AppendLine("[/ROUTINE_AGENT_META]");
+        return builder.ToString().Trim();
+    }
+
+    private static (string Output, string? FinalUrl, string? PageTitle, string? ScreenshotPath) TryExtractRoutineBrowserAgentResult(
+        ConversationThreadView? childSession
+    )
+    {
+        if (childSession == null || childSession.Messages.Count == 0)
+        {
+            return (string.Empty, null, null, null);
+        }
+
+        var assistant = childSession.Messages
+            .Where(message => string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+            .Where(message => !message.Meta.StartsWith("sessions_spawn", StringComparison.OrdinalIgnoreCase))
+            .Select(message => (message.Text ?? string.Empty).Trim())
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .LastOrDefault();
+        if (string.IsNullOrWhiteSpace(assistant))
+        {
+            assistant = childSession.Messages
+                .Where(message => string.Equals(message.Role, "assistant", StringComparison.OrdinalIgnoreCase))
+                .Select(message => (message.Text ?? string.Empty).Trim())
+                .Where(text => !string.IsNullOrWhiteSpace(text))
+                .LastOrDefault();
+        }
+
+        if (string.IsNullOrWhiteSpace(assistant))
+        {
+            return (string.Empty, null, null, null);
+        }
+
+        var finalUrl = ExtractRoutineAgentMetaValue(assistant, "final_url");
+        var pageTitle = ExtractRoutineAgentMetaValue(assistant, "page_title");
+        var screenshotPath = ExtractRoutineAgentMetaValue(assistant, "screenshot_path");
+        var cleaned = Regex.Replace(
+                assistant,
+                @"\[\s*ROUTINE_AGENT_META\s*\][\s\S]*?\[\s*/ROUTINE_AGENT_META\s*\]",
+                string.Empty,
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            )
+            .Trim();
+        if (string.IsNullOrWhiteSpace(screenshotPath))
+        {
+            screenshotPath = TryExtractScreenshotPathFromText(assistant);
+        }
+
+        return (string.IsNullOrWhiteSpace(cleaned) ? assistant : cleaned, NormalizeOptionalAgentMetaValue(finalUrl), NormalizeOptionalAgentMetaValue(pageTitle), NormalizeOptionalAgentMetaValue(screenshotPath));
+    }
+
+    private static string? ExtractRoutineAgentMetaValue(string text, string key)
+    {
+        var match = Regex.Match(
+            text ?? string.Empty,
+            $@"^\s*{Regex.Escape(key)}\s*:\s*(.+?)\s*$",
+            RegexOptions.Multiline | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    private static string? TryExtractScreenshotPathFromText(string text)
+    {
+        var match = Regex.Match(
+            text ?? string.Empty,
+            @"(/[^ \r\n\t]+?\.(?:png|jpg|jpeg|webp))",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    private static string? NormalizeOptionalAgentMetaValue(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || normalized == "-")
+        {
+            return null;
+        }
+
+        return normalized;
+    }
+
+    private static bool IsRoutineBrowserAgentPlaceholderReply(string? text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        return normalized.StartsWith("ACP run completed in bridge mode.", StringComparison.Ordinal)
+            || normalized.StartsWith("ACP runtime bridge accepted this session", StringComparison.Ordinal)
+            || normalized.StartsWith("ACP runtime bridge dispatched the initial task", StringComparison.Ordinal)
+            || normalized.StartsWith("ACP persistent session is active.", StringComparison.Ordinal);
+    }
+
+    private static string BuildRoutineBrowserAgentMissingResultMessage(
+        string startUrl,
+        SessionSpawnToolResult spawnResult,
+        ConversationThreadView? childSession
+    )
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("브라우저 에이전트 실행은 시작되었지만 최종 결과를 child session에서 찾지 못했습니다.");
+        builder.AppendLine($"startUrl={startUrl}");
+        builder.AppendLine($"runId={spawnResult.RunId}");
+        builder.AppendLine("hint=ACP command adapter가 없거나 최종 결과를 반환하지 않았습니다.");
+        if (!string.IsNullOrWhiteSpace(spawnResult.ChildSessionKey))
+        {
+            builder.AppendLine($"childSessionKey={spawnResult.ChildSessionKey}");
+        }
+
+        if (childSession != null)
+        {
+            builder.AppendLine($"childMessages={childSession.Messages.Count}");
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string NormalizeRoutineScriptLanguage(string? language)
+    {
+        return string.Equals(language, "python", StringComparison.OrdinalIgnoreCase)
+            ? "python"
+            : "bash";
+    }
+
+    private async Task<(string Status, string? Error, string? Fingerprint)> DispatchRoutineResultToTelegramAsync(
+        RoutineDefinition? routine,
+        string output,
+        string source,
+        string resultStatus,
+        CancellationToken cancellationToken
+    )
+    {
+        if (routine == null || !ShouldSendRoutineResultToTelegram(source))
+        {
+            return ("not_applicable", null, null);
+        }
+
+        var normalizedSource = (source ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedPolicy = NormalizeRoutineNotifyPolicy(routine.NotifyPolicy);
+        var fingerprint = ComputeRoutineOutputFingerprint(output);
+        var bypassPolicy = normalizedSource is "telegram_test" or "telegram_resend";
+        if (!bypassPolicy)
+        {
+            if (normalizedPolicy == "never")
+            {
+                return ("disabled", null, fingerprint);
+            }
+
+            if (normalizedPolicy == "error_only" && !string.Equals(resultStatus, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                return ("policy_skip", null, fingerprint);
+            }
+
+            if (normalizedPolicy == "on_change"
+                && !string.IsNullOrWhiteSpace(fingerprint)
+                && string.Equals(routine.LastNotifiedFingerprint, fingerprint, StringComparison.Ordinal))
+            {
+                return ("no_change", null, fingerprint);
+            }
+        }
+
+        if (!_telegramClient.IsConfigured)
+        {
+            return ("send_failed", "텔레그램 봇이 설정되지 않아 자동 전송하지 못했습니다.", fingerprint);
+        }
+
+        try
+        {
+            var sent = await _telegramClient.SendMessageAsync(
+                FormatTelegramResponse(output, TelegramMaxResponseChars),
+                cancellationToken
+            );
+            return sent
+                ? ("sent", null, fingerprint)
+                : ("send_failed", "텔레그램 전송에 실패했습니다.", fingerprint);
+        }
+        catch (Exception ex)
+        {
+            return ("send_failed", $"텔레그램 전송 실패: {ex.Message}", fingerprint);
+        }
+    }
+
+    private static bool ShouldSendRoutineResultToTelegram(string source)
+    {
+        return source.Equals("scheduler", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("telegram_test", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("telegram_resend", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public RoutineRunDetailResult GetRoutineRunDetail(string routineId, long ts)
+    {
+        var key = (routineId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return new RoutineRunDetailResult(false, string.Empty, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "routineId가 필요합니다.", "routineId가 필요합니다.");
+        }
+
+        lock (_routineLock)
+        {
+            if (!_routinesById.TryGetValue(key, out var routine))
+            {
+                return new RoutineRunDetailResult(false, key, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "루틴을 찾을 수 없습니다.", "루틴을 찾을 수 없습니다.");
+            }
+
+            var entry = (routine.CronRunLog ?? new List<RoutineRunLogEntry>())
+                .OrderByDescending(static item => item.Ts)
+                .FirstOrDefault(item => item.Ts == ts);
+            if (entry == null)
+            {
+                return new RoutineRunDetailResult(false, key, ts, routine.Title, "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "실행 이력을 찾을 수 없습니다.", "실행 이력을 찾을 수 없습니다.");
+            }
+
+            var content = ReadRoutineRunArtifactContent(entry.ArtifactPath);
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                content = BuildFallbackRoutineRunDetailContent(routine, entry);
+            }
+
+            return new RoutineRunDetailResult(
+                true,
+                key,
+                ts,
+                routine.Title,
+                string.IsNullOrWhiteSpace(entry.Status) ? "-" : entry.Status!,
+                string.IsNullOrWhiteSpace(entry.Source) ? (entry.Action ?? "-") : entry.Source!,
+                Math.Max(1, entry.AttemptCount),
+                string.IsNullOrWhiteSpace(entry.TelegramStatus) ? null : entry.TelegramStatus,
+                string.IsNullOrWhiteSpace(entry.ArtifactPath) ? null : entry.ArtifactPath,
+                string.IsNullOrWhiteSpace(entry.AgentSessionId) ? null : entry.AgentSessionId,
+                string.IsNullOrWhiteSpace(entry.AgentRunId) ? null : entry.AgentRunId,
+                string.IsNullOrWhiteSpace(entry.AgentProvider) ? null : entry.AgentProvider,
+                string.IsNullOrWhiteSpace(entry.AgentModel) ? null : entry.AgentModel,
+                string.IsNullOrWhiteSpace(entry.ToolProfile) ? null : entry.ToolProfile,
+                string.IsNullOrWhiteSpace(entry.StartUrl) ? null : entry.StartUrl,
+                string.IsNullOrWhiteSpace(entry.FinalUrl) ? null : entry.FinalUrl,
+                string.IsNullOrWhiteSpace(entry.PageTitle) ? null : entry.PageTitle,
+                string.IsNullOrWhiteSpace(entry.ScreenshotPath) ? null : entry.ScreenshotPath,
+                string.IsNullOrWhiteSpace(entry.Error) ? null : entry.Error,
+                content
+            );
+        }
+    }
+
+    public async Task<RoutineActionResult> ResendRoutineRunToTelegramAsync(
+        string routineId,
+        long ts,
+        CancellationToken cancellationToken
+    )
+    {
+        var detail = GetRoutineRunDetail(routineId, ts);
+        if (!detail.Ok)
+        {
+            return new RoutineActionResult(false, detail.Error ?? "실행 이력을 찾을 수 없습니다.", null);
+        }
+
+        RoutineSummary? summary = null;
+        lock (_routineLock)
+        {
+            if (_routinesById.TryGetValue(routineId, out var routine))
+            {
+                summary = ToRoutineSummary(routine);
+            }
+        }
+
+        if (summary == null)
+        {
+            return new RoutineActionResult(false, "루틴을 찾을 수 없습니다.", null);
+        }
+
+        var routineForSend = new RoutineDefinition
+        {
+            Id = summary.Id,
+            Title = summary.Title,
+            NotifyPolicy = "always"
+        };
+        var dispatch = await DispatchRoutineResultToTelegramAsync(
+            routineForSend,
+            detail.Content,
+            "telegram_resend",
+            detail.Status,
+            cancellationToken
+        );
+        if (!string.IsNullOrWhiteSpace(dispatch.Error))
+        {
+            return new RoutineActionResult(false, dispatch.Error, summary);
+        }
+
+        return new RoutineActionResult(true, "선택한 실행 결과를 텔레그램으로 다시 보냈습니다.", summary);
+    }
+
+    private string? WriteRoutineRunArtifact(
+        RoutineDefinition routine,
+        string source,
+        int attemptCount,
+        string status,
+        string output,
+        string? runError,
+        string? telegramStatus,
+        RoutineAgentExecutionMetadata? agentMetadata,
+        DateTimeOffset startedAtUtc,
+        DateTimeOffset completedAtUtc
+    )
+    {
+        try
+        {
+            var runDir = Path.Combine(_config.WorkspaceRootDir, "routines", routine.Id, "runs");
+            Directory.CreateDirectory(runDir);
+            var safeSource = SanitizeRoutineRunFileToken(source);
+            var safeStatus = SanitizeRoutineRunFileToken(status);
+            var fileName = $"{completedAtUtc:yyyyMMdd-HHmmss}-{safeSource}-a{Math.Max(1, attemptCount)}-{safeStatus}.md";
+            var fullPath = Path.Combine(runDir, fileName);
+            var builder = new StringBuilder();
+            builder.AppendLine($"# {routine.Title}");
+            builder.AppendLine();
+            builder.AppendLine($"- routineId: {routine.Id}");
+            builder.AppendLine($"- source: {source}");
+            builder.AppendLine($"- status: {status}");
+            builder.AppendLine($"- attempts: {Math.Max(1, attemptCount).ToString(CultureInfo.InvariantCulture)}");
+            builder.AppendLine($"- startedAt: {startedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+            builder.AppendLine($"- completedAt: {completedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+            if (!string.IsNullOrWhiteSpace(telegramStatus))
+            {
+                builder.AppendLine($"- telegram: {telegramStatus}");
+            }
+
+            if (agentMetadata != null)
+            {
+                if (!string.IsNullOrWhiteSpace(agentMetadata.SessionKey))
+                {
+                    builder.AppendLine($"- agentSessionId: {agentMetadata.SessionKey}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.RunId))
+                {
+                    builder.AppendLine($"- agentRunId: {agentMetadata.RunId}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.Provider))
+                {
+                    builder.AppendLine($"- agentProvider: {agentMetadata.Provider}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.Model))
+                {
+                    builder.AppendLine($"- agentModel: {agentMetadata.Model}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.ToolProfile))
+                {
+                    builder.AppendLine($"- toolProfile: {agentMetadata.ToolProfile}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.StartUrl))
+                {
+                    builder.AppendLine($"- startUrl: {agentMetadata.StartUrl}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.FinalUrl))
+                {
+                    builder.AppendLine($"- finalUrl: {agentMetadata.FinalUrl}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.PageTitle))
+                {
+                    builder.AppendLine($"- pageTitle: {agentMetadata.PageTitle}");
+                }
+
+                if (!string.IsNullOrWhiteSpace(agentMetadata.ScreenshotPath))
+                {
+                    builder.AppendLine($"- screenshotPath: {agentMetadata.ScreenshotPath}");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(runError))
+            {
+                builder.AppendLine($"- error: {runError}");
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("## Output");
+            builder.AppendLine();
+            builder.AppendLine(output ?? string.Empty);
+            File.WriteAllText(fullPath, builder.ToString().TrimEnd() + Environment.NewLine, new UTF8Encoding(false));
+            return fullPath;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string BuildFallbackRoutineRunDetailContent(RoutineDefinition routine, RoutineRunLogEntry entry)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine($"[Routine:{routine.Id}] {routine.Title}");
+        builder.AppendLine($"status={entry.Status ?? "-"} source={entry.Source ?? entry.Action ?? "-"} attempts={Math.Max(1, entry.AttemptCount).ToString(CultureInfo.InvariantCulture)}");
+        if (!string.IsNullOrWhiteSpace(entry.TelegramStatus))
+        {
+            builder.AppendLine($"telegram={entry.TelegramStatus}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.AgentSessionId))
+        {
+            builder.AppendLine($"agentSessionId={entry.AgentSessionId}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.AgentRunId))
+        {
+            builder.AppendLine($"agentRunId={entry.AgentRunId}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.AgentProvider) || !string.IsNullOrWhiteSpace(entry.AgentModel))
+        {
+            builder.AppendLine($"agent={entry.AgentProvider ?? "-"}:{entry.AgentModel ?? "-"}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.ToolProfile))
+        {
+            builder.AppendLine($"toolProfile={entry.ToolProfile}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.StartUrl))
+        {
+            builder.AppendLine($"startUrl={entry.StartUrl}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.FinalUrl))
+        {
+            builder.AppendLine($"finalUrl={entry.FinalUrl}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.PageTitle))
+        {
+            builder.AppendLine($"pageTitle={entry.PageTitle}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.ScreenshotPath))
+        {
+            builder.AppendLine($"screenshotPath={entry.ScreenshotPath}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Error))
+        {
+            builder.AppendLine();
+            builder.AppendLine("[error]");
+            builder.AppendLine(entry.Error);
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Summary))
+        {
+            builder.AppendLine();
+            builder.AppendLine("[summary]");
+            builder.AppendLine(entry.Summary);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string? ReadRoutineRunArtifactContent(string? artifactPath)
+    {
+        var fullPath = (artifactPath ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+        {
+            return null;
+        }
+
+        return File.ReadAllText(fullPath, Encoding.UTF8);
+    }
+
+    private static string SanitizeRoutineRunFileToken(string? value)
+    {
+        var normalized = Regex.Replace((value ?? string.Empty).Trim().ToLowerInvariant(), @"[^a-z0-9_-]+", "-", RegexOptions.CultureInvariant).Trim('-');
+        return normalized.Length == 0 ? "run" : normalized;
     }
 
     public RoutineActionResult SetRoutineEnabled(string routineId, bool enabled)
@@ -990,6 +2347,7 @@ public sealed partial class CommandService
             request.GeminiModel,
             request.CopilotModel,
             request.CerebrasModel,
+            request.CodexModel,
             request.Attachments,
             cancellationToken
         );
@@ -1071,6 +2429,9 @@ public sealed partial class CommandService
         var localCopilotModel = IsDisabledModelSelection(request.CopilotModel)
             ? "none"
             : NormalizeModelSelection(request.CopilotModel) ?? _copilotWrapper.GetSelectedModel();
+        var localCodexModel = IsDisabledModelSelection(request.CodexModel)
+            ? "none"
+            : NormalizeModelSelection(request.CodexModel) ?? _config.CodexModel;
         var requestedSummaryProvider = NormalizeProvider(request.SummaryProvider, allowAuto: true);
         var localUsageReply = await TryBuildInChatCopilotUsageResponseAsync(rawInput, request.Source, cancellationToken);
         if (!string.IsNullOrWhiteSpace(localUsageReply))
@@ -1100,7 +2461,12 @@ public sealed partial class CommandService
                 "local",
                 localUpdated,
                 null,
-                null
+                null,
+                null,
+                null,
+                null,
+                "로컬 사용량 조회로 Codex 응답은 생략되었습니다.",
+                localCodexModel
             );
         }
 
@@ -1143,7 +2509,9 @@ public sealed partial class CommandService
                 basePrepared.GuardFailure,
                 basePrepared.Citations,
                 blockedCitationBundle.Mappings,
-                blockedCitationBundle.Validation
+                blockedCitationBundle.Validation,
+                basePrepared.UnsupportedMessage,
+                localCodexModel
             );
         }
         var contextualInput = BuildContextualInput(session.SessionId, basePrepared.Text, session.LinkedMemoryNotes);
@@ -1156,6 +2524,7 @@ public sealed partial class CommandService
             request.CopilotModel,
             request.CerebrasModel,
             request.SummaryProvider,
+            request.CodexModel,
             request.Attachments,
             cancellationToken
         );
@@ -1168,6 +2537,7 @@ public sealed partial class CommandService
             ("gemini", generated.GeminiText),
             ("cerebras", generated.CerebrasText),
             ("copilot", generated.CopilotText),
+            ("codex", generated.CodexText),
             ("summary", generated.Summary)
         );
         var effectiveGuardFailure = basePrepared.GuardFailure;
@@ -1175,6 +2545,7 @@ public sealed partial class CommandService
         var responseGeminiText = generated.GeminiText;
         var responseCerebrasText = generated.CerebrasText;
         var responseCopilotText = generated.CopilotText;
+        var responseCodexText = generated.CodexText;
         var responseSummaryText = generated.Summary;
 
         var assistantText = BuildMultiAssistantText(new LlmMultiChatResult(
@@ -1188,7 +2559,9 @@ public sealed partial class CommandService
             generated.CerebrasModel,
             generated.CopilotModel,
             generated.RequestedSummaryProvider,
-            generated.ResolvedSummaryProvider
+            generated.ResolvedSummaryProvider,
+            responseCodexText,
+            generated.CodexModel
         ));
         _conversationStore.AppendMessage(thread.Id, "user", rawInput, "multi");
         _conversationStore.AppendMessage(thread.Id, "assistant", assistantText, $"summary={generated.ResolvedSummaryProvider}");
@@ -1226,7 +2599,9 @@ public sealed partial class CommandService
             effectiveGuardFailure,
             basePrepared.Citations,
             citationBundle.Mappings,
-            citationBundle.Validation
+            citationBundle.Validation,
+            responseCodexText,
+            generated.CodexModel
         );
     }
 
@@ -1516,6 +2891,7 @@ public sealed partial class CommandService
                     "gemini" => request.GeminiModel,
                     "cerebras" => request.CerebrasModel,
                     "copilot" => request.CopilotModel,
+                    "codex" => request.CodexModel,
                     _ => null
                 };
                 return !IsDisabledModelSelection(selection);
@@ -1563,6 +2939,7 @@ public sealed partial class CommandService
                     "gemini" => request.GeminiModel,
                     "cerebras" => request.CerebrasModel,
                     "copilot" => request.CopilotModel,
+                    "codex" => request.CodexModel,
                     _ => null
                 }
             ),
@@ -1635,7 +3012,8 @@ public sealed partial class CommandService
             request.GroqModel,
             request.GeminiModel,
             request.CerebrasModel,
-            request.CopilotModel
+            request.CopilotModel,
+            request.CodexModel
         );
         var workerChatResults = workerResults
             .Select(x => new LlmSingleChatResult(x.Provider, x.Model, x.RawResponse))
@@ -1670,6 +3048,7 @@ public sealed partial class CommandService
                 "gemini" => request.GeminiModel,
                 "cerebras" => request.CerebrasModel,
                 "copilot" => request.CopilotModel,
+                "codex" => request.CodexModel,
                 _ => null
             };
         }
@@ -1831,6 +3210,7 @@ public sealed partial class CommandService
                     "gemini" => request.GeminiModel,
                     "cerebras" => request.CerebrasModel,
                     "copilot" => request.CopilotModel,
+                    "codex" => request.CodexModel,
                     _ => null
                 };
                 return !IsDisabledModelSelection(selection);
@@ -1879,6 +3259,7 @@ public sealed partial class CommandService
                     "gemini" => request.GeminiModel,
                     "cerebras" => request.CerebrasModel,
                     "copilot" => request.CopilotModel,
+                    "codex" => request.CodexModel,
                     _ => null
                 }
             );
@@ -1923,7 +3304,8 @@ public sealed partial class CommandService
             request.GroqModel,
             request.GeminiModel,
             request.CerebrasModel,
-            request.CopilotModel
+            request.CopilotModel,
+            request.CodexModel
         );
         var workerChatResults = workerResults
             .Select(x => new LlmSingleChatResult(x.Provider, x.Model, x.RawResponse))
@@ -1958,6 +3340,7 @@ public sealed partial class CommandService
                     "gemini" => request.GeminiModel,
                     "cerebras" => request.CerebrasModel,
                     "copilot" => request.CopilotModel,
+                    "codex" => request.CodexModel,
                     _ => null
                 };
             }
@@ -2051,6 +3434,7 @@ public sealed partial class CommandService
         var roles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             ["copilot"] = "코드 생성/수정 담당. 바로 실행 가능한 코드/패치를 우선 제시하세요.",
+            ["codex"] = "정밀 구현/검증 담당. 요구사항 누락 없이 완성도 높은 해법을 제시하세요.",
             ["gemini"] = "리뷰/설계 검증 담당. 버그 원인, 예외, 트레이드오프를 점검하세요.",
             ["groq"] = "빠른 보조 담당. 로그 해석, 대안 아이디어, 빠른 수정 포인트를 제시하세요."
         };
@@ -9529,6 +10913,7 @@ public sealed partial class CommandService
         string? geminiModel,
         string? copilotModel,
         string? cerebrasModel,
+        string? codexModel,
         IReadOnlyList<InputAttachment>? attachments,
         CancellationToken cancellationToken
     )
@@ -9565,9 +10950,16 @@ public sealed partial class CommandService
             workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("copilot", selectedCopilot, text, attachments, cancellationToken));
         }
 
+        var codexStatus = await _codexWrapper.GetStatusAsync(cancellationToken);
+        if (codexStatus.Installed && codexStatus.Authenticated && !IsDisabledModelSelection(codexModel))
+        {
+            var selectedCodex = NormalizeModelSelection(codexModel) ?? _config.CodexModel;
+            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("codex", selectedCodex, text, attachments, cancellationToken));
+        }
+
         if (workerTasks.Count == 0)
         {
-            return new LlmOrchestrationResult("no_provider", "사용 가능한 LLM이 없습니다. Groq/Gemini/Cerebras 키 또는 Copilot 인증을 확인하세요.");
+            return new LlmOrchestrationResult("no_provider", "사용 가능한 LLM이 없습니다. Groq/Gemini/Cerebras 키 또는 Copilot/Codex 인증을 확인하세요.");
         }
 
         await Task.WhenAll(workerTasks);
@@ -9579,7 +10971,7 @@ public sealed partial class CommandService
             })
             .ToList();
         var availabilityByProvider = await GetProviderAvailabilityMapAsync(cancellationToken);
-        var selectionByProvider = BuildProviderSelectionMap(groqModel, geminiModel, cerebrasModel, copilotModel);
+        var selectionByProvider = BuildProviderSelectionMap(groqModel, geminiModel, cerebrasModel, copilotModel, codexModel);
         var successfulWorkers = workerResults
             .Where(x => IsUsableWorkerResult(x, availabilityByProvider, selectionByProvider))
             .ToArray();
@@ -9600,7 +10992,8 @@ public sealed partial class CommandService
         if ((resolvedProvider == "groq" && IsDisabledModelSelection(groqModel))
             || (resolvedProvider == "gemini" && IsDisabledModelSelection(geminiModel))
             || (resolvedProvider == "cerebras" && IsDisabledModelSelection(cerebrasModel))
-            || (resolvedProvider == "copilot" && IsDisabledModelSelection(copilotModel)))
+            || (resolvedProvider == "copilot" && IsDisabledModelSelection(copilotModel))
+            || (resolvedProvider == "codex" && IsDisabledModelSelection(codexModel)))
         {
             resolvedProvider = workerResults[0].Provider;
         }
@@ -9612,6 +11005,8 @@ public sealed partial class CommandService
                 ? (string.IsNullOrWhiteSpace(groqModel) ? _llmRouter.GetSelectedGroqModel() : groqModel.Trim())
                 : resolvedProvider == "copilot"
                     ? (string.IsNullOrWhiteSpace(copilotModel) ? _copilotWrapper.GetSelectedModel() : copilotModel.Trim())
+                    : resolvedProvider == "codex"
+                        ? (NormalizeModelSelection(codexModel) ?? _config.CodexModel)
                     : resolvedProvider == "cerebras"
                         ? (string.IsNullOrWhiteSpace(cerebrasModel) ? _config.CerebrasModel : cerebrasModel.Trim())
                     : (string.IsNullOrWhiteSpace(geminiModel) ? _config.GeminiModel : geminiModel.Trim());
@@ -9643,6 +11038,7 @@ public sealed partial class CommandService
         string? copilotModel,
         string? cerebrasModel,
         string? summaryProvider,
+        string? codexModel,
         IReadOnlyList<InputAttachment>? attachments,
         CancellationToken cancellationToken
     )
@@ -9653,10 +11049,12 @@ public sealed partial class CommandService
         var geminiSelected = NormalizeModelSelection(geminiModel) ?? _config.GeminiModel;
         var cerebrasSelected = NormalizeModelSelection(cerebrasModel) ?? _config.CerebrasModel;
         var copilotSelected = NormalizeModelSelection(copilotModel) ?? _copilotWrapper.GetSelectedModel();
+        var codexSelected = NormalizeModelSelection(codexModel) ?? _config.CodexModel;
         var groqResolvedModel = IsDisabledModelSelection(groqModel) ? "none" : groqSelected;
         var geminiResolvedModel = IsDisabledModelSelection(geminiModel) ? "none" : geminiSelected;
         var cerebrasResolvedModel = IsDisabledModelSelection(cerebrasModel) ? "none" : cerebrasSelected;
         var copilotResolvedModel = IsDisabledModelSelection(copilotModel) ? "none" : copilotSelected;
+        var codexResolvedModel = IsDisabledModelSelection(codexModel) ? "none" : codexSelected;
         var requestedSummaryProvider = NormalizeProvider(summaryProvider, allowAuto: true);
         if (string.IsNullOrWhiteSpace(text))
         {
@@ -9671,7 +11069,9 @@ public sealed partial class CommandService
                 cerebrasResolvedModel,
                 copilotResolvedModel,
                 requestedSummaryProvider,
-                "none"
+                "none",
+                "empty input",
+                codexResolvedModel
             );
         }
 
@@ -9699,17 +11099,24 @@ public sealed partial class CommandService
             : (copilotStatus.Installed && copilotStatus.Authenticated
                 ? ExecuteProviderChatWithPreparedInputAsync("copilot", copilotSelected, text, attachments, cancellationToken)
                 : Task.FromResult(new LlmSingleChatResult("copilot", copilotSelected, "Copilot 인증이 필요합니다.")));
+        var codexStatus = await _codexWrapper.GetStatusAsync(cancellationToken);
+        Task<LlmSingleChatResult> codexTask = IsDisabledModelSelection(codexModel)
+            ? Task.FromResult(new LlmSingleChatResult("codex", "none", "선택 안함"))
+            : (codexStatus.Installed && codexStatus.Authenticated
+                ? ExecuteProviderChatWithPreparedInputAsync("codex", codexSelected, text, attachments, cancellationToken)
+                : Task.FromResult(new LlmSingleChatResult("codex", codexSelected, "Codex 인증이 필요합니다.")));
 
-        await Task.WhenAll(groqTask, geminiTask, cerebrasTask, copilotTask);
+        await Task.WhenAll(groqTask, geminiTask, cerebrasTask, copilotTask, codexTask);
         var workerResults = new[]
         {
             new LlmSingleChatResult(groqTask.Result.Provider, groqTask.Result.Model, SanitizeChatOutput(groqTask.Result.Text)),
             new LlmSingleChatResult(geminiTask.Result.Provider, geminiTask.Result.Model, SanitizeChatOutput(geminiTask.Result.Text)),
             new LlmSingleChatResult(cerebrasTask.Result.Provider, cerebrasTask.Result.Model, SanitizeChatOutput(cerebrasTask.Result.Text)),
-            new LlmSingleChatResult(copilotTask.Result.Provider, copilotTask.Result.Model, SanitizeChatOutput(copilotTask.Result.Text))
+            new LlmSingleChatResult(copilotTask.Result.Provider, copilotTask.Result.Model, SanitizeChatOutput(copilotTask.Result.Text)),
+            new LlmSingleChatResult(codexTask.Result.Provider, codexTask.Result.Model, SanitizeChatOutput(codexTask.Result.Text))
         };
         var availabilityByProvider = await GetProviderAvailabilityMapAsync(cancellationToken);
-        var selectionByProvider = BuildProviderSelectionMap(groqModel, geminiModel, cerebrasModel, copilotModel);
+        var selectionByProvider = BuildProviderSelectionMap(groqModel, geminiModel, cerebrasModel, copilotModel, codexModel);
         var successfulWorkers = workerResults
             .Where(x => IsUsableWorkerResult(x, availabilityByProvider, selectionByProvider))
             .ToArray();
@@ -9718,6 +11125,7 @@ public sealed partial class CommandService
         var gemini = workerResults[1].Text;
         var cerebras = workerResults[2].Text;
         var copilot = workerResults[3].Text;
+        var codex = workerResults[4].Text;
 
         var summaryPrompt = $"""
                             사용자 질문:
@@ -9735,7 +11143,10 @@ public sealed partial class CommandService
                             [Copilot]
                             {copilot}
 
-                            위 4개 답변에서 서로 중복/공통되는 핵심만 우선 정리하세요.
+                            [Codex]
+                            {codex}
+
+                            위 5개 답변에서 서로 중복/공통되는 핵심만 우선 정리하세요.
                             출력 형식:
                             [공통 핵심]
                             - ...
@@ -9762,7 +11173,7 @@ public sealed partial class CommandService
             summary = SanitizeChatOutput(summaryResult.Text);
         }
 
-        _auditLogger.Log(source, "chat_multi", "ok", $"groq={groqSelected} cerebras={cerebrasSelected} copilot={copilotSelected} summary={resolvedSummaryProvider}");
+        _auditLogger.Log(source, "chat_multi", "ok", $"groq={groqSelected} cerebras={cerebrasSelected} copilot={copilotSelected} codex={codexSelected} summary={resolvedSummaryProvider}");
         return new LlmMultiChatResult(
             groq,
             gemini,
@@ -9774,7 +11185,9 @@ public sealed partial class CommandService
             cerebrasResolvedModel,
             copilotResolvedModel,
             requestedSummaryProvider,
-            resolvedSummaryProvider
+            resolvedSummaryProvider,
+            codex,
+            codexResolvedModel
         );
     }
 
@@ -10054,6 +11467,13 @@ public sealed partial class CommandService
             return new LlmSingleChatResult("copilot", selected, response);
         }
 
+        if (normalized == "codex")
+        {
+            var selected = NormalizeModelSelection(model) ?? _config.CodexModel;
+            var response = await _codexWrapper.GenerateChatAsync(input, selected, cancellationToken);
+            return new LlmSingleChatResult("codex", selected, response);
+        }
+
         var groqModel = ResolveGroqModelForInput(input, model);
         var groqResponse = await _llmRouter.GenerateGroqChatAsync(input, groqModel, requestedMaxOutputTokens, cancellationToken);
         if (IsGroqMaxTokensResponse(groqResponse) && requestedMaxOutputTokens > 8192)
@@ -10148,6 +11568,7 @@ public sealed partial class CommandService
         var timeoutSeconds = normalized switch
         {
             "copilot" => Math.Max(120, _config.LlmTimeoutSec * 3),
+            "codex" => Math.Max(120, _config.LlmTimeoutSec * 3),
             "cerebras" => Math.Max(8, _config.CerebrasTimeoutSec),
             _ => Math.Max(8, _config.LlmTimeoutSec)
         };
@@ -10525,7 +11946,7 @@ public sealed partial class CommandService
     private static string NormalizeProvider(string? provider, bool allowAuto)
     {
         var value = (provider ?? string.Empty).Trim().ToLowerInvariant();
-        if (value == "gemini" || value == "groq" || value == "cerebras" || value == "copilot")
+        if (value == "gemini" || value == "groq" || value == "cerebras" || value == "copilot" || value == "codex")
         {
             return value;
         }
@@ -10579,7 +12000,8 @@ public sealed partial class CommandService
         string? groqModel,
         string? geminiModel,
         string? cerebrasModel,
-        string? copilotModel
+        string? copilotModel,
+        string? codexModel
     )
     {
         return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
@@ -10587,7 +12009,8 @@ public sealed partial class CommandService
             ["gemini"] = geminiModel,
             ["groq"] = groqModel,
             ["cerebras"] = cerebrasModel,
-            ["copilot"] = copilotModel
+            ["copilot"] = copilotModel,
+            ["codex"] = codexModel
         };
     }
 
@@ -10637,7 +12060,7 @@ public sealed partial class CommandService
         bool allowProviderWithoutWorkerFallback
     )
     {
-        var priority = new[] { "gemini", "groq", "cerebras", "copilot" };
+        var priority = new[] { "gemini", "groq", "cerebras", "copilot", "codex" };
         foreach (var provider in priority)
         {
             if (!IsProviderSelectable(provider, availabilityByProvider, selectionByProvider))
@@ -10762,6 +12185,9 @@ public sealed partial class CommandService
                    루틴 명령어
                    /routine list
                    /routine create <요청>
+                   /routine create browser --model <model> [--url <start-url>] <요청>
+                   /routine update <routine-id> <요청>
+                   /routine update <routine-id> browser --model <model> [--url <start-url>] <요청>
                    /routine run <routine-id>
                    /routine on <routine-id>
                    /routine off <routine-id>
@@ -10782,7 +12208,8 @@ public sealed partial class CommandService
             builder.AppendLine("[루틴 목록]");
             foreach (var item in list.Take(20))
             {
-                builder.AppendLine($"- {item.Id} | {item.Title} | {(item.Enabled ? "ON" : "OFF")} | next={item.NextRunLocal}");
+                var modeLabel = FormatRoutineExecutionModeLabel(item.ResolvedExecutionMode);
+                builder.AppendLine($"- {item.Id} | {item.Title} | mode={modeLabel} | {(item.Enabled ? "ON" : "OFF")} | next={item.NextRunLocal}");
             }
 
             return builder.ToString().Trim();
@@ -10795,9 +12222,110 @@ public sealed partial class CommandService
                 return "usage: /routine create <요청>";
             }
 
-            var request = string.Join(' ', tokens.Skip(2)).Trim();
-            var created = await CreateRoutineAsync(request, source, cancellationToken);
+            RoutineActionResult created;
+            if (tokens[2].Equals("browser", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseRoutineBrowserCommand(tokens.Skip(3), out var browserSpec, out var browserError))
+                {
+                    return browserError;
+                }
+
+                created = await CreateRoutineAsync(
+                    request: browserSpec.Request,
+                    title: null,
+                    executionMode: "browser_agent",
+                    agentProvider: browserSpec.Provider,
+                    agentModel: browserSpec.Model,
+                    agentStartUrl: browserSpec.StartUrl,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: true,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    source: source,
+                    cancellationToken: cancellationToken
+                );
+            }
+            else
+            {
+                var request = string.Join(' ', tokens.Skip(2)).Trim();
+                created = await CreateRoutineAsync(request, source, cancellationToken);
+            }
+
             return FormatRoutineActionResult(created);
+        }
+
+        if (action == "update")
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /routine update <routine-id> <요청>";
+            }
+
+            var routineId = tokens[2];
+            RoutineActionResult updated;
+            if (tokens[3].Equals("browser", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseRoutineBrowserCommand(tokens.Skip(4), out var browserSpec, out var browserError))
+                {
+                    return browserError;
+                }
+
+                updated = await UpdateRoutineAsync(
+                    routineId: routineId,
+                    request: browserSpec.Request,
+                    title: null,
+                    executionMode: "browser_agent",
+                    agentProvider: browserSpec.Provider,
+                    agentModel: browserSpec.Model,
+                    agentStartUrl: browserSpec.StartUrl,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: true,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    cancellationToken: cancellationToken
+                );
+            }
+            else
+            {
+                var request = string.Join(' ', tokens.Skip(3)).Trim();
+                updated = await UpdateRoutineAsync(
+                    routineId: routineId,
+                    request: request,
+                    title: null,
+                    executionMode: null,
+                    agentProvider: null,
+                    agentModel: null,
+                    agentStartUrl: null,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: null,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    cancellationToken: cancellationToken
+                );
+            }
+
+            return FormatRoutineActionResult(updated);
         }
 
         if (action == "run")
@@ -10864,11 +12392,107 @@ public sealed partial class CommandService
                 {result.Message}
                 id={result.Routine.Id}
                 title={result.Routine.Title}
+                mode={FormatRoutineExecutionModeLabel(result.Routine.ResolvedExecutionMode)}
                 schedule={result.Routine.ScheduleText}
                 next={result.Routine.NextRunLocal}
                 script={result.Routine.ScriptPath}
                 model={result.Routine.CoderModel}
                 """;
+    }
+
+    private sealed record RoutineBrowserCommandSpec(
+        string Request,
+        string? Provider,
+        string Model,
+        string? StartUrl
+    );
+
+    private static bool TryParseRoutineBrowserCommand(
+        IEnumerable<string> tokens,
+        out RoutineBrowserCommandSpec spec,
+        out string error
+    )
+    {
+        var tokenList = tokens.Select(token => token.Trim()).Where(token => token.Length > 0).ToList();
+        string? provider = null;
+        string? model = null;
+        string? startUrl = null;
+        var requestTokens = new List<string>();
+
+        for (var i = 0; i < tokenList.Count; i += 1)
+        {
+            var token = tokenList[i];
+            if (token.Equals("--provider", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                provider = tokenList[++i];
+                continue;
+            }
+
+            if (token.Equals("--model", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                model = tokenList[++i];
+                continue;
+            }
+
+            if (token.Equals("--url", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                startUrl = tokenList[++i];
+                continue;
+            }
+
+            requestTokens.Add(token);
+        }
+
+        var request = string.Join(' ', requestTokens).Trim();
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            error = "브라우저 루틴은 --model <model> 이 필요합니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(request))
+        {
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            error = "브라우저 루틴 요청을 입력하세요.";
+            return false;
+        }
+
+        spec = new RoutineBrowserCommandSpec(request, provider, model.Trim(), startUrl);
+        error = string.Empty;
+        return true;
+    }
+
+    private static string FormatRoutineExecutionModeLabel(string? executionMode)
+    {
+        return NormalizeRoutineExecutionMode(executionMode) switch
+        {
+            "browser_agent" => "browser_agent",
+            "url" => "url",
+            "web" => "web",
+            _ => "script"
+        };
     }
 
     private static bool LooksLikeRoutineRequest(string text)
@@ -10952,11 +12576,15 @@ public sealed partial class CommandService
                     """
                     # Routine System Prompt
                     - 목적: 반복 작업 자동화를 위한 루틴을 계획하고 실행 가능한 코드로 생성한다.
-                    - 출력: PLAN 섹션 + LANGUAGE 선언 + 단일 코드블록.
-                    - 제약: macOS/Linux 모두 동작 가능한 방식 우선.
+                    - 출력: 반드시 PLAN 섹션 + LANGUAGE 선언 + 단일 코드블록.
+                    - 가장 중요: 스케줄은 루틴 엔진이 이미 처리한다. 코드 안에서 현재 시각/요일/날짜를 다시 확인하거나 대기하지 마라.
+                    - 금지: cron 등록, while true, sleep 기반 무한 대기, CURRENT_HOUR/CURRENT_MINUTE/DAY_OF_WEEK 계산, datetime.now()로 실행 여부 판단.
+                    - 실행 방식: 코드가 호출되면 즉시 작업을 수행하고 결과를 stdout에 완결된 한국어 텍스트로 남긴다.
+                    - 결과 품질: 표준 출력은 비워두지 말고, 핵심 결과/요약/실패 원인을 사람이 읽을 수 있게 출력한다.
+                    - 제약: macOS/Linux 모두 동작 가능한 방식 우선, 외부 의존 최소화.
                     - 보안: 파괴적 명령 금지, 사용자 경로 외 쓰기 금지, 민감정보 출력 금지.
                     """,
-                    Encoding.UTF8
+                    new UTF8Encoding(false)
                 );
             }
 
@@ -10966,12 +12594,13 @@ public sealed partial class CommandService
                     baseConfigPath,
                     """
                     # 기본 구성
-                    1. 스케줄 해석: "매일 HH:MM" 형식으로 정규화
-                    2. 실행 환경: bash 또는 python (POSIX 친화)
-                    3. 출력 형식: 핵심 결과를 짧은 텍스트로 stdout 출력
-                    4. 실패 처리: 오류 시 원인 요약과 재시도 가이드 출력
+                    1. 스케줄은 엔진이 담당하므로 코드에서 시간/요일 조건문을 두지 않는다.
+                    2. 실행 환경은 bash 또는 python 중 하나만 사용하고, 한 번 실행될 때 즉시 끝나야 한다.
+                    3. 출력은 항상 stdout에 남긴다. 결과가 없더라도 실제 수행 결과나 실패 원인을 설명한다.
+                    4. 네트워크/외부 사이트 접근이 실패하면 stderr 또는 stdout에 원인과 대체 안내를 짧게 남긴다.
+                    5. 사용자가 적은 요청 원문에 스케줄 표현이 섞여 있어도, 구현은 순수 작업 내용만 수행한다.
                     """,
-                    Encoding.UTF8
+                    new UTF8Encoding(false)
                 );
             }
         }
@@ -10988,31 +12617,12 @@ public sealed partial class CommandService
             _routinesById.Clear();
             try
             {
-                if (!File.Exists(_routineStatePath))
-                {
-                    return;
-                }
-
-                var json = File.ReadAllText(_routineStatePath, Encoding.UTF8);
-                if (string.IsNullOrWhiteSpace(json))
-                {
-                    return;
-                }
-
-                var state = JsonSerializer.Deserialize(json, OmniJsonContext.Default.RoutineState);
-                if (state?.Items == null)
-                {
-                    return;
-                }
-
-                foreach (var item in state.Items)
+                foreach (var item in _routineStore.Load())
                 {
                     if (string.IsNullOrWhiteSpace(item.Id))
                     {
                         continue;
                     }
-
-                    item.Running = false;
                     _routinesById[item.Id] = item;
                 }
             }
@@ -11027,20 +12637,7 @@ public sealed partial class CommandService
     {
         try
         {
-            var dir = Path.GetDirectoryName(_routineStatePath);
-            if (!string.IsNullOrWhiteSpace(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            var state = new RoutineState
-            {
-                Items = _routinesById.Values
-                    .OrderBy(x => x.CreatedUtc)
-                    .ToArray()
-            };
-            var json = JsonSerializer.Serialize(state, OmniJsonContext.Default.RoutineState);
-            AtomicFileStore.WriteAllText(_routineStatePath, json, ownerOnly: true);
+            _routineStore.Save(_routinesById.Values.ToArray());
         }
         catch (Exception ex)
         {
@@ -11092,6 +12689,13 @@ public sealed partial class CommandService
             var code = string.IsNullOrWhiteSpace(parsed.Code)
                 ? BuildFallbackRoutineCode(request, schedule)
                 : EnsureRoutineShebang(parsed.Code, language);
+            if (!string.IsNullOrWhiteSpace(parsed.Code) && RoutineCodeNeedsRepair(language, code))
+            {
+                var repaired = await TryRepairRoutineCodeAsync(objective, merged, strategy.Models[0], request, schedule, cancellationToken);
+                language = repaired.Language;
+                code = repaired.Code;
+                merged = repaired.RawText;
+            }
 
             return new RoutineGenerationResult(
                 PlannerProvider: "groq",
@@ -11109,6 +12713,13 @@ public sealed partial class CommandService
         var singleCode = string.IsNullOrWhiteSpace(singleParsed.Code)
             ? BuildFallbackRoutineCode(request, schedule)
             : EnsureRoutineShebang(singleParsed.Code, singleLanguage);
+        if (!string.IsNullOrWhiteSpace(singleParsed.Code) && RoutineCodeNeedsRepair(singleLanguage, singleCode))
+        {
+            var repaired = await TryRepairRoutineCodeAsync(objective, single.Text, strategy.Models[0], request, schedule, cancellationToken);
+            singleLanguage = repaired.Language;
+            singleCode = repaired.Code;
+            single = single with { Text = repaired.RawText };
+        }
         return new RoutineGenerationResult(
             PlannerProvider: "groq",
             PlannerModel: strategy.Models[0],
@@ -11189,10 +12800,25 @@ public sealed partial class CommandService
                 {schedule}
 
                 요구사항:
-                1) macOS/Linux 모두 동작 가능한 루틴 코드
-                2) 외부 의존 최소화
-                3) 실행 결과를 stdout 텍스트로 요약 출력
-                4) 민감정보 노출 금지
+                1) 이 코드는 스케줄러가 이미 실행할 시점에 호출한다. 실행 여부를 코드 안에서 다시 판단하지 마라.
+                2) 현재 시간/요일/날짜 확인, sleep, while true, cron/crontab 등록, 백그라운드 daemon화 금지
+                3) 요청 원문에 스케줄 표현이 있어도 정규화 스케줄을 우선으로 보고, 구현은 작업 자체만 수행
+                4) 한 번 실행되면 즉시 작업을 수행하고 종료
+                5) macOS/Linux 모두 동작 가능한 루틴 코드
+                6) 외부 의존 최소화
+                7) 실행 결과를 stdout 텍스트로 요약 출력
+                8) stdout은 비워두지 말 것. 사람이 읽는 최종 결과를 3문장 이상 또는 구조화된 목록으로 출력
+                9) 민감정보 노출 금지
+                10) Linux 전용 옵션(top -bn1, free -m 등)을 그대로 쓰지 말고 macOS/Linux 공통 또는 분기 가능한 방식으로 작성
+
+                금지 예시:
+                - CURRENT_HOUR=$(date +%H)
+                - DAY_OF_WEEK=$(date +%u)
+                - if now.hour == 8:
+                - schedule.every(...)
+                - while true:
+                - sleep 60
+                - top -bn1
 
                 출력 형식:
                 PLAN:
@@ -11232,7 +12858,7 @@ public sealed partial class CommandService
 
     private static string EnsureRoutineShebang(string code, string language)
     {
-        var normalized = (code ?? string.Empty).Trim();
+        var normalized = (code ?? string.Empty).Trim().TrimStart('\uFEFF');
         if (string.IsNullOrWhiteSpace(normalized))
         {
             return normalized;
@@ -11244,6 +12870,10 @@ public sealed partial class CommandService
             if (body.StartsWith("#!/usr/bin/env bash", StringComparison.Ordinal))
             {
                 body = body["#!/usr/bin/env bash".Length..].TrimStart();
+            }
+            else if (body.StartsWith("#!/bin/bash", StringComparison.Ordinal))
+            {
+                body = body["#!/bin/bash".Length..].TrimStart();
             }
 
             if (body.StartsWith("set -euo pipefail", StringComparison.Ordinal))
@@ -11268,6 +12898,26 @@ public sealed partial class CommandService
                      }
                    fi
 
+                   if [ "$(uname -s)" = "Darwin" ]; then
+                     top() {
+                       local remapped=()
+                       local replaced=0
+                       for arg in "$@"; do
+                         if [ "$arg" = "-bn1" ]; then
+                           remapped+=("-l" "1")
+                           replaced=1
+                         else
+                           remapped+=("$arg")
+                         fi
+                       done
+                       if [ "$replaced" -eq 1 ]; then
+                         command top "${remapped[@]}"
+                         return $?
+                       fi
+                       command top "$@"
+                     }
+                   fi
+
                    """ + body;
         }
 
@@ -11289,7 +12939,8 @@ public sealed partial class CommandService
                 echo "[Routine] 요청: '{escaped}'"
                 echo "[Routine] 스케줄: {schedule.Display}"
                 echo "[Routine] 실행시각: $(date '+%Y-%m-%d %H:%M:%S')"
-                echo "[Routine] TODO: 실제 데이터 수집/요약 로직을 모델 생성 코드로 교체"
+                echo "[Routine] 자동 생성 코드가 유효하지 않아 기본 템플릿으로 실행했습니다."
+                echo "[Routine] 실제 작업 로직은 루틴 수정 저장으로 재생성하세요."
                 """;
     }
 
@@ -11320,6 +12971,12 @@ public sealed partial class CommandService
             summary.AppendLine();
             summary.AppendLine("[stderr]");
             summary.AppendLine(stderr.Length <= 1200 ? stderr : stderr[..1200] + "...");
+        }
+        else if (string.IsNullOrWhiteSpace(stdout))
+        {
+            summary.AppendLine();
+            summary.AppendLine("[stdout]");
+            summary.AppendLine("(출력 없음)");
         }
 
         return summary.ToString().Trim();
@@ -11413,7 +13070,7 @@ public sealed partial class CommandService
             );
         }
 
-        var payloadText = ResolveRoutineRequestText(routine.Request, routine.Title);
+        var payloadText = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
         var payloadModel = NormalizeOptionalCronPayloadString(routine.CronPayloadModel);
         var payloadThinking = NormalizeOptionalCronPayloadString(routine.CronPayloadThinking);
         var payloadTimeoutSeconds = routine.CronPayloadTimeoutSeconds;
@@ -11597,6 +13254,10 @@ public sealed partial class CommandService
     {
         var localNext = routine.NextRunUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
         var localLast = routine.LastRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
+        var scheduleSourceMode = NormalizeRoutineScheduleSourceMode(routine.ScheduleSourceMode, routine.Request);
+        var executionRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+        var explicitExecutionMode = NormalizeRoutineExecutionMode(routine.ExecutionMode);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(executionRequest, explicitExecutionMode);
         var scheduleKind = "daily";
         var timeOfDay = $"{routine.Hour:D2}:{routine.Minute:D2}";
         int? dayOfMonth = null;
@@ -11622,7 +13283,18 @@ public sealed partial class CommandService
             routine.Id,
             routine.Title,
             routine.Request,
+            explicitExecutionMode,
+            resolvedExecutionMode,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentProvider(routine.AgentProvider, routine.AgentModel) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentModel(routine.AgentModel) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeOptionalAgentMetaValue(routine.AgentStartUrl) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) : null,
+            resolvedExecutionMode == "browser_agent" && NormalizeRoutineAgentUsePlaywright(routine.AgentUsePlaywright),
             routine.ScheduleText,
+            scheduleSourceMode,
+            NormalizeRoutineRetryCount(routine.MaxRetries),
+            NormalizeRoutineRetryDelaySeconds(routine.RetryDelaySeconds),
+            NormalizeRoutineNotifyPolicy(routine.NotifyPolicy),
             routine.Enabled,
             localNext,
             localLast,
@@ -11639,6 +13311,237 @@ public sealed partial class CommandService
             weekdays,
             BuildRoutineRunSummaries(routine)
         );
+    }
+
+    private static bool TryResolveRoutineScheduleConfig(
+        string request,
+        string scheduleSourceMode,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        out RoutineScheduleConfig config,
+        out string error
+    )
+    {
+        if (string.Equals(scheduleSourceMode, "manual", StringComparison.Ordinal))
+        {
+            return TryBuildRoutineScheduleConfig(
+                scheduleKind,
+                scheduleTime,
+                weekdays,
+                dayOfMonth,
+                timezoneId,
+                out config,
+                out error
+            );
+        }
+
+        config = ResolveRoutineScheduleConfigFromRequest(request, timezoneId);
+        error = string.Empty;
+        return true;
+    }
+
+    private static RoutineScheduleConfig ResolveRoutineScheduleConfigFromRequest(string request, string? timezoneId)
+    {
+        if (TryParseRoutineScheduleConfigFromRequest(request, timezoneId, out var parsed))
+        {
+            return parsed;
+        }
+
+        var fallback = ParseDailySchedule(request);
+        return BuildDailyRoutineScheduleConfig(fallback.Hour, fallback.Minute, timezoneId ?? TimeZoneInfo.Local.Id);
+    }
+
+    private static bool TryParseRoutineScheduleConfigFromRequest(
+        string? request,
+        string? timezoneId,
+        out RoutineScheduleConfig config
+    )
+    {
+        config = BuildDailyRoutineScheduleConfig(8, 0, timezoneId ?? TimeZoneInfo.Local.Id);
+        var text = (request ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        var resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        var hour = 8;
+        var minute = 0;
+        var hasExplicitTime = TryExtractRoutineNaturalTime(text, out hour, out minute);
+
+        if (TryExtractRoutineMonthlyDay(text, out var dayOfMonth))
+        {
+            config = new RoutineScheduleConfig(
+                "monthly",
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay("monthly", hour, minute, resolvedTimezoneId, dayOfMonth, Array.Empty<int>()),
+                resolvedTimezoneId,
+                $"{minute} {hour} {dayOfMonth} * *",
+                dayOfMonth,
+                Array.Empty<int>()
+            );
+            return true;
+        }
+
+        if (TryExtractRoutineWeekdays(text, out var weekdays))
+        {
+            config = new RoutineScheduleConfig(
+                "weekly",
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay("weekly", hour, minute, resolvedTimezoneId, null, weekdays),
+                resolvedTimezoneId,
+                $"{minute} {hour} * * {string.Join(",", weekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}",
+                null,
+                weekdays
+            );
+            return true;
+        }
+
+        if (ContainsRoutineScheduleExpression(text) || hasExplicitTime)
+        {
+            config = BuildDailyRoutineScheduleConfig(hour, minute, resolvedTimezoneId);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractRoutineNaturalTime(string text, out int hour, out int minute)
+    {
+        hour = 8;
+        minute = 0;
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hhmm = Regex.Match(normalized, @"(?<!\d)(?<hour>\d{1,2})\s*:\s*(?<minute>\d{1,2})(?!\d)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (hhmm.Success
+            && int.TryParse(hhmm.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hhmmHour)
+            && int.TryParse(hhmm.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hhmmMinute))
+        {
+            hour = Math.Clamp(hhmmHour, 0, 23);
+            minute = Math.Clamp(hhmmMinute, 0, 59);
+            return true;
+        }
+
+        var korean = Regex.Match(
+            normalized,
+            @"(?:(?<period>아침|오전|오후|저녁|밤|새벽)\s*)?(?<hour>\d{1,2})\s*시(?:\s*(?:(?<minute>\d{1,2})\s*분|(?<half>반)))?",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!korean.Success
+            || !int.TryParse(korean.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedHour))
+        {
+            return false;
+        }
+
+        hour = Math.Clamp(parsedHour, 0, 23);
+        if (korean.Groups["half"].Success)
+        {
+            minute = 30;
+        }
+        else if (korean.Groups["minute"].Success
+                 && int.TryParse(korean.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedMinute))
+        {
+            minute = Math.Clamp(parsedMinute, 0, 59);
+        }
+        else
+        {
+            minute = 0;
+        }
+
+        var period = korean.Groups["period"].Value.Trim();
+        if ((period == "오후" || period == "저녁" || period == "밤") && hour < 12)
+        {
+            hour += 12;
+        }
+        else if ((period == "오전" || period == "아침" || period == "새벽") && hour == 12)
+        {
+            hour = 0;
+        }
+
+        return true;
+    }
+
+    private static bool TryExtractRoutineMonthlyDay(string text, out int dayOfMonth)
+    {
+        dayOfMonth = 1;
+        var match = Regex.Match(
+            text ?? string.Empty,
+            @"매(?:월|달)\s*(?<day>\d{1,2})\s*일(?:마다)?",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!match.Success
+            || !int.TryParse(match.Groups["day"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return false;
+        }
+
+        dayOfMonth = Math.Clamp(parsed, 1, 31);
+        return true;
+    }
+
+    private static bool TryExtractRoutineWeekdays(string text, out int[] weekdays)
+    {
+        weekdays = Array.Empty<int>();
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalized.Contains("평일", StringComparison.Ordinal))
+        {
+            weekdays = new[] { 1, 2, 3, 4, 5 };
+            return true;
+        }
+
+        if (normalized.Contains("주말", StringComparison.Ordinal))
+        {
+            weekdays = new[] { 6, 0 };
+            return true;
+        }
+
+        var collected = Regex.Matches(
+                normalized,
+                @"(?<day>[월화수목금토일])요일(?:마다)?",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            )
+            .Cast<Match>()
+            .Select(match => ParseRoutineWeekdayToken(match.Groups["day"].Value))
+            .Where(static value => value.HasValue)
+            .Select(static value => value!.Value)
+            .ToArray();
+
+        if (collected.Length == 0)
+        {
+            return false;
+        }
+
+        weekdays = NormalizeRoutineWeekdays(collected);
+        return weekdays.Length > 0;
+    }
+
+    private static int? ParseRoutineWeekdayToken(string token)
+    {
+        return (token ?? string.Empty).Trim() switch
+        {
+            "월" => 1,
+            "화" => 2,
+            "수" => 3,
+            "목" => 4,
+            "금" => 5,
+            "토" => 6,
+            "일" => 0,
+            _ => null
+        };
     }
 
     private static RoutineSchedule ParseDailySchedule(string request)
@@ -11838,6 +13741,46 @@ public sealed partial class CommandService
         return normalized;
     }
 
+    private static int NormalizeRoutineRetryCount(int? retryCount)
+    {
+        return Math.Clamp(retryCount ?? 1, 0, 5);
+    }
+
+    private static int NormalizeRoutineRetryDelaySeconds(int? retryDelaySeconds)
+    {
+        return Math.Clamp(retryDelaySeconds ?? 15, 0, 300);
+    }
+
+    private static string NormalizeRoutineNotifyPolicy(string? notifyPolicy)
+    {
+        var normalized = (notifyPolicy ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "on_change" => "on_change",
+            "error_only" => "error_only",
+            "never" => "never",
+            _ => "always"
+        };
+    }
+
+    private static bool IsRoutineRetryableStatus(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "error" or "timeout";
+    }
+
+    private static string ComputeRoutineOutputFingerprint(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        return Convert.ToHexString(bytes);
+    }
+
     private static bool RoutineMatchesSchedule(RoutineDefinition routine, RoutineScheduleConfig config)
     {
         return string.Equals(routine.ScheduleText, config.Display, StringComparison.Ordinal)
@@ -12007,7 +13950,7 @@ public sealed partial class CommandService
 
     private static IReadOnlyList<RoutineRunSummary> BuildRoutineRunSummaries(RoutineDefinition routine)
     {
-        return BuildCronRunEntries(routine)
+        return (routine.CronRunLog ?? new List<RoutineRunLogEntry>())
             .OrderByDescending(static entry => entry.Ts)
             .Take(20)
             .Select(entry => new RoutineRunSummary(
@@ -12016,8 +13959,21 @@ public sealed partial class CommandService
                     ? DateTimeOffset.FromUnixTimeMilliseconds(entry.RunAtMs.Value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
                     : "-",
                 string.IsNullOrWhiteSpace(entry.Status) ? "-" : entry.Status!,
+                string.IsNullOrWhiteSpace(entry.Source) ? (entry.Action ?? "-") : entry.Source!,
+                Math.Max(1, entry.AttemptCount),
                 entry.Summary ?? string.Empty,
                 string.IsNullOrWhiteSpace(entry.Error) ? null : entry.Error,
+                string.IsNullOrWhiteSpace(entry.TelegramStatus) ? null : entry.TelegramStatus,
+                string.IsNullOrWhiteSpace(entry.ArtifactPath) ? null : entry.ArtifactPath,
+                string.IsNullOrWhiteSpace(entry.AgentSessionId) ? null : entry.AgentSessionId,
+                string.IsNullOrWhiteSpace(entry.AgentRunId) ? null : entry.AgentRunId,
+                string.IsNullOrWhiteSpace(entry.AgentProvider) ? null : entry.AgentProvider,
+                string.IsNullOrWhiteSpace(entry.AgentModel) ? null : entry.AgentModel,
+                string.IsNullOrWhiteSpace(entry.ToolProfile) ? null : entry.ToolProfile,
+                string.IsNullOrWhiteSpace(entry.StartUrl) ? null : entry.StartUrl,
+                string.IsNullOrWhiteSpace(entry.FinalUrl) ? null : entry.FinalUrl,
+                string.IsNullOrWhiteSpace(entry.PageTitle) ? null : entry.PageTitle,
+                string.IsNullOrWhiteSpace(entry.ScreenshotPath) ? null : entry.ScreenshotPath,
                 entry.DurationMs,
                 FormatRoutineDuration(entry.DurationMs),
                 entry.NextRunAtMs.HasValue
@@ -12049,11 +14005,110 @@ public sealed partial class CommandService
         return $"{minutes:0.0}m";
     }
 
+    private async Task<(string Language, string Code, string RawText)> TryRepairRoutineCodeAsync(
+        string objective,
+        string rawText,
+        string model,
+        string request,
+        RoutineSchedule schedule,
+        CancellationToken cancellationToken
+    )
+    {
+        var truncatedRaw = (rawText ?? string.Empty).Trim();
+        if (truncatedRaw.Length > 5000)
+        {
+            truncatedRaw = truncatedRaw[..5000] + "\n...(truncated)...";
+        }
+
+        var repairPrompt = $"""
+                           {objective}
+
+                           [검토 결과]
+                           이전 초안은 잘못되었습니다.
+                           - 코드 내부에서 실행 시각/요일/날짜를 다시 판단하거나 대기 로직을 넣었습니다.
+                           - 루틴 엔진이 이미 스케줄을 처리하므로, 코드는 호출 즉시 작업을 수행해야 합니다.
+
+                           [수정 지시]
+                           - 시간/요일/date/datetime/weekday/sleep/while true/cron 관련 실행 조건을 모두 제거하세요.
+                           - 한 번 실행되면 즉시 작업을 수행하고 종료하세요.
+                           - stdout에 실제 결과를 남기세요.
+                           - 이전 초안을 참조하되, 잘못된 스케줄 제어 로직은 버리세요.
+
+                           [이전 초안]
+                           {truncatedRaw}
+                           """;
+
+        var regenerated = await GenerateByProviderSafeAsync(
+            "groq",
+            model,
+            repairPrompt,
+            cancellationToken,
+            Math.Min(_config.CodingMaxOutputTokens, 4200)
+        );
+        var reparsed = ParseCodeCandidate(regenerated.Text, "bash");
+        var repairedLanguage = reparsed.Language is "bash" or "python" ? reparsed.Language : "bash";
+        var repairedCode = string.IsNullOrWhiteSpace(reparsed.Code)
+            ? BuildFallbackRoutineCode(request, schedule)
+            : EnsureRoutineShebang(reparsed.Code, repairedLanguage);
+
+        if (string.IsNullOrWhiteSpace(reparsed.Code) || RoutineCodeNeedsRepair(repairedLanguage, repairedCode))
+        {
+            return ("bash", BuildFallbackRoutineCode(request, schedule), regenerated.Text);
+        }
+
+        return (repairedLanguage, repairedCode, regenerated.Text);
+    }
+
+    private static bool RoutineCodeNeedsRepair(string language, string code)
+    {
+        var normalizedLanguage = (language ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedCode = (code ?? string.Empty).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedCode))
+        {
+            return true;
+        }
+
+        var hasScheduleGate =
+            normalizedCode.Contains("current_hour", StringComparison.Ordinal)
+            || normalizedCode.Contains("current_minute", StringComparison.Ordinal)
+            || normalizedCode.Contains("day_of_week", StringComparison.Ordinal)
+            || normalizedCode.Contains("schedule.every", StringComparison.Ordinal)
+            || normalizedCode.Contains("crontab", StringComparison.Ordinal)
+            || normalizedCode.Contains("apscheduler", StringComparison.Ordinal)
+            || normalizedCode.Contains("while true", StringComparison.Ordinal)
+            || normalizedCode.Contains("sleep 60", StringComparison.Ordinal)
+            || normalizedCode.Contains("time.sleep(", StringComparison.Ordinal)
+            || normalizedCode.Contains("datetime.now()", StringComparison.Ordinal)
+            || normalizedCode.Contains("weekday()", StringComparison.Ordinal)
+            || normalizedCode.Contains("date +%u", StringComparison.Ordinal)
+            || normalizedCode.Contains("date +%w", StringComparison.Ordinal)
+            || normalizedCode.Contains("top -bn1", StringComparison.Ordinal);
+
+        if (hasScheduleGate)
+        {
+            return true;
+        }
+
+        if (normalizedLanguage == "bash")
+        {
+            return !normalizedCode.Contains("echo ", StringComparison.Ordinal)
+                && !normalizedCode.Contains("printf ", StringComparison.Ordinal)
+                && !normalizedCode.Contains("cat <<", StringComparison.Ordinal);
+        }
+
+        if (normalizedLanguage == "python")
+        {
+            return !normalizedCode.Contains("print(", StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
     private static string WriteRoutineScript(string runDir, string language, string code)
     {
         var scriptFileName = string.Equals(language, "python", StringComparison.OrdinalIgnoreCase) ? "run.py" : "run.sh";
         var scriptPath = Path.Combine(runDir, scriptFileName);
-        File.WriteAllText(scriptPath, code, Encoding.UTF8);
+        File.WriteAllText(scriptPath, code, new UTF8Encoding(false));
         if (!OperatingSystem.IsWindows())
         {
             try
