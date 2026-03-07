@@ -1,0 +1,41 @@
+namespace OmniNode.Middleware;
+
+public sealed class ConversationApplicationService : IConversationApplicationService
+{
+    private readonly CommandService _inner;
+
+    public ConversationApplicationService(CommandService inner)
+    {
+        _inner = inner;
+    }
+
+    public IReadOnlyList<ConversationThreadSummary> ListConversations(string scope, string mode) => _inner.ListConversations(scope, mode);
+
+    public ConversationThreadView CreateConversation(
+        string scope,
+        string mode,
+        string? title,
+        string? project,
+        string? category,
+        IReadOnlyList<string>? tags
+    )
+    {
+        return _inner.CreateConversation(scope, mode, title, project, category, tags);
+    }
+
+    public ConversationThreadView? GetConversation(string conversationId) => _inner.GetConversation(conversationId);
+    public bool DeleteConversation(string conversationId) => _inner.DeleteConversation(conversationId);
+
+    public ConversationThreadView UpdateConversationMetadata(
+        string conversationId,
+        string? title,
+        string? project,
+        string? category,
+        IReadOnlyList<string>? tags
+    )
+    {
+        return _inner.UpdateConversationMetadata(conversationId, title, project, category, tags);
+    }
+
+    public WorkspaceFilePreview? ReadWorkspaceFile(string filePath, int maxChars = 120_000) => _inner.ReadWorkspaceFile(filePath, maxChars);
+}

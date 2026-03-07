@@ -1,0 +1,123 @@
+namespace OmniNode.Middleware;
+
+public sealed partial class CommandService
+{
+    public SettingsSnapshot GetSettingsSnapshot()
+    {
+        return _runtimeSettings.GetSnapshot();
+    }
+
+    public string UpdateTelegramCredentials(string? botToken, string? chatId, bool persist)
+    {
+        var result = _runtimeSettings.UpdateTelegram(botToken, chatId, persist);
+        _auditLogger.Log("web", "update_telegram_credentials", "ok", result);
+        return result;
+    }
+
+    public string UpdateLlmCredentials(
+        string? groqApiKey,
+        string? geminiApiKey,
+        string? cerebrasApiKey,
+        string? codexApiKey,
+        bool persist
+    )
+    {
+        var result = _runtimeSettings.UpdateLlmKeys(
+            groqApiKey,
+            geminiApiKey,
+            cerebrasApiKey,
+            codexApiKey,
+            persist
+        );
+        _auditLogger.Log("web", "update_llm_credentials", "ok", result);
+        return result;
+    }
+
+    public string DeleteTelegramCredentials(bool deletePersisted)
+    {
+        var result = _runtimeSettings.DeleteTelegramCredentials(deletePersisted);
+        _auditLogger.Log("web", "delete_telegram_credentials", "ok", result);
+        return result;
+    }
+
+    public string DeleteLlmCredentials(bool deletePersisted)
+    {
+        var result = _runtimeSettings.DeleteLlmCredentials(deletePersisted);
+        _auditLogger.Log("web", "delete_llm_credentials", "ok", result);
+        return result;
+    }
+
+    public GeminiUsage GetGeminiUsageSnapshot()
+    {
+        return _llmRouter.GetGeminiUsageSnapshot();
+    }
+
+    public Task<CopilotPremiumUsageSnapshot> GetCopilotPremiumUsageSnapshotAsync(
+        CancellationToken cancellationToken,
+        bool forceRefresh = false
+    )
+    {
+        return _copilotWrapper.GetPremiumUsageSnapshotAsync(cancellationToken, forceRefresh);
+    }
+
+    public async Task<string> SendTelegramTestAsync(CancellationToken cancellationToken)
+    {
+        if (!_runtimeSettings.HasTelegramCredentials())
+        {
+            return "telegram credentials are not set";
+        }
+
+        var sent = await _telegramClient.SendMessageAsync("[Omni-node] Telegram 연동 테스트 메시지", cancellationToken);
+        return sent ? "telegram test message sent" : "telegram send failed. check bot token/chat id";
+    }
+
+    public Task<string> StartCopilotLoginAsync(CancellationToken cancellationToken)
+    {
+        return _copilotWrapper.StartLoginAsync(cancellationToken);
+    }
+
+    public Task<string> StartCodexLoginAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.StartLoginAsync(cancellationToken);
+    }
+
+    public Task<string> GetMetricsAsync(CancellationToken cancellationToken)
+    {
+        return _coreClient.GetMetricsAsync(cancellationToken);
+    }
+
+    public Task<CopilotStatus> GetCopilotStatusAsync(CancellationToken cancellationToken)
+    {
+        return _copilotWrapper.GetStatusAsync(cancellationToken);
+    }
+
+    public Task<CodexStatus> GetCodexStatusAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.GetStatusAsync(cancellationToken);
+    }
+
+    public Task<string> LogoutCodexAsync(CancellationToken cancellationToken)
+    {
+        return _codexWrapper.LogoutAsync(cancellationToken);
+    }
+
+    public Task<IReadOnlyList<CopilotModelInfo>> GetCopilotModelsAsync(CancellationToken cancellationToken)
+    {
+        return _copilotWrapper.GetModelsAsync(cancellationToken);
+    }
+
+    public string GetSelectedCopilotModel()
+    {
+        return _copilotWrapper.GetSelectedModel();
+    }
+
+    public IReadOnlyDictionary<string, CopilotUsage> GetCopilotLocalUsageSnapshot()
+    {
+        return _copilotWrapper.GetUsageSnapshot();
+    }
+
+    public bool TrySetSelectedCopilotModel(string modelId)
+    {
+        return _copilotWrapper.TrySetSelectedModel(modelId);
+    }
+}

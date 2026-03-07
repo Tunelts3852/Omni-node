@@ -5,8 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "npm run test:dashboard && npm run test:middleware",
-    "test:dashboard": "node --check omninode-dashboard/app.js && node --check omninode-dashboard/modules/dashboard-constants.js && node --check omninode-dashboard/modules/routine-utils.js",
-    "test:middleware": "dotnet build omninode-middleware/OmniNode.Middleware.csproj"
+    "test:dashboard": "node --check apps/omninode-dashboard/app.js && node --check apps/omninode-dashboard/modules/dashboard-constants.js && node --check apps/omninode-dashboard/modules/routine-utils.js && node --check apps/omninode-dashboard/modules/settings-state.js && node --check apps/omninode-dashboard/modules/chat-state.js && node --check apps/omninode-dashboard/modules/coding-state.js && node --check apps/omninode-dashboard/modules/routine-state.js && node --check apps/omninode-dashboard/modules/ws-client.js && node --check apps/omninode-dashboard/modules/dashboard-message-handlers.js && node --check apps/omninode-dashboard/modules/dashboard-workspace-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-thread-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-composer-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-sidebar-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-routine-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-ops-renderers.js && node --check apps/omninode-dashboard/modules/dashboard-settings-renderers.js",
+    "test:middleware": "dotnet build apps/omninode-middleware/OmniNode.Middleware.csproj"
   },
   "keywords": [],
   "author": "",

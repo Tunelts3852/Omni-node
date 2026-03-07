@@ -1,0 +1,3277 @@
+using System.Diagnostics;
+using System.Globalization;
+using System.Net;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+
+namespace OmniNode.Middleware;
+
+public sealed partial class CommandService
+{
+    private Task<string?> TryHandleTelegramProfileCommandAsync(string text, CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        var command = tokens[0].ToLowerInvariant();
+        if (command != "/talk" && command != "/code")
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        if (command == "/code" && tokens.Length >= 2)
+        {
+            var second = tokens[1].Trim().ToLowerInvariant();
+            if (second != "low" && second != "high" && second != "help")
+            {
+                return Task.FromResult<string?>(null);
+            }
+        }
+
+        if (tokens.Length >= 2 && tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult<string?>(
+                "usage: /talk [low|high] 또는 /code [low|high]\n"
+                + "- /talk: 대화 탭 권장 환경(오케스트레이션)\n"
+                + "- /code: 코딩 탭 권장 환경(오케스트레이션)"
+            );
+        }
+
+        var requestedThinking = tokens.Length >= 2 ? NormalizeThinkingLevel(tokens[1], "auto") : "auto";
+        lock (_telegramLlmLock)
+        {
+            if (command == "/talk")
+            {
+                ApplyTelegramTalkDefaults(requestedThinking);
+                return Task.FromResult<string?>(
+                    $"ok: profile=talk mode={_telegramLlmPreferences.Mode} thinking={_telegramLlmPreferences.TalkThinkingLevel} orchestration={_telegramLlmPreferences.OrchestrationProvider}:{_telegramLlmPreferences.OrchestrationModel}"
+                );
+            }
+
+            ApplyTelegramCodeDefaults(requestedThinking);
+            return Task.FromResult<string?>(
+                $"ok: profile=code mode={_telegramLlmPreferences.Mode} thinking={_telegramLlmPreferences.CodeThinkingLevel} orchestration={_telegramLlmPreferences.OrchestrationProvider}:{_telegramLlmPreferences.OrchestrationModel}"
+            );
+        }
+    }
+
+    private void ApplyTelegramTalkDefaults(string requestedThinking)
+    {
+        var fastModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
+        _telegramLlmPreferences.Profile = "talk";
+        _telegramLlmPreferences.Mode = "orchestration";
+        _telegramLlmPreferences.SingleProvider = "groq";
+        _telegramLlmPreferences.SingleModel = fastModel;
+        _telegramLlmPreferences.AutoGroqComplexUpgrade = true;
+        _telegramLlmPreferences.OrchestrationProvider = "gemini";
+        _telegramLlmPreferences.OrchestrationModel = _config.GeminiModel;
+        _telegramLlmPreferences.MultiGroqModel = fastModel;
+        _telegramLlmPreferences.MultiCopilotModel = DefaultCopilotModel;
+        _telegramLlmPreferences.MultiCerebrasModel = _config.CerebrasModel;
+        _telegramLlmPreferences.MultiSummaryProvider = "gemini";
+        _telegramLlmPreferences.TalkThinkingLevel = NormalizeThinkingLevel(requestedThinking, "low");
+    }
+
+    private void ApplyTelegramCodeDefaults(string requestedThinking)
+    {
+        var fastModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
+        _telegramLlmPreferences.Profile = "code";
+        _telegramLlmPreferences.Mode = "orchestration";
+        _telegramLlmPreferences.SingleProvider = "copilot";
+        _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
+        _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+        _telegramLlmPreferences.OrchestrationProvider = "gemini";
+        _telegramLlmPreferences.OrchestrationModel = _config.GeminiModel;
+        _telegramLlmPreferences.MultiGroqModel = fastModel;
+        _telegramLlmPreferences.MultiCopilotModel = DefaultCopilotModel;
+        _telegramLlmPreferences.MultiCerebrasModel = _config.CerebrasModel;
+        _telegramLlmPreferences.MultiSummaryProvider = "gemini";
+        _telegramLlmPreferences.CodeThinkingLevel = NormalizeThinkingLevel(requestedThinking, "high");
+    }
+
+    private static string NormalizeThinkingLevel(string? value, string fallback)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized == "low" || normalized == "high")
+        {
+            return normalized;
+        }
+
+        return fallback;
+    }
+
+    private async Task<string?> TryHandleTelegramLlmControlCommandAsync(string text, CancellationToken cancellationToken)
+    {
+        if (!text.StartsWith("/llm", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
+        {
+            return """
+                   사용법
+                   /talk [low|high]
+                   /code [low|high]
+                   /model <groq|gemini|copilot|cerebras>
+                   /llm status
+                   /llm models [groq|gemini|copilot|cerebras|all]
+                   /llm usage
+                   /llm set <groq|copilot> <model-id>
+                   /llm mode <single|orchestration|multi>
+                   /llm single provider <groq|gemini|copilot|cerebras>
+                   /llm single model <model-id>
+                   /llm orchestration provider <auto|groq|gemini|copilot|cerebras>
+                   /llm orchestration model <model-id>
+                   /llm multi groq <model-id>
+                   /llm multi copilot <model-id>
+                   /llm multi cerebras <model-id>
+                   /llm multi summary <auto|groq|gemini|copilot|cerebras>
+                   """;
+        }
+
+        if (tokens[1].Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            TelegramLlmPreferences snapshot;
+            lock (_telegramLlmLock)
+            {
+                snapshot = _telegramLlmPreferences.Clone();
+            }
+
+            var quota = GetTelegramUpgradeQuotaSnapshot();
+            var copilotStatus = await _copilotWrapper.GetStatusAsync(cancellationToken);
+            var toolSnapshot = _toolRegistry.GetAvailabilitySnapshot();
+            var enabledTools = toolSnapshot
+                .Where(item => item.Enabled)
+                .Select(item => item.ToolId)
+                .ToArray();
+            var pendingTools = toolSnapshot
+                .Where(item => !item.Enabled)
+                .Select(item => $"{item.ToolId}({item.Reason})")
+                .ToArray();
+
+            var enabledText = enabledTools.Length == 0 ? "(none)" : string.Join(", ", enabledTools);
+            var pendingText = pendingTools.Length == 0 ? "(none)" : string.Join(", ", pendingTools);
+
+            return $"""
+                    [Telegram LLM 설정]
+                    profile={snapshot.Profile}
+                    mode={snapshot.Mode}
+                    single={snapshot.SingleProvider}:{snapshot.SingleModel}
+                    single.groq_auto_upgrade={(snapshot.AutoGroqComplexUpgrade ? "on" : "off")}
+                    orchestration={snapshot.OrchestrationProvider}:{snapshot.OrchestrationModel}
+                    multi.groq={snapshot.MultiGroqModel}
+                    multi.copilot={snapshot.MultiCopilotModel}
+                    multi.cerebras={snapshot.MultiCerebrasModel}
+                    multi.summary={snapshot.MultiSummaryProvider}
+                    thinking.talk={snapshot.TalkThinkingLevel}
+                    thinking.code={snapshot.CodeThinkingLevel}
+                    qwen_upgrade_daily={quota.Used}/{quota.Cap} (day={quota.DayKey})
+                    copilot={copilotStatus.Mode} / {(copilotStatus.Authenticated ? "authenticated" : "unauthenticated")}
+                    tools.total={toolSnapshot.Count}
+                    tools.enabled={enabledText}
+                    tools.pending={pendingText}
+                    """;
+        }
+
+        if (tokens[1].Equals("mode", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tokens.Length < 3)
+            {
+                return "usage: /llm mode <single|orchestration|multi>";
+            }
+
+            var mode = tokens[2].ToLowerInvariant();
+            if (mode != "single" && mode != "orchestration" && mode != "multi")
+            {
+                return "invalid mode. use single|orchestration|multi";
+            }
+
+            lock (_telegramLlmLock)
+            {
+                _telegramLlmPreferences.Mode = mode;
+            }
+
+            return $"ok: telegram llm mode={mode}";
+        }
+
+        if (tokens[1].Equals("models", StringComparison.OrdinalIgnoreCase))
+        {
+            var target = tokens.Length >= 3 ? tokens[2].Trim().ToLowerInvariant() : "all";
+            return await BuildTelegramModelsReportAsync(target, cancellationToken);
+        }
+
+        if (tokens[1].Equals("usage", StringComparison.OrdinalIgnoreCase)
+            || tokens[1].Equals("limits", StringComparison.OrdinalIgnoreCase)
+            || tokens[1].Equals("quota", StringComparison.OrdinalIgnoreCase))
+        {
+            return await BuildTelegramUsageReportAsync(cancellationToken);
+        }
+
+        if (tokens[1].Equals("set", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /llm set <groq|copilot> <model-id>";
+            }
+
+            var provider = tokens[2].Trim().ToLowerInvariant();
+            var modelId = string.Join(' ', tokens.Skip(3)).Trim();
+            if (provider == "groq")
+            {
+                return await SetGroqModelForTelegramAsync(modelId, cancellationToken);
+            }
+
+            if (provider == "copilot")
+            {
+                return await SetCopilotModelForTelegramAsync(modelId, cancellationToken);
+            }
+
+            return "usage: /llm set <groq|copilot> <model-id>";
+        }
+
+        if (tokens[1].Equals("single", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /llm single provider <groq|gemini|copilot|cerebras> | /llm single model <model-id>";
+            }
+
+            if (tokens[2].Equals("provider", StringComparison.OrdinalIgnoreCase))
+            {
+                var requested = tokens[3].Trim().ToLowerInvariant();
+                if (requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
+                {
+                    return "invalid provider. use groq|gemini|copilot|cerebras";
+                }
+
+                var provider = NormalizeProvider(requested, allowAuto: false);
+                lock (_telegramLlmLock)
+                {
+                    _telegramLlmPreferences.SingleProvider = provider;
+                    if (provider == "groq")
+                    {
+                        _telegramLlmPreferences.SingleModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
+                        _telegramLlmPreferences.AutoGroqComplexUpgrade = true;
+                    }
+                    else if (provider == "copilot")
+                    {
+                        _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
+                        _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                    }
+                    else
+                    {
+                        _telegramLlmPreferences.SingleModel = provider == "cerebras"
+                            ? _config.CerebrasModel
+                            : _config.GeminiModel;
+                        _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                    }
+                }
+
+                return $"ok: telegram single provider={provider}";
+            }
+
+            if (tokens[2].Equals("model", StringComparison.OrdinalIgnoreCase))
+            {
+                var model = string.Join(' ', tokens.Skip(3)).Trim();
+                if (string.IsNullOrWhiteSpace(model))
+                {
+                    return "usage: /llm single model <model-id>";
+                }
+
+                lock (_telegramLlmLock)
+                {
+                    _telegramLlmPreferences.SingleModel = model;
+                    if (_telegramLlmPreferences.SingleProvider == "groq")
+                    {
+                        _telegramLlmPreferences.AutoGroqComplexUpgrade = model.Equals(DefaultGroqFastModel, StringComparison.OrdinalIgnoreCase);
+                    }
+                }
+
+                return $"ok: telegram single model={model}";
+            }
+
+            return "usage: /llm single provider <groq|gemini|copilot|cerebras> | /llm single model <model-id>";
+        }
+
+        if (tokens[1].Equals("orchestration", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /llm orchestration provider <auto|groq|gemini|copilot|cerebras> | /llm orchestration model <model-id>";
+            }
+
+            if (tokens[2].Equals("provider", StringComparison.OrdinalIgnoreCase))
+            {
+                var requested = tokens[3].Trim().ToLowerInvariant();
+                if (requested != "auto" && requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
+                {
+                    return "invalid provider. use auto|groq|gemini|copilot|cerebras";
+                }
+
+                var provider = NormalizeProvider(requested, allowAuto: true);
+                lock (_telegramLlmLock)
+                {
+                    _telegramLlmPreferences.OrchestrationProvider = provider;
+                }
+
+                return $"ok: telegram orchestration provider={provider}";
+            }
+
+            if (tokens[2].Equals("model", StringComparison.OrdinalIgnoreCase))
+            {
+                var model = string.Join(' ', tokens.Skip(3)).Trim();
+                if (string.IsNullOrWhiteSpace(model))
+                {
+                    return "usage: /llm orchestration model <model-id>";
+                }
+
+                lock (_telegramLlmLock)
+                {
+                    _telegramLlmPreferences.OrchestrationModel = model;
+                }
+
+                return $"ok: telegram orchestration model={model}";
+            }
+
+            return "usage: /llm orchestration provider <auto|groq|gemini|copilot|cerebras> | /llm orchestration model <model-id>";
+        }
+
+        if (tokens[1].Equals("multi", StringComparison.OrdinalIgnoreCase))
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+            }
+
+            var key = tokens[2].ToLowerInvariant();
+            var value = string.Join(' ', tokens.Skip(3)).Trim();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+            }
+
+            lock (_telegramLlmLock)
+            {
+                if (key == "groq")
+                {
+                    _telegramLlmPreferences.MultiGroqModel = value;
+                    return $"ok: telegram multi groq={value}";
+                }
+
+                if (key == "copilot")
+                {
+                    _telegramLlmPreferences.MultiCopilotModel = value;
+                    return $"ok: telegram multi copilot={value}";
+                }
+
+                if (key == "cerebras")
+                {
+                    _telegramLlmPreferences.MultiCerebrasModel = value;
+                    return $"ok: telegram multi cerebras={value}";
+                }
+
+                if (key == "summary")
+                {
+                    var requested = value.Trim().ToLowerInvariant();
+                    if (requested != "auto" && requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
+                    {
+                        return "invalid summary provider. use auto|groq|gemini|copilot|cerebras";
+                    }
+
+                    _telegramLlmPreferences.MultiSummaryProvider = NormalizeProvider(requested, allowAuto: true);
+                    return $"ok: telegram multi summary={_telegramLlmPreferences.MultiSummaryProvider}";
+                }
+            }
+
+            return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+        }
+
+        return "unknown /llm command. use /llm help";
+    }
+
+    private Task<string?> TryHandleTelegramQuickModelCommandAsync(string text, CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+        if (!text.StartsWith("/model", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult<string?>(null);
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length < 2)
+        {
+            return Task.FromResult<string?>("usage: /model <groq|gemini|copilot|cerebras>");
+        }
+
+        var key = tokens[1].Trim().ToLowerInvariant();
+        lock (_telegramLlmLock)
+        {
+            _telegramLlmPreferences.Profile = "default";
+            _telegramLlmPreferences.Mode = "single";
+            if (key == "groq")
+            {
+                _telegramLlmPreferences.SingleProvider = "groq";
+                _telegramLlmPreferences.SingleModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
+                _telegramLlmPreferences.AutoGroqComplexUpgrade = true;
+                return Task.FromResult<string?>($"ok: single=groq:{_telegramLlmPreferences.SingleModel}");
+            }
+
+            if (key == "gemini")
+            {
+                _telegramLlmPreferences.SingleProvider = "gemini";
+                _telegramLlmPreferences.SingleModel = _config.GeminiModel;
+                _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                return Task.FromResult<string?>($"ok: single=gemini:{_telegramLlmPreferences.SingleModel}");
+            }
+
+            if (key == "copilot")
+            {
+                _telegramLlmPreferences.SingleProvider = "copilot";
+                _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
+                _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                return Task.FromResult<string?>($"ok: single=copilot:{_telegramLlmPreferences.SingleModel}");
+            }
+
+            if (key == "cerebras")
+            {
+                _telegramLlmPreferences.SingleProvider = "cerebras";
+                _telegramLlmPreferences.SingleModel = _config.CerebrasModel;
+                _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                return Task.FromResult<string?>($"ok: single=cerebras:{_telegramLlmPreferences.SingleModel}");
+            }
+        }
+
+        return Task.FromResult<string?>("usage: /model <groq|gemini|copilot|cerebras>");
+    }
+
+    private async Task<string?> TryHandleTelegramNaturalControlCommandAsync(string text, CancellationToken cancellationToken)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var lowered = normalized.ToLowerInvariant();
+        var pseudoCommand = TryBuildTelegramNaturalPseudoCommand(normalized, lowered);
+        if (!string.IsNullOrWhiteSpace(pseudoCommand))
+        {
+            var pseudoResult = await ExecuteTelegramPseudoCommandAsync(pseudoCommand, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(pseudoResult))
+            {
+                return pseudoResult;
+            }
+        }
+
+        if (ContainsAny(lowered, "모델 목록", "모델 보여", "모델 리스트"))
+        {
+            var target = ContainsAny(lowered, "groq", "그록")
+                ? "groq"
+                : ContainsAny(lowered, "copilot", "코파일럿")
+                    ? "copilot"
+                    : ContainsAny(lowered, "cerebras", "세레브라스", "세레브라")
+                        ? "cerebras"
+                    : "all";
+            return await BuildTelegramModelsReportAsync(target, cancellationToken);
+        }
+
+        if (ContainsAny(lowered, "사용량", "과금", "quota", "한도", "토큰 잔여", "요청 잔여"))
+        {
+            return await BuildTelegramUsageReportAsync(cancellationToken);
+        }
+
+        var helpTopic = ExtractHelpTopicFromNaturalText(lowered);
+        if (helpTopic != null)
+        {
+            return BuildTelegramHelpText(helpTopic);
+        }
+
+        var setGroq = Regex.Match(normalized, @"(?i)groq\s*모델\s*([a-zA-Z0-9._/\-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)");
+        if (setGroq.Success)
+        {
+            return await SetGroqModelForTelegramAsync(setGroq.Groups[1].Value, cancellationToken);
+        }
+
+        var setCopilot = Regex.Match(normalized, @"(?i)(?:copilot|코파일럿)\s*모델\s*([a-zA-Z0-9._/\-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)");
+        if (setCopilot.Success)
+        {
+            return await SetCopilotModelForTelegramAsync(setCopilot.Groups[1].Value, cancellationToken);
+        }
+
+        return null;
+    }
+
+    private async Task<string?> ExecuteTelegramPseudoCommandAsync(string pseudoCommand, CancellationToken cancellationToken)
+    {
+        var command = (pseudoCommand ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return null;
+        }
+
+        if (command.StartsWith("/help", StringComparison.OrdinalIgnoreCase) || command.Equals("/start", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildTelegramHelpText(ParseHelpTopicFromInput(command));
+        }
+
+        if (command.StartsWith("/talk", StringComparison.OrdinalIgnoreCase) || command.StartsWith("/code", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramProfileCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/model", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramQuickModelCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/llm", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramLlmControlCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/memory", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramMemoryCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/routine", StringComparison.OrdinalIgnoreCase)
+            || command.StartsWith("/routines", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleRoutineCommandAsync(command, "telegram", cancellationToken);
+        }
+
+        if (command.Equals("/metrics", StringComparison.OrdinalIgnoreCase))
+        {
+            var metrics = await _coreClient.GetMetricsAsync(cancellationToken);
+            RecordEvent($"telegram:natural:{command}");
+            _auditLogger.Log("telegram", "metrics", "ok", "natural_control");
+            return metrics;
+        }
+
+        if (TryParseKillCommand(command, out var pid))
+        {
+            var guard = await ValidateKillTargetAsync(pid, "telegram", cancellationToken);
+            if (!guard.Allowed)
+            {
+                _auditLogger.Log("telegram", "kill", "deny", $"pid={pid} reason={guard.Reason} natural_control");
+                return $"kill denied: {guard.Reason}";
+            }
+
+            var result = await _coreClient.KillAsync(pid, cancellationToken);
+            RecordEvent($"telegram:natural:{command}");
+            _auditLogger.Log("telegram", "kill", "ok", $"pid={pid} natural_control");
+            return result;
+        }
+
+        return null;
+    }
+
+    private static string? TryBuildTelegramNaturalPseudoCommand(string normalized, string lowered)
+    {
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        var commandLike = Regex.Match(normalized, @"(?i)^(help|start|talk|code|model|llm|memory|routine|routines|metrics|kill)\b(.*)$");
+        if (commandLike.Success)
+        {
+            var head = commandLike.Groups[1].Value.ToLowerInvariant();
+            var tail = commandLike.Groups[2].Value;
+            return "/" + head + tail;
+        }
+
+        if (ContainsAny(lowered, "대화 프리셋", "대화 프로필", "talk 모드", "대화 탭 환경"))
+        {
+            var thinking = ExtractThinkingLevelFromNaturalText(lowered);
+            return thinking == null ? "/talk" : $"/talk {thinking}";
+        }
+
+        if (ContainsAny(lowered, "코딩 프리셋", "코딩 프로필", "code 모드", "코딩 탭 환경"))
+        {
+            var thinking = ExtractThinkingLevelFromNaturalText(lowered);
+            return thinking == null ? "/code" : $"/code {thinking}";
+        }
+
+        if (ContainsAny(lowered, "llm 단일 모드", "단일 모드로", "single 모드", "single mode"))
+        {
+            return "/llm mode single";
+        }
+
+        if (ContainsAny(lowered, "llm 오케스트레이션 모드", "오케스트레이션 모드로", "orchestration mode", "orchestration 모드"))
+        {
+            return "/llm mode orchestration";
+        }
+
+        if (ContainsAny(lowered, "llm 다중 모드", "다중 모드로", "멀티 모드로", "multi mode", "multi 모드"))
+        {
+            return "/llm mode multi";
+        }
+
+        if (ContainsAny(lowered, "메모리 초기화", "메모리 비우기", "메모리 삭제", "메모리 지워"))
+        {
+            return "/memory clear";
+        }
+
+        if (ContainsAny(lowered, "단일 제공자", "single provider", "single 제공자", "단일 provider"))
+        {
+            var provider = ExtractProviderAliasFromNaturalText(lowered, allowAuto: false);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/llm single provider {provider}";
+            }
+        }
+
+        if (ContainsAny(lowered, "오케스트레이션 제공자", "orchestration provider", "집계 제공자", "집계 provider"))
+        {
+            var provider = ExtractProviderAliasFromNaturalText(lowered, allowAuto: true);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/llm orchestration provider {provider}";
+            }
+        }
+
+        if (ContainsAny(lowered, "다중 요약 제공자", "multi summary provider", "요약 제공자", "summary provider"))
+        {
+            var provider = ExtractProviderAliasFromNaturalText(lowered, allowAuto: true);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/llm multi summary {provider}";
+            }
+        }
+
+        var singleProviderSwitch = Regex.Match(lowered, @"(?:단일|single).*(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라).*(바꿔|변경|설정)");
+        if (singleProviderSwitch.Success)
+        {
+            var provider = ExtractProviderAliasFromNaturalText(singleProviderSwitch.Groups[1].Value, allowAuto: false);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/llm single provider {provider}";
+            }
+        }
+
+        var orchestrationProviderSwitch = Regex.Match(lowered, @"(?:오케스트레이션|orchestration|집계).*(auto|자동|groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라).*(바꿔|변경|설정)");
+        if (orchestrationProviderSwitch.Success)
+        {
+            var provider = ExtractProviderAliasFromNaturalText(orchestrationProviderSwitch.Groups[1].Value, allowAuto: true);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/llm orchestration provider {provider}";
+            }
+        }
+
+        var singleModel = Regex.Match(normalized, @"(?i)(?:단일|single)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (singleModel.Success)
+        {
+            return $"/llm single model {singleModel.Groups[1].Value}";
+        }
+
+        var orchestrationModel = Regex.Match(normalized, @"(?i)(?:오케스트레이션|orchestration)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (orchestrationModel.Success)
+        {
+            return $"/llm orchestration model {orchestrationModel.Groups[1].Value}";
+        }
+
+        var multiGroqModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*groq\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (multiGroqModel.Success)
+        {
+            return $"/llm multi groq {multiGroqModel.Groups[1].Value}";
+        }
+
+        var multiCopilotModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*(?:copilot|코파일럿)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (multiCopilotModel.Success)
+        {
+            return $"/llm multi copilot {multiCopilotModel.Groups[1].Value}";
+        }
+
+        var multiCerebrasModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*(?:cerebras|세레브라스|세레브라)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (multiCerebrasModel.Success)
+        {
+            return $"/llm multi cerebras {multiCerebrasModel.Groups[1].Value}";
+        }
+
+        if (ContainsAny(lowered, "루틴 목록", "루틴 리스트", "routines 목록"))
+        {
+            return "/routine list";
+        }
+
+        var routineRun = Regex.Match(normalized, @"(?i)루틴\s*(?:즉시\s*)?(?:실행|run)\s*([a-z0-9\-]+)");
+        if (routineRun.Success)
+        {
+            return $"/routine run {routineRun.Groups[1].Value}";
+        }
+
+        var routineOn = Regex.Match(normalized, @"(?i)루틴\s*(?:켜|활성화|on)\s*([a-z0-9\-]+)");
+        if (routineOn.Success)
+        {
+            return $"/routine on {routineOn.Groups[1].Value}";
+        }
+
+        var routineOff = Regex.Match(normalized, @"(?i)루틴\s*(?:꺼|비활성화|off|중지)\s*([a-z0-9\-]+)");
+        if (routineOff.Success)
+        {
+            return $"/routine off {routineOff.Groups[1].Value}";
+        }
+
+        var routineDelete = Regex.Match(normalized, @"(?i)루틴\s*(?:삭제|제거|지워)\s*([a-z0-9\-]+)");
+        if (routineDelete.Success)
+        {
+            return $"/routine delete {routineDelete.Groups[1].Value}";
+        }
+
+        var routineCreate = Regex.Match(normalized, @"(?i)루틴\s*(?:생성|등록|추가)\s*[:：]?\s*(.+)$");
+        if (routineCreate.Success)
+        {
+            var request = routineCreate.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(request))
+            {
+                return $"/routine create {request}";
+            }
+        }
+
+        if (ContainsAny(lowered, "메트릭 보여", "메트릭 조회", "시스템 메트릭", "metrics 보여"))
+        {
+            return "/metrics";
+        }
+
+        return null;
+    }
+
+    private async Task<string?> TryHandleTelegramMemoryCommandAsync(string text, CancellationToken cancellationToken)
+    {
+        if (!text.StartsWith("/memory", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length >= 2 && tokens[1].Equals("clear", StringComparison.OrdinalIgnoreCase))
+        {
+            var result = ClearMemory("telegram", "telegram");
+            return $"ok: {result}";
+        }
+
+        if (tokens.Length >= 2 && tokens[1].Equals("create", StringComparison.OrdinalIgnoreCase))
+        {
+            var telegramThread = EnsureTelegramLinkedConversation();
+            var compactConversation = tokens.Length >= 3 && tokens[2].Equals("compact", StringComparison.OrdinalIgnoreCase);
+            var created = await CreateMemoryNoteAsync(
+                telegramThread.Id,
+                "telegram",
+                compactConversation,
+                cancellationToken
+            );
+            return created.Ok
+                ? $"ok: {created.Message}"
+                : $"error: {created.Message}";
+        }
+
+        return "usage: /memory clear | /memory create [compact]";
+    }
+
+    private static string? ExtractProviderAliasFromNaturalText(string text, bool allowAuto)
+    {
+        var lowered = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(lowered))
+        {
+            return null;
+        }
+
+        if (ContainsAny(lowered, "groq", "그록"))
+        {
+            return "groq";
+        }
+
+        if (ContainsAny(lowered, "gemini", "제미니"))
+        {
+            return "gemini";
+        }
+
+        if (ContainsAny(lowered, "copilot", "코파일럿"))
+        {
+            return "copilot";
+        }
+
+        if (ContainsAny(lowered, "cerebras", "세레브라스", "세레브라"))
+        {
+            return "cerebras";
+        }
+
+        if (allowAuto && ContainsAny(lowered, "auto", "자동"))
+        {
+            return "auto";
+        }
+
+        return null;
+    }
+
+    private static string? ExtractThinkingLevelFromNaturalText(string lowered)
+    {
+        if (ContainsAny(lowered, "high", "정밀", "깊게", "신중", "정확도"))
+        {
+            return "high";
+        }
+
+        if (ContainsAny(lowered, "low", "빠르게", "간단", "짧게"))
+        {
+            return "low";
+        }
+
+        return null;
+    }
+
+    private static string? ExtractHelpTopicFromNaturalText(string lowered)
+    {
+        if (!ContainsAny(lowered, "도움말", "help", "명령어"))
+        {
+            return null;
+        }
+
+        if (ContainsAny(lowered, "llm", "모델"))
+        {
+            return "llm";
+        }
+
+        if (ContainsAny(lowered, "루틴", "routine"))
+        {
+            return "routine";
+        }
+
+        if (ContainsAny(lowered, "자연어", "대화", "natural"))
+        {
+            return "natural";
+        }
+
+        return string.Empty;
+    }
+
+    private async Task<string> SetGroqModelForTelegramAsync(string modelId, CancellationToken cancellationToken)
+    {
+        var requested = (modelId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return "model-id를 입력하세요. 예: /llm set groq meta-llama/llama-4-scout-17b-16e-instruct";
+        }
+
+        var models = await _groqModelCatalog.GetModelsAsync(cancellationToken);
+        if (!models.Any(x => x.Id.Equals(requested, StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"알 수 없는 Groq 모델: {requested}";
+        }
+
+        _llmRouter.TrySetSelectedGroqModel(requested);
+        lock (_telegramLlmLock)
+        {
+            _telegramLlmPreferences.SingleProvider = "groq";
+            _telegramLlmPreferences.SingleModel = requested;
+            _telegramLlmPreferences.AutoGroqComplexUpgrade = requested.Equals(DefaultGroqFastModel, StringComparison.OrdinalIgnoreCase);
+        }
+
+        return $"ok: groq 모델 변경 완료 -> {requested}";
+    }
+
+    private async Task<string> SetCopilotModelForTelegramAsync(string modelId, CancellationToken cancellationToken)
+    {
+        var requested = (modelId ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(requested))
+        {
+            return "model-id를 입력하세요. 예: /llm set copilot gpt-5-mini";
+        }
+
+        var models = await _copilotWrapper.GetModelsAsync(cancellationToken);
+        if (!models.Any(x => x.Id.Equals(requested, StringComparison.OrdinalIgnoreCase)))
+        {
+            return $"알 수 없는 Copilot 모델: {requested}";
+        }
+
+        if (!_copilotWrapper.TrySetSelectedModel(requested))
+        {
+            return $"Copilot 모델 설정 실패: {requested}";
+        }
+
+        lock (_telegramLlmLock)
+        {
+            _telegramLlmPreferences.SingleProvider = "copilot";
+            _telegramLlmPreferences.SingleModel = requested;
+        }
+
+        return $"ok: copilot 모델 변경 완료 -> {requested}";
+    }
+
+    private async Task<string> BuildTelegramModelsReportAsync(string target, CancellationToken cancellationToken)
+    {
+        var selected = (target ?? "all").Trim().ToLowerInvariant();
+        var builder = new StringBuilder();
+        var hasSection = false;
+        builder.AppendLine("[로컬 시간]");
+        builder.AppendLine(BuildLocalNowText());
+        builder.AppendLine();
+        if (selected == "all" || selected == "groq")
+        {
+            hasSection = true;
+            var groqModels = await _groqModelCatalog.GetModelsAsync(cancellationToken);
+            builder.AppendLine("[Groq 모델]");
+            foreach (var model in groqModels.Take(16))
+            {
+                builder.AppendLine($"- {model.Id}: tier={model.Tier}, speed={model.SpeedTokensPerSecond} tps, rate={model.RateLimit}, ctx={model.ContextWindow}, max_out={model.MaxCompletionTokens}");
+            }
+            if (groqModels.Count > 16)
+            {
+                builder.AppendLine($"... +{groqModels.Count - 16}개");
+            }
+
+            builder.AppendLine($"selected={_llmRouter.GetSelectedGroqModel()}");
+            builder.AppendLine();
+        }
+
+        if (selected == "all" || selected == "gemini")
+        {
+            hasSection = true;
+            builder.AppendLine("[Gemini 모델]");
+            builder.AppendLine($"- 기본={_config.GeminiModel}");
+            builder.AppendLine("- 지원=gemini-3-flash-preview");
+            builder.AppendLine("- 지원=gemini-3.1-flash-lite-preview");
+            builder.AppendLine();
+        }
+
+        if (selected == "all" || selected == "copilot")
+        {
+            hasSection = true;
+            var copilotModels = await _copilotWrapper.GetModelsAsync(cancellationToken);
+            builder.AppendLine("[Copilot 모델]");
+            foreach (var model in copilotModels.Take(16))
+            {
+                builder.AppendLine($"- {model.Id}: provider={model.Provider}, premium={model.PremiumMultiplier}, speed={model.OutputTokensPerSecond}, limit={model.RateLimit}, ctx={model.ContextWindow}");
+            }
+            if (copilotModels.Count > 16)
+            {
+                builder.AppendLine($"... +{copilotModels.Count - 16}개");
+            }
+
+            builder.AppendLine($"selected={_copilotWrapper.GetSelectedModel()}");
+            builder.AppendLine();
+        }
+
+        if (selected == "all" || selected == "cerebras")
+        {
+            hasSection = true;
+            TelegramLlmPreferences snapshot;
+            lock (_telegramLlmLock)
+            {
+                snapshot = _telegramLlmPreferences.Clone();
+            }
+
+            builder.AppendLine("[Cerebras 모델]");
+            builder.AppendLine($"- default={_config.CerebrasModel}");
+            builder.AppendLine($"- single.selected={(snapshot.SingleProvider == "cerebras" ? snapshot.SingleModel : _config.CerebrasModel)}");
+            builder.AppendLine($"- multi.selected={snapshot.MultiCerebrasModel}");
+            builder.AppendLine();
+        }
+
+        if (!hasSection)
+        {
+            return "usage: /llm models [groq|gemini|copilot|cerebras|all]";
+        }
+
+        builder.AppendLine("모델 변경 예시:");
+        builder.AppendLine("/llm set groq meta-llama/llama-4-scout-17b-16e-instruct");
+        builder.AppendLine("/llm set copilot gpt-5-mini");
+        builder.AppendLine("/llm single provider gemini");
+        builder.AppendLine("/llm single model gemini-3.1-flash-lite-preview");
+        builder.AppendLine("/llm single provider cerebras");
+        builder.AppendLine("/llm single model zai-glm-4.7");
+        builder.AppendLine("/llm multi cerebras zai-glm-4.7");
+        return builder.ToString().Trim();
+    }
+
+    private async Task<string> BuildTelegramUsageReportAsync(CancellationToken cancellationToken)
+    {
+        var builder = new StringBuilder();
+        var gemini = _llmRouter.GetGeminiUsageSnapshot();
+        builder.AppendLine("[Gemini 사용량/추정 과금]");
+        builder.AppendLine($"- requests={gemini.Requests}");
+        builder.AppendLine($"- prompt_tokens={gemini.PromptTokens}, completion_tokens={gemini.CompletionTokens}, total_tokens={gemini.TotalTokens}");
+        builder.AppendLine($"- input_price=${_config.GeminiInputPricePerMillionUsd:F4}/1M, output_price=${_config.GeminiOutputPricePerMillionUsd:F4}/1M");
+        builder.AppendLine($"- estimated_cost_usd=${gemini.EstimatedCostUsd:F6}");
+        builder.AppendLine();
+
+        builder.AppendLine("[Copilot 사용량 - Omni-node 로컬]");
+        builder.AppendLine($"- selected={_copilotWrapper.GetSelectedModel()}");
+        var copilotUsage = _copilotWrapper.GetUsageSnapshot();
+        var copilotLines = copilotUsage
+            .OrderByDescending(x => x.Value.Requests)
+            .Take(12)
+            .Select(item => $"- {item.Key}: {item.Value.Requests} req")
+            .ToArray();
+        if (copilotLines.Length == 0)
+        {
+            builder.AppendLine("- usage 없음");
+        }
+        else
+        {
+            foreach (var line in copilotLines)
+            {
+                builder.AppendLine(line);
+            }
+        }
+        builder.AppendLine();
+        builder.AppendLine("[Copilot Premium Requests - GitHub 계정 월누적(모든 클라이언트 합산)]");
+        var premium = await _copilotWrapper.GetPremiumUsageSnapshotAsync(cancellationToken, forceRefresh: true);
+        if (!premium.Available)
+        {
+            builder.AppendLine($"- 상태={premium.Message}");
+            if (premium.RequiresUserScope)
+            {
+                builder.AppendLine("- 조치=gh auth refresh -h github.com -s user");
+            }
+            builder.AppendLine($"- 확인 링크={premium.FeaturesUrl}");
+            builder.AppendLine($"- 상세 링크={premium.BillingUrl}");
+        }
+        else
+        {
+            var quotaText = premium.MonthlyQuota > 0d
+                ? premium.MonthlyQuota.ToString("F1", CultureInfo.InvariantCulture)
+                : "-";
+            builder.AppendLine($"- user={premium.Username}");
+            builder.AppendLine($"- plan={premium.PlanName}");
+            builder.AppendLine($"- used={premium.UsedRequests.ToString("F1", CultureInfo.InvariantCulture)}/{quotaText}");
+            builder.AppendLine($"- percent={premium.PercentUsed.ToString("F1", CultureInfo.InvariantCulture)}%");
+            builder.AppendLine($"- refreshed={premium.RefreshedLocal}");
+            if (premium.Items.Count == 0)
+            {
+                builder.AppendLine("- 모델별 데이터 없음");
+            }
+            else
+            {
+                foreach (var item in premium.Items.Take(15))
+                {
+                    builder.AppendLine($"- {item.Model}: {item.Requests.ToString("F1", CultureInfo.InvariantCulture)} req ({item.Percent.ToString("F1", CultureInfo.InvariantCulture)}%)");
+                }
+            }
+            builder.AppendLine($"- 확인 링크={premium.FeaturesUrl}");
+            builder.AppendLine($"- 상세 링크={premium.BillingUrl}");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("[Groq 제한량/사용량]");
+        builder.AppendLine($"- selected={_llmRouter.GetSelectedGroqModel()}");
+        var usageMap = _llmRouter.GetGroqUsageSnapshot();
+        var rateMap = _llmRouter.GetGroqRateLimitSnapshot();
+        var models = await _groqModelCatalog.GetModelsAsync(cancellationToken);
+        foreach (var model in models.Take(12))
+        {
+            usageMap.TryGetValue(model.Id, out var usage);
+            rateMap.TryGetValue(model.Id, out var rate);
+            var usageText = $"{usage?.Requests ?? 0} req / {usage?.TotalTokens ?? 0} tok";
+            var tokenLimitText = rate?.LimitTokens.HasValue == true
+                ? $"{rate.RemainingTokens ?? 0}/{rate.LimitTokens.Value}"
+                : "-";
+            var reqLimitText = rate?.LimitRequests.HasValue == true
+                ? $"{rate.RemainingRequests ?? 0}/{rate.LimitRequests.Value}"
+                : "-";
+            builder.AppendLine($"- {model.Id}: usage={usageText}, token 잔여/한도={tokenLimitText}, 요청 잔여/한도={reqLimitText}");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("명령어:");
+        builder.AppendLine("/llm models all");
+        builder.AppendLine("/llm set groq <model-id>");
+        builder.AppendLine("/llm set copilot <model-id>");
+        return builder.ToString().Trim();
+    }
+
+    private async Task<string?> TryBuildInChatCopilotUsageResponseAsync(
+        string input,
+        string source,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!source.Equals("web", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (!IsCopilotPremiumUsageQuery(input))
+        {
+            return null;
+        }
+
+        var premium = await _copilotWrapper.GetPremiumUsageSnapshotAsync(cancellationToken, forceRefresh: true);
+        var builder = new StringBuilder();
+        builder.AppendLine("[Copilot Premium Requests - GitHub 계정 월누적(모든 클라이언트 합산)]");
+        if (!premium.Available)
+        {
+            builder.AppendLine($"상태: {premium.Message}");
+            if (premium.RequiresUserScope)
+            {
+                builder.AppendLine("조치: gh auth refresh -h github.com -s user");
+            }
+            builder.AppendLine($"확인 링크: {premium.FeaturesUrl}");
+            builder.AppendLine($"상세 링크: {premium.BillingUrl}");
+            return builder.ToString().Trim();
+        }
+
+        var quotaText = premium.MonthlyQuota > 0d
+            ? premium.MonthlyQuota.ToString("F1", CultureInfo.InvariantCulture)
+            : "-";
+        builder.AppendLine($"계정: {premium.Username}");
+        builder.AppendLine($"플랜: {premium.PlanName}");
+        builder.AppendLine($"사용량: {premium.UsedRequests.ToString("F1", CultureInfo.InvariantCulture)}/{quotaText}");
+        builder.AppendLine($"사용률: {premium.PercentUsed.ToString("F1", CultureInfo.InvariantCulture)}%");
+        builder.AppendLine($"갱신 시각(로컬): {premium.RefreshedLocal}");
+        builder.AppendLine();
+        builder.AppendLine("[모델별 사용]");
+        if (premium.Items.Count == 0)
+        {
+            builder.AppendLine("- 데이터 없음");
+        }
+        else
+        {
+            foreach (var item in premium.Items.Take(12))
+            {
+                builder.AppendLine($"- {item.Model}: {item.Requests.ToString("F1", CultureInfo.InvariantCulture)}회 ({item.Percent.ToString("F1", CultureInfo.InvariantCulture)}%)");
+            }
+        }
+
+        builder.AppendLine();
+        builder.AppendLine($"설정 페이지: {premium.FeaturesUrl}");
+        builder.AppendLine($"청구 페이지: {premium.BillingUrl}");
+        builder.AppendLine("주의: 위 Premium 수치는 GitHub 계정 월누적이며, Omni-node 외 VS Code/Web/기타 Copilot 사용도 함께 집계됩니다.");
+        return builder.ToString().Trim();
+    }
+
+    private static bool IsCopilotPremiumUsageQuery(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var lowered = normalized.ToLowerInvariant();
+        if (lowered.StartsWith("/llm usage", StringComparison.OrdinalIgnoreCase)
+            || lowered.StartsWith("/copilot usage", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (!ContainsAny(lowered,
+                "copilot",
+                "코파일럿",
+                "깃허브 코파일럿",
+                "github copilot",
+                "premium request",
+                "프리미엄 요청"))
+        {
+            return false;
+        }
+
+        return ContainsAny(lowered,
+            "usage",
+            "사용량",
+            "퍼센트",
+            "percent",
+            "비율",
+            "quota",
+            "한도",
+            "모델별");
+    }
+
+    public TelegramExecutionMetadata GetCurrentTelegramExecutionMetadata()
+    {
+        return _telegramExecutionMetadata.Value ?? new TelegramExecutionMetadata();
+    }
+
+    private void SetCurrentTelegramExecutionMetadata(
+        SearchAnswerGuardFailure? guardFailure = null,
+        int retryAttempt = 0,
+        int retryMaxAttempts = 0,
+        string? retryStopReason = "-"
+    )
+    {
+        _telegramExecutionMetadata.Value = new TelegramExecutionMetadata(
+            guardFailure,
+            Math.Max(0, retryAttempt),
+            Math.Max(0, retryMaxAttempts),
+            string.IsNullOrWhiteSpace(retryStopReason) ? "-" : retryStopReason.Trim()
+        );
+    }
+
+    private async Task<string> ExecuteTelegramLlmMessageAsync(
+        string text,
+        IReadOnlyList<InputAttachment>? attachments,
+        IReadOnlyList<string>? webUrls,
+        bool webSearchEnabled,
+        CancellationToken cancellationToken
+    )
+    {
+        TelegramLlmPreferences snapshot;
+        lock (_telegramLlmLock)
+        {
+            snapshot = _telegramLlmPreferences.Clone();
+        }
+
+        var telegramThread = EnsureTelegramLinkedConversation();
+        var session = PrepareSessionContext(
+            "chat",
+            "single",
+            telegramThread.Id,
+            null,
+            null,
+            null,
+            null,
+            telegramThread.LinkedMemoryNotes,
+            "telegram"
+        );
+        var snapshotSingleProvider = NormalizeProvider(snapshot.SingleProvider, allowAuto: true);
+        if (snapshotSingleProvider is "auto" or "none")
+        {
+            snapshotSingleProvider = "gemini";
+        }
+
+        var snapshotSingleModel = ResolveModel(snapshotSingleProvider, snapshot.SingleModel);
+        var resolvedWebUrls = ResolveWebUrls(text, webUrls, webSearchEnabled);
+        if (resolvedWebUrls.Count > 0 && snapshot.Mode == "single" && _llmRouter.HasGeminiApiKey())
+        {
+            var allowMarkdownTable = LooksLikeTableRenderRequest(text);
+            var memoryHint = BuildSafeWebMemoryPreferenceHint(
+                session.SessionId,
+                text,
+                session.LinkedMemoryNotes
+            );
+            var urlSingle = await GenerateGeminiUrlContextAnswerDetailedAsync(
+                text,
+                resolvedWebUrls,
+                memoryHint,
+                allowMarkdownTable,
+                enforceTelegramOutputStyle: true,
+                streamCallback: null,
+                scope: session.Scope,
+                mode: session.Mode,
+                conversationId: session.Thread.Id,
+                decisionPath: "heuristic_url_context",
+                decisionMs: 0,
+                cancellationToken
+            );
+            var urlResponseText = $"[Single {urlSingle.Response.Provider}:{urlSingle.Response.Model}]\n{FormatTelegramResponse(urlSingle.Response.Text, TelegramMaxResponseChars)}";
+            var urlAssistantMeta = $"telegram-single:{urlSingle.Response.Provider}:{urlSingle.Response.Model}:gemini-url-single";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", urlResponseText, urlAssistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, urlSingle.Response.Provider, urlSingle.Response.Model, cancellationToken);
+            _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", urlSingle.Response.Provider, urlSingle.Response.Model, cancellationToken);
+            _auditLogger.Log("telegram", "telegram_guard_meta", "ok", $"route={urlAssistantMeta} guardCategory=- guardReason=- guardDetail=-");
+            SetCurrentTelegramExecutionMetadata(null, 0, 0, "-");
+            return urlResponseText;
+        }
+
+        if (webSearchEnabled && snapshot.Mode == "single")
+        {
+            var webDecision = await DecideNeedWebBySelectedProviderAsync(
+                text,
+                snapshotSingleProvider,
+                snapshotSingleModel,
+                cancellationToken
+            );
+            var shouldFallbackToGeminiWeb = !webDecision.DecisionSucceeded && LooksLikeRealtimeQuestion(text);
+            if (webDecision.NeedWeb || shouldFallbackToGeminiWeb)
+            {
+                var allowMarkdownTable = LooksLikeTableRenderRequest(text);
+                var memoryHint = BuildSafeWebMemoryPreferenceHint(
+                    session.SessionId,
+                    text,
+                    session.LinkedMemoryNotes
+                );
+                var webSingle = await ComposeGroundedWebAnswerWithFallbackAsync(
+                    text,
+                    memoryHint,
+                    shouldFallbackToGeminiWeb,
+                    allowMarkdownTable,
+                    true,
+                    null,
+                    session.Scope,
+                    session.Mode,
+                    session.Thread.Id,
+                    webDecision.DecisionSucceeded ? "llm" : "heuristic_fallback",
+                    0,
+                    "telegram",
+                    cancellationToken
+                );
+                var webResponseText = $"[Single {webSingle.Response.Provider}:{webSingle.Response.Model}]\n{FormatTelegramResponse(webSingle.Response.Text, TelegramMaxResponseChars)}";
+                var webAssistantMeta = $"telegram-single:{webSingle.Response.Provider}:{webSingle.Response.Model}:{webSingle.Route}";
+                _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+                _conversationStore.AppendMessage(session.Thread.Id, "assistant", webResponseText, webAssistantMeta);
+                await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, webSingle.Response.Provider, webSingle.Response.Model, cancellationToken);
+                _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", webSingle.Response.Provider, webSingle.Response.Model, cancellationToken);
+                _auditLogger.Log("telegram", "telegram_guard_meta", "ok", $"route={webAssistantMeta} guardCategory=- guardReason=- guardDetail=-");
+                SetCurrentTelegramExecutionMetadata(webSingle.GuardFailure, 0, 0, "-");
+                return webResponseText;
+            }
+        }
+
+        var effectiveWebSearchEnabled = snapshot.Mode == "single" ? false : webSearchEnabled;
+        var normalizedAttachments = NormalizeAttachments(attachments);
+        var sharedPrepared = await PrepareSharedInputAsync(
+            text,
+            normalizedAttachments,
+            resolvedWebUrls,
+            effectiveWebSearchEnabled,
+            cancellationToken,
+            "telegram",
+            session.SessionKey,
+            session.SessionId
+        );
+        if (!string.IsNullOrWhiteSpace(sharedPrepared.UnsupportedMessage))
+        {
+            var blockedAssistantMeta = "telegram-forced-context:unsupported";
+            var blockedResponseText = sharedPrepared.UnsupportedMessage;
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", blockedResponseText, blockedAssistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, "gemini", "-", cancellationToken);
+            var guardCategory = NormalizeForcedGuardCategory(sharedPrepared.GuardFailure?.Category.ToString());
+            var guardReason = NormalizeForcedGuardReason(sharedPrepared.GuardFailure?.ReasonCode);
+            var guardDetail = NormalizeForcedToolValue(sharedPrepared.GuardFailure?.Detail, "-");
+            _auditLogger.Log(
+                "telegram",
+                "telegram_guard_meta",
+                sharedPrepared.GuardFailure is null ? "ok" : "blocked",
+                $"route={NormalizeAuditToken(blockedAssistantMeta, "-")} guardCategory={guardCategory} guardReason={guardReason} guardDetail={guardDetail}"
+            );
+            SetCurrentTelegramExecutionMetadata(
+                sharedPrepared.GuardFailure,
+                sharedPrepared.RetryAttempt,
+                sharedPrepared.RetryMaxAttempts,
+                sharedPrepared.RetryStopReason
+            );
+            return blockedResponseText;
+        }
+
+        var preparedInput = await PrepareTelegramInputAsync(sharedPrepared.Text, cancellationToken);
+        var thinkingLevel = ResolveTelegramThinkingLevel(snapshot, text);
+        var profiledInput = BuildTelegramProfilePrompt(preparedInput, snapshot.Profile, thinkingLevel);
+        var contextualProfiledInput = BuildContextualInput(session.SessionId, profiledInput, session.LinkedMemoryNotes);
+
+        string responseText;
+        string providerForMemory;
+        string modelForMemory;
+        string assistantMeta;
+        var effectiveGuardFailure = sharedPrepared.GuardFailure;
+
+        void CaptureTelegramExecutionMeta()
+        {
+            SetCurrentTelegramExecutionMetadata(
+                effectiveGuardFailure,
+                sharedPrepared.RetryAttempt,
+                sharedPrepared.RetryMaxAttempts,
+                sharedPrepared.RetryStopReason
+            );
+        }
+
+        void LogTelegramGuardMeta(string route)
+        {
+            var guardCategory = NormalizeForcedGuardCategory(effectiveGuardFailure?.Category.ToString());
+            var guardReason = NormalizeForcedGuardReason(effectiveGuardFailure?.ReasonCode);
+            var guardDetail = NormalizeForcedToolValue(effectiveGuardFailure?.Detail, "-");
+            _auditLogger.Log(
+                "telegram",
+                "telegram_guard_meta",
+                effectiveGuardFailure is null ? "ok" : "blocked",
+                $"route={NormalizeAuditToken(route, "-")} guardCategory={guardCategory} guardReason={guardReason} guardDetail={guardDetail}"
+            );
+        }
+
+        if (snapshot.Mode == "orchestration")
+        {
+            var orchestrated = await ChatOrchestrationAsync(
+                contextualProfiledInput,
+                "telegram",
+                snapshot.OrchestrationProvider,
+                snapshot.OrchestrationModel,
+                null,
+                null,
+                null,
+                null,
+                null,
+                normalizedAttachments,
+                cancellationToken
+            );
+            var citationBundle = BuildAndLogCitationMappings(
+                "telegram",
+                "telegram-orchestration",
+                sharedPrepared.Citations,
+                ("text", orchestrated.Text)
+            );
+            effectiveGuardFailure = sharedPrepared.GuardFailure;
+            var orchestratedValidated = ApplyListCountFallback(text, orchestrated.Text, sharedPrepared.Citations);
+            responseText = $"[{orchestrated.Route}]\n{FormatTelegramResponse(orchestratedValidated, TelegramMaxResponseChars)}";
+            providerForMemory = NormalizeProvider(snapshot.OrchestrationProvider, allowAuto: true);
+            if (providerForMemory is "auto" or "none")
+            {
+                providerForMemory = "gemini";
+            }
+
+            modelForMemory = string.IsNullOrWhiteSpace(snapshot.OrchestrationModel) ? "-" : snapshot.OrchestrationModel;
+            assistantMeta = $"telegram-orchestration:{orchestrated.Route}";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+            _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", providerForMemory, modelForMemory, cancellationToken);
+            LogTelegramGuardMeta(assistantMeta);
+            CaptureTelegramExecutionMeta();
+            return responseText;
+        }
+
+        if (snapshot.Mode == "multi")
+        {
+            var multi = await ChatMultiAsync(
+                contextualProfiledInput,
+                "telegram",
+                snapshot.MultiGroqModel,
+                null,
+                snapshot.MultiCopilotModel,
+                snapshot.MultiCerebrasModel,
+                snapshot.MultiSummaryProvider,
+                null,
+                normalizedAttachments,
+                cancellationToken
+            );
+            var citationBundle = BuildAndLogCitationMappings(
+                "telegram",
+                "telegram-multi",
+                sharedPrepared.Citations,
+                ("groq", multi.GroqText),
+                ("gemini", multi.GeminiText),
+                ("cerebras", multi.CerebrasText),
+                ("copilot", multi.CopilotText),
+                ("summary", multi.Summary)
+            );
+            effectiveGuardFailure = sharedPrepared.GuardFailure;
+            var multiSummaryValidated = ApplyListCountFallback(text, multi.Summary, sharedPrepared.Citations);
+            responseText = $"""
+                           [Multi 요약]
+                           {FormatTelegramResponse(multiSummaryValidated, TelegramMaxResponseChars)}
+                           """;
+            providerForMemory = NormalizeProvider(multi.ResolvedSummaryProvider, allowAuto: true);
+            if (providerForMemory is "auto" or "none")
+            {
+                providerForMemory = "gemini";
+            }
+
+            modelForMemory = providerForMemory switch
+            {
+                "groq" => multi.GroqModel,
+                "gemini" => multi.GeminiModel,
+                "cerebras" => multi.CerebrasModel,
+                "copilot" => multi.CopilotModel,
+                _ => "-"
+            };
+            assistantMeta = $"telegram-multi:summary={multi.ResolvedSummaryProvider}";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+            _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", providerForMemory, modelForMemory, cancellationToken);
+            LogTelegramGuardMeta(assistantMeta);
+            CaptureTelegramExecutionMeta();
+            return responseText;
+        }
+
+        if (snapshot.SingleProvider == "groq")
+        {
+            var preferredModel = NormalizeModelSelection(snapshot.SingleModel)
+                                 ?? NormalizeModelSelection(_config.GroqModel)
+                                 ?? DefaultGroqPrimaryModel;
+            var providerPrepared = await PrepareInputForProviderAsync(
+                contextualProfiledInput,
+                "groq",
+                preferredModel,
+                normalizedAttachments,
+                webUrls,
+                effectiveWebSearchEnabled,
+                false,
+                cancellationToken
+            );
+            if (!string.IsNullOrWhiteSpace(providerPrepared.UnsupportedMessage))
+            {
+                responseText = $"[Single groq:{preferredModel}]\n{providerPrepared.UnsupportedMessage}";
+                providerForMemory = "groq";
+                modelForMemory = preferredModel;
+                assistantMeta = $"telegram-single:groq:{preferredModel}:unsupported";
+                _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+                _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+                await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+                LogTelegramGuardMeta(assistantMeta);
+                CaptureTelegramExecutionMeta();
+                return responseText;
+            }
+
+            var singleGroq = await ExecuteTelegramGroqSingleAsync(
+                text,
+                providerPrepared.Text,
+                snapshot,
+                thinkingLevel,
+                cancellationToken
+            );
+            var citationBundle = BuildAndLogCitationMappings(
+                "telegram",
+                "telegram-single-groq",
+                sharedPrepared.Citations,
+                ("text", singleGroq.Text)
+            );
+            effectiveGuardFailure = sharedPrepared.GuardFailure;
+            responseText = $"[Single {singleGroq.Provider}:{singleGroq.Model}]\n{FormatTelegramResponse(singleGroq.Text, TelegramMaxResponseChars)}";
+            providerForMemory = singleGroq.Provider;
+            modelForMemory = singleGroq.Model;
+            assistantMeta = $"telegram-single:{singleGroq.Provider}:{singleGroq.Model}";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+            _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", providerForMemory, modelForMemory, cancellationToken);
+            LogTelegramGuardMeta(assistantMeta);
+            CaptureTelegramExecutionMeta();
+            return responseText;
+        }
+
+        var singleModel = ResolveModel(snapshot.SingleProvider, snapshot.SingleModel);
+        var providerInput = await PrepareInputForProviderAsync(
+            contextualProfiledInput,
+            snapshot.SingleProvider,
+            singleModel,
+            normalizedAttachments,
+            resolvedWebUrls,
+            effectiveWebSearchEnabled,
+            false,
+            cancellationToken
+        );
+        if (!string.IsNullOrWhiteSpace(providerInput.UnsupportedMessage))
+        {
+            responseText = $"[Single {snapshot.SingleProvider}:{singleModel}]\n{providerInput.UnsupportedMessage}";
+            providerForMemory = snapshot.SingleProvider;
+            modelForMemory = singleModel;
+            assistantMeta = $"telegram-single:{snapshot.SingleProvider}:{singleModel}:unsupported";
+            _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+            _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+            await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+            LogTelegramGuardMeta(assistantMeta);
+            CaptureTelegramExecutionMeta();
+            return responseText;
+        }
+
+        var single = await ChatSingleAsync(
+            providerInput.Text,
+            snapshot.SingleProvider,
+            snapshot.SingleModel,
+            "telegram",
+            cancellationToken,
+            ResolveSingleChatMaxOutputTokens(text)
+        );
+        var singleCitationBundle = BuildAndLogCitationMappings(
+            "telegram",
+            "telegram-single",
+            sharedPrepared.Citations,
+            ("text", single.Text)
+        );
+        effectiveGuardFailure = sharedPrepared.GuardFailure;
+        responseText = $"[Single {single.Provider}:{single.Model}]\n{FormatTelegramResponse(single.Text, TelegramMaxResponseChars)}";
+        providerForMemory = single.Provider;
+        modelForMemory = single.Model;
+        assistantMeta = $"telegram-single:{single.Provider}:{single.Model}";
+        _conversationStore.AppendMessage(session.Thread.Id, "user", text, "telegram:user");
+        _conversationStore.AppendMessage(session.Thread.Id, "assistant", responseText, assistantMeta);
+        await EnsureConversationTitleFromFirstTurnAsync(session.Thread.Id, providerForMemory, modelForMemory, cancellationToken);
+        _ = await MaybeCompressConversationAsync(session.Thread.Id, "chat-single", providerForMemory, modelForMemory, cancellationToken);
+        LogTelegramGuardMeta(assistantMeta);
+        CaptureTelegramExecutionMeta();
+        return responseText;
+    }
+
+    private ConversationThreadView EnsureTelegramLinkedConversation()
+    {
+        var existing = _conversationStore
+            .List("chat", "single")
+            .FirstOrDefault(item => item.Tags.Any(tag =>
+                string.Equals(tag, "telegram-link", StringComparison.OrdinalIgnoreCase)));
+        if (existing != null)
+        {
+            return _conversationStore.Get(existing.Id)
+                   ?? _conversationStore.Ensure("chat", "single", existing.Id, null, null, null, null);
+        }
+
+        return _conversationStore.Create(
+            "chat",
+            "single",
+            "Telegram 연동 대화",
+            "Telegram",
+            "연동",
+            new[] { "telegram-link", "shared" }
+        );
+    }
+
+    private async Task<LlmSingleChatResult> ExecuteTelegramGroqSingleAsync(
+        string rawUserInput,
+        string profiledInput,
+        TelegramLlmPreferences snapshot,
+        string thinkingLevel,
+        CancellationToken cancellationToken
+    )
+    {
+        _ = rawUserInput;
+        _ = snapshot;
+
+        var selectedModel = NormalizeModelSelection(snapshot.SingleModel)
+            ?? (string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel);
+        var maxTokens = thinkingLevel == "high"
+            ? TelegramComplexModeMaxOutputTokens
+            : TelegramFastModeMaxOutputTokens;
+        var generated = await ExecuteGroqSingleChainAsync(
+            profiledInput,
+            selectedModel,
+            cancellationToken,
+            maxTokens
+        );
+        return new LlmSingleChatResult(generated.Provider, generated.Model, SanitizeChatOutput(generated.Text));
+    }
+
+    private async Task<string> PrepareTelegramInputAsync(string input, CancellationToken cancellationToken)
+    {
+        var text = (input ?? string.Empty).Trim();
+        if (text.Length <= TelegramLongContextThresholdChars)
+        {
+            return BuildTelegramConcisePrompt(text);
+        }
+
+        var compressionPrompt = BuildTelegramCompressionPrompt(text);
+        string compressed;
+        if (_llmRouter.HasGroqApiKey())
+        {
+            var groq = await GenerateByProviderSafeAsync(
+                "groq",
+                string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
+                compressionPrompt,
+                cancellationToken,
+                700
+            );
+            compressed = SanitizeChatOutput(groq.Text);
+        }
+        else if (_llmRouter.HasGeminiApiKey())
+        {
+            var gemini = await GenerateByProviderSafeAsync("gemini", _config.GeminiModel, compressionPrompt, cancellationToken, 700);
+            compressed = SanitizeChatOutput(gemini.Text);
+        }
+        else
+        {
+            compressed = text.Length <= TelegramLongContextTargetChars
+                ? text
+                : text[..TelegramLongContextTargetChars] + "\n...(long_input_trimmed)";
+        }
+
+        if (string.IsNullOrWhiteSpace(compressed))
+        {
+            compressed = text.Length <= TelegramLongContextTargetChars
+                ? text
+                : text[..TelegramLongContextTargetChars] + "\n...(long_input_trimmed)";
+        }
+
+        return BuildTelegramConcisePrompt($"[긴 입력 자동 요약]\n{compressed}");
+    }
+
+    private static string BuildTelegramCompressionPrompt(string input)
+    {
+        return $"""
+                아래 긴 입력을 핵심만 유지해 한국어로 압축 요약하세요.
+                규칙:
+                - 최대 8줄
+                - 요구사항/제약/에러/결정포인트 보존
+                - 불필요한 수식어 제거
+
+                [원문]
+                {input}
+                """;
+    }
+
+    private static string BuildTelegramProfilePrompt(string concisePrompt, string profile, string thinkingLevel)
+    {
+        var modeGuide = profile switch
+        {
+            "code" => "코딩 모드: 변경 포인트, 실행/검증 명령, 실패 시 다음 조치까지 간결히 제시하세요.",
+            "talk" => "대화 모드: 핵심 결론 중심으로 정리하세요.",
+            _ => "기본 모드: 핵심만 간결하게 답하세요."
+        };
+        var thinkingGuide = thinkingLevel == "high"
+            ? "사고 강도: high (정확성, 리스크, 예외 케이스를 우선)"
+            : "사고 강도: low (빠르고 간결한 결론 우선)";
+        var localNow = BuildLocalNowText();
+
+        return $"""
+                로컬 시간 기준:
+                {localNow}
+
+                {modeGuide}
+                {thinkingGuide}
+
+                {concisePrompt}
+                """;
+    }
+
+    private static string ResolveTelegramThinkingLevel(TelegramLlmPreferences snapshot, string userText)
+    {
+        if (snapshot.Profile == "code")
+        {
+            return snapshot.CodeThinkingLevel == "high" ? "high" : "low";
+        }
+
+        if (snapshot.TalkThinkingLevel == "high")
+        {
+            return "high";
+        }
+
+        return IsDecisionOrRiskQuestion(userText) ? "high" : "low";
+    }
+
+    private static bool IsDecisionOrRiskQuestion(string input)
+    {
+        var normalized = (input ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(
+            normalized,
+            "비교",
+            "결정",
+            "결론",
+            "추천",
+            "정확",
+            "리스크",
+            "위험",
+            "근거",
+            "정책",
+            "장단점",
+            "tradeoff",
+            "risk"
+        );
+    }
+
+    private static bool UserRequiresConclusion(string input)
+    {
+        var normalized = (input ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(
+            normalized,
+            "결론",
+            "결정",
+            "확정",
+            "하나만",
+            "추천",
+            "최종안",
+            "choose",
+            "final answer"
+        );
+    }
+
+    private static bool ModelShowsUncertainty(string answer)
+    {
+        var normalized = (answer ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(
+            normalized,
+            "확실하지",
+            "알 수 없",
+            "근거 부족",
+            "불확실",
+            "모르겠",
+            "추정",
+            "insufficient",
+            "uncertain",
+            "not sure"
+        );
+    }
+
+    private static string BuildTelegramConclusionEscalationPrompt(string contextualPrompt, string priorAnswer, string thinkingLevel)
+    {
+        var style = thinkingLevel == "high"
+            ? "정확성과 리스크를 우선해 단일 결론을 제시하세요."
+            : "간결하게 단일 결론을 제시하세요.";
+        return $"""
+                아래는 기존 답변입니다.
+                이 답변의 불확실성을 줄이고 반드시 결론을 한 가지로 확정하세요.
+                {style}
+                출력 규칙:
+                - 첫 줄에 결론 1문장
+                - 이후 최대 5줄로 근거
+                - 군더더기 금지
+
+                [이전 답변]
+                {priorAnswer}
+
+                [원 질문]
+                {contextualPrompt}
+                """;
+    }
+
+    private static string BuildOrchestrationPrompt(
+        string userText,
+        IReadOnlyList<LlmSingleChatResult> workerResults
+    )
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.AppendLine("다음은 같은 질문을 여러 LLM이 병렬 처리한 결과입니다.");
+        builder.AppendLine($"사용자 질문: {userText}");
+        builder.AppendLine();
+        builder.AppendLine("[병렬 결과]");
+        foreach (var item in workerResults)
+        {
+            builder.AppendLine($"[{item.Provider}:{item.Model}]");
+            builder.AppendLine(item.Text);
+            builder.AppendLine();
+        }
+
+        builder.AppendLine("요구사항:");
+        builder.AppendLine("1) 중복되는 내용을 제거하고 하나의 최종 답변으로 통합");
+        builder.AppendLine("2) 사실 충돌이 있으면 보수적으로 정리");
+        builder.AppendLine("3) 한국어로 간결하고 실행 가능하게 답변");
+        builder.AppendLine("4) 마크다운 코드블록은 필요할 때만 사용");
+        return builder.ToString().Trim();
+    }
+
+    private static bool TryParseKillCommand(string text, out int pid)
+    {
+        pid = 0;
+        if (!text.StartsWith("/kill ", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length != 2)
+        {
+            return false;
+        }
+
+        return int.TryParse(tokens[1], out pid) && pid > 1;
+    }
+
+    private async Task<(bool Allowed, string Reason)> ValidateKillTargetAsync(int pid, string source, CancellationToken cancellationToken)
+    {
+        var (selfUidOk, selfUid) = await ReadCurrentUidAsync(cancellationToken);
+        if (!selfUidOk)
+        {
+            return (false, "현재 사용자 UID 확인 실패");
+        }
+
+        var (targetUidOk, targetUid) = await ReadProcessUidAsync(pid, cancellationToken);
+        if (!targetUidOk)
+        {
+            return (false, "대상 프로세스 UID 확인 실패");
+        }
+
+        if (!string.Equals(selfUid, targetUid, StringComparison.Ordinal))
+        {
+            return (false, $"다른 사용자 프로세스(uid={targetUid})는 종료할 수 없습니다.");
+        }
+
+        if (_killAllowlist.Length > 0)
+        {
+            var processName = await ReadProcessCommandAsync(pid, cancellationToken);
+            if (string.IsNullOrWhiteSpace(processName))
+            {
+                return (false, "대상 프로세스 이름 확인 실패");
+            }
+
+            var matched = _killAllowlist.Any(item =>
+                processName.Contains(item, StringComparison.OrdinalIgnoreCase));
+            if (!matched)
+            {
+                return (false, $"allowlist 미일치 프로세스({processName})");
+            }
+        }
+
+        if (source.Equals("telegram", StringComparison.OrdinalIgnoreCase))
+        {
+            return (true, "ok (telegram verified)");
+        }
+
+        return (true, "ok");
+    }
+
+    private static async Task<(bool Ok, string Uid)> ReadCurrentUidAsync(CancellationToken cancellationToken)
+    {
+        var result = await RunShellCaptureAsync("id -u", cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return (false, string.Empty);
+        }
+
+        var uid = (result.StdOut ?? string.Empty).Trim();
+        return (string.IsNullOrWhiteSpace(uid) ? false : true, uid);
+    }
+
+    private static async Task<(bool Ok, string Uid)> ReadProcessUidAsync(int pid, CancellationToken cancellationToken)
+    {
+        var cmd = $"ps -o uid= -p {pid}";
+        var result = await RunShellCaptureAsync(cmd, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return (false, string.Empty);
+        }
+
+        var uid = (result.StdOut ?? string.Empty).Trim();
+        return (string.IsNullOrWhiteSpace(uid) ? false : true, uid);
+    }
+
+    private static async Task<string> ReadProcessCommandAsync(int pid, CancellationToken cancellationToken)
+    {
+        var cmd = $"ps -o comm= -p {pid}";
+        var result = await RunShellCaptureAsync(cmd, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return string.Empty;
+        }
+
+        return (result.StdOut ?? string.Empty).Trim();
+    }
+
+    private static async Task<ShellRunResult> RunShellCaptureAsync(string command, CancellationToken cancellationToken)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/zsh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+
+        if (OperatingSystem.IsWindows())
+        {
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add(command);
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("-lc");
+            startInfo.ArgumentList.Add(command);
+        }
+
+        using var process = new Process { StartInfo = startInfo };
+        try
+        {
+            process.Start();
+        }
+        catch (Exception ex)
+        {
+            return new ShellRunResult(127, string.Empty, ex.Message, false);
+        }
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+        var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+            return new ShellRunResult(process.ExitCode, await stdoutTask, await stderrTask, false);
+        }
+        catch
+        {
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+            }
+            catch
+            {
+            }
+
+            return new ShellRunResult(124, string.Empty, "timeout", true);
+        }
+    }
+
+    private static string TrimForOutput(string text, int limit = 3500)
+    {
+        var normalized = text ?? string.Empty;
+        var safeLimit = Math.Max(200, limit);
+        if (normalized.Length <= safeLimit)
+        {
+            return normalized;
+        }
+
+        return normalized[..safeLimit] + "...(truncated)";
+    }
+
+    private static string BuildTelegramConcisePrompt(string input)
+    {
+        var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
+        var looksLikeListRequest = RequestedCountRegex.IsMatch(normalized)
+            || TopCountRegex.IsMatch(normalized)
+            || ContainsAny(normalized, "뉴스", "news", "헤드라인", "속보", "목록", "리스트", "top");
+        var requestedCount = ResolveRequestedResultCountFromQuery(input ?? string.Empty);
+        var lengthRule = looksLikeListRequest
+            ? $"- 목록형 요청은 항목 수를 임의로 줄이지 말고 요청 건수({requestedCount})를 유지"
+            : "- 최대 7줄";
+        var localNow = BuildLocalNowText();
+        return $"""
+                아래 질문에 한국어로 간결하게 답하세요.
+                규칙:
+                - 결론 먼저
+                - 불필요한 인삿말/군더더기 금지
+                {lengthRule}
+                - 핵심 불릿 위주
+                - 시간 관련 질문은 아래 로컬 시간을 기준으로 답변
+
+                로컬 시간:
+                {localNow}
+
+                질문:
+                {input}
+                """;
+    }
+
+    private static string FormatTelegramResponse(string text, int maxChars)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "응답이 비어 있습니다.";
+        }
+
+        const bool keepMarkdownTables = true;
+        var normalized = SanitizeChatOutput(text, keepMarkdownTables: keepMarkdownTables);
+        normalized = ConvertMarkdownToTelegramPlainText(normalized, keepMarkdownTables);
+        normalized = ImproveTelegramReadability(normalized, keepMarkdownTables);
+        normalized = CollapseTokenizedNumberedList(normalized);
+        if (LooksLikeNumberedListResponse(normalized))
+        {
+            normalized = NormalizeGeminiWebNumberedListResponse(normalized);
+        }
+        normalized = NormalizeStructuredLabelBlocks(normalized);
+        normalized = MergeDetachedTelegramNumberLines(normalized);
+        normalized = AddTelegramClaimSpacing(normalized);
+        var safeMaxChars = Math.Max(0, maxChars);
+        var lines = normalized
+            .Split('\n')
+            .Take(safeMaxChars == 0 ? 200 : Math.Clamp(safeMaxChars / 16, 200, 400))
+            .ToArray();
+        return lines.Length == 0 ? normalized : string.Join('\n', lines).Trim();
+    }
+
+    private static string ConvertMarkdownToTelegramPlainText(string text, bool keepMarkdownTables = false)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        normalized = ExpandCollapsedMarkdownForTelegram(normalized);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var result = new List<string>(lines.Length + 12);
+        var inCodeFence = false;
+        string[]? tableHeaders = null;
+        var tableAutoIndex = 0;
+
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.TrimEnd();
+            var trimmed = line.Trim();
+
+            if (trimmed.StartsWith("```", StringComparison.Ordinal))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                if (!inCodeFence)
+                {
+                    if (result.Count > 0 && !string.IsNullOrWhiteSpace(result[^1]))
+                    {
+                        result.Add(string.Empty);
+                    }
+                    result.Add("[코드]");
+                    inCodeFence = true;
+                }
+                else
+                {
+                    inCodeFence = false;
+                    if (result.Count > 0 && !string.IsNullOrWhiteSpace(result[^1]))
+                    {
+                        result.Add(string.Empty);
+                    }
+                }
+                continue;
+            }
+
+            if (inCodeFence)
+            {
+                result.Add(line);
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                if (result.Count > 0 && !string.IsNullOrWhiteSpace(result[^1]))
+                {
+                    result.Add(string.Empty);
+                }
+                continue;
+            }
+
+            if (Regex.IsMatch(trimmed, @"^#{1,6}\s+"))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                var heading = Regex.Replace(trimmed, @"^#{1,6}\s+", string.Empty);
+                heading = StripInlineMarkdownForTelegram(heading);
+                if (!string.IsNullOrWhiteSpace(heading))
+                {
+                    if (result.Count > 0 && !string.IsNullOrWhiteSpace(result[^1]))
+                    {
+                        result.Add(string.Empty);
+                    }
+                    result.Add(heading);
+                }
+                continue;
+            }
+
+            if (Regex.IsMatch(trimmed, @"^(-{3,}|\*{3,}|_{3,})$"))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                if (result.Count > 0 && !string.IsNullOrWhiteSpace(result[^1]))
+                {
+                    result.Add(string.Empty);
+                }
+                result.Add("-----");
+                continue;
+            }
+
+            if (trimmed.StartsWith("|", StringComparison.Ordinal) && trimmed.EndsWith("|", StringComparison.Ordinal))
+            {
+                if (keepMarkdownTables)
+                {
+                    tableHeaders = null;
+                    tableAutoIndex = 0;
+                    var preservedTableLine = NormalizeTelegramTableRowForPlainText(trimmed);
+                    if (!string.IsNullOrWhiteSpace(preservedTableLine))
+                    {
+                        result.Add(preservedTableLine);
+                    }
+                    continue;
+                }
+
+                var cells = trimmed
+                    .Trim('|')
+                    .Split('|', StringSplitOptions.TrimEntries)
+                    .Select(StripInlineMarkdownForTelegram)
+                    .ToArray();
+                if (cells.Length == 0)
+                {
+                    continue;
+                }
+
+                if (cells.All(cell => Regex.IsMatch(cell, @"^:?-{2,}:?$")))
+                {
+                    continue;
+                }
+
+                if (tableHeaders == null && IsLikelyTableHeaderRow(cells))
+                {
+                    tableHeaders = cells;
+                    tableAutoIndex = 0;
+                    continue;
+                }
+
+                tableAutoIndex += 1;
+                var itemNo = tableAutoIndex;
+                var firstCell = cells[0];
+                if (TryExtractLeadingNumber(firstCell, out var parsedNo, out var firstCellRemainder))
+                {
+                    itemNo = parsedNo;
+                    firstCell = firstCellRemainder;
+                }
+
+                var details = new List<string>(4);
+                if (tableHeaders != null && tableHeaders.Length >= 2)
+                {
+                    for (var ci = 0; ci < Math.Min(cells.Length, tableHeaders.Length); ci += 1)
+                    {
+                        var key = StripInlineMarkdownForTelegram(tableHeaders[ci]);
+                        var value = ci == 0 ? firstCell : cells[ci];
+                        if (string.IsNullOrWhiteSpace(value))
+                        {
+                            continue;
+                        }
+
+                        if (string.IsNullOrWhiteSpace(key))
+                        {
+                            details.Add(value);
+                            continue;
+                        }
+
+                        details.Add($"{key}: {value}");
+                    }
+                }
+                else
+                {
+                    if (!string.IsNullOrWhiteSpace(firstCell))
+                    {
+                        details.Add(firstCell);
+                    }
+
+                    foreach (var extra in cells.Skip(1))
+                    {
+                        if (!string.IsNullOrWhiteSpace(extra))
+                        {
+                            details.Add(extra);
+                        }
+                    }
+                }
+
+                if (details.Count > 0)
+                {
+                    result.Add($"{itemNo}. {details[0]}");
+                    foreach (var detail in details.Skip(1))
+                    {
+                        result.Add($"- {detail}");
+                    }
+                    result.Add(string.Empty);
+                }
+                continue;
+            }
+
+            if (trimmed.StartsWith(">", StringComparison.Ordinal))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                var quote = StripInlineMarkdownForTelegram(trimmed.TrimStart('>', ' '));
+                if (!string.IsNullOrWhiteSpace(quote))
+                {
+                    result.Add($"인용: {quote}");
+                }
+                continue;
+            }
+
+            if (Regex.IsMatch(trimmed, @"^\d+[.)]\s+"))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                var orderedLine = Regex.Replace(trimmed, @"^(\d+)[.)]\s+", "$1. ");
+                orderedLine = StripInlineMarkdownForTelegram(orderedLine);
+                if (!string.IsNullOrWhiteSpace(orderedLine))
+                {
+                    result.Add(orderedLine);
+                }
+                continue;
+            }
+
+            if (Regex.IsMatch(trimmed, @"^[-*+]\s+"))
+            {
+                tableHeaders = null;
+                tableAutoIndex = 0;
+                var bulletContent = Regex.Replace(trimmed, @"^[-*+]\s+", string.Empty);
+                bulletContent = StripInlineMarkdownForTelegram(bulletContent);
+                if (!string.IsNullOrWhiteSpace(bulletContent))
+                {
+                    result.Add($"- {bulletContent}");
+                }
+                continue;
+            }
+
+            tableHeaders = null;
+            tableAutoIndex = 0;
+            var plainLine = StripInlineMarkdownForTelegram(trimmed);
+            if (!string.IsNullOrWhiteSpace(plainLine))
+            {
+                result.Add(plainLine);
+            }
+        }
+
+        var merged = string.Join('\n', result).Trim();
+        return Regex.Replace(merged, @"\n{3,}", "\n\n");
+    }
+
+    private static string NormalizeTelegramTableRowForPlainText(string tableRow)
+    {
+        var trimmed = (tableRow ?? string.Empty).Trim();
+        if (!trimmed.StartsWith("|", StringComparison.Ordinal)
+            || !trimmed.EndsWith("|", StringComparison.Ordinal))
+        {
+            return trimmed;
+        }
+
+        var cells = trimmed
+            .Trim('|')
+            .Split('|', StringSplitOptions.TrimEntries)
+            .Select(StripInlineMarkdownForTelegram)
+            .ToArray();
+        if (cells.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (cells.All(cell => Regex.IsMatch(cell, @"^:?-{2,}:?$")))
+        {
+            var normalizedSeparator = cells.Select(cell =>
+            {
+                var compact = cell.Trim();
+                var leadingColon = compact.StartsWith(':');
+                var trailingColon = compact.EndsWith(':');
+                var dashCount = Math.Max(3, compact.Count(ch => ch == '-'));
+                return string.Concat(
+                    leadingColon ? ":" : string.Empty,
+                    new string('-', dashCount),
+                    trailingColon ? ":" : string.Empty
+                );
+            });
+            return "| " + string.Join(" | ", normalizedSeparator) + " |";
+        }
+
+        return "| " + string.Join(" | ", cells.Select(cell => cell.Trim())) + " |";
+    }
+
+    private static string ExpandCollapsedMarkdownForTelegram(string text)
+    {
+        var normalized = text ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"\s+\|\s+\|", " |\n|");
+        normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
+        return normalized.Trim();
+    }
+
+    private static bool IsLikelyTableHeaderRow(string[] cells)
+    {
+        if (cells == null || cells.Length < 2)
+        {
+            return false;
+        }
+
+        if (cells.All(cell => Regex.IsMatch(cell, @"^:?-{2,}:?$")))
+        {
+            return false;
+        }
+
+        if (cells.Any(cell => Regex.IsMatch(cell, @"^\d+[.)]?\s*")))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryExtractLeadingNumber(string value, out int number, out string remainder)
+    {
+        number = 0;
+        remainder = (value ?? string.Empty).Trim();
+        var match = Regex.Match(remainder, @"^(?<num>\d+)[.)]?\s*(?<rest>.*)$");
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(match.Groups["num"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out number))
+        {
+            number = 0;
+            return false;
+        }
+
+        var rest = match.Groups["rest"].Value.Trim();
+        remainder = string.IsNullOrWhiteSpace(rest) ? remainder : rest;
+        return true;
+    }
+
+    private static string StripInlineMarkdownForTelegram(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var value = text;
+        value = Regex.Replace(value, @"!\[(?<alt>[^\]]*)\]\((?<url>[^)]+)\)", "[이미지] ${alt} (${url})");
+        value = Regex.Replace(value, @"\[(?<title>[^\]]+)\]\((?<url>[^)]+)\)", "${title} (${url})");
+        value = Regex.Replace(value, @"\[(?<title>[^\]]+)\]\[[^\]]*\]", "${title}");
+        value = Regex.Replace(value, @"`{1,3}([^`]+)`{1,3}", "$1");
+        value = Regex.Replace(value, @"(\*\*|__)(?<inner>.+?)\1", "${inner}");
+        value = Regex.Replace(value, @"(\*|_)(?<inner>.+?)\1", "${inner}");
+        value = Regex.Replace(value, @"~~(?<inner>.+?)~~", "${inner}");
+        value = Regex.Replace(value, @"<[^>]+>", string.Empty);
+        value = value
+            .Replace("\\n", "\n", StringComparison.Ordinal)
+            .Replace("\\t", " ", StringComparison.Ordinal)
+            .Replace("\\*", "*", StringComparison.Ordinal)
+            .Replace("\\_", "_", StringComparison.Ordinal)
+            .Replace("\\`", "`", StringComparison.Ordinal);
+        value = Regex.Replace(value, @"[ \t]{2,}", " ");
+        return value.Trim();
+    }
+
+    private static string ImproveTelegramReadability(string text, bool keepMarkdownTables = false)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal)
+            .Replace("\t", " ", StringComparison.Ordinal);
+        var tightWrap = ShouldUseTightTelegramWrap(normalized);
+        var wrapWidth = tightWrap ? 200 : 4000;
+
+        var sourceLines = normalized.Split('\n', StringSplitOptions.None);
+        var lines = new List<string>(sourceLines.Length + 8);
+        foreach (var rawLine in sourceLines)
+        {
+            var line = rawLine.TrimEnd();
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                if (lines.Count > 0 && !string.IsNullOrWhiteSpace(lines[^1]))
+                {
+                    lines.Add(string.Empty);
+                }
+                continue;
+            }
+
+            if (keepMarkdownTables && IsMarkdownTableRow(line))
+            {
+                lines.Add(line.Trim());
+                continue;
+            }
+
+            if (TrySplitAsHeadlineList(line, out var headlineLines))
+            {
+                foreach (var headlineLine in headlineLines)
+                {
+                    lines.Add(headlineLine);
+                }
+                continue;
+            }
+
+            if (tightWrap && line.Length > 120)
+            {
+                line = Regex.Replace(line, @"([.!?])\s+", "$1\n");
+                line = Regex.Replace(line, @"(다\.|요\.)\s+", "$1\n");
+                line = Regex.Replace(line, @"(…+)\s+", "$1\n");
+                line = Regex.Replace(line, @"\s+\|\s+\|", " |\n|");
+                var splitLines = line.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                foreach (var splitLine in splitLines)
+                {
+                    AddWrappedTelegramLines(lines, splitLine, wrapWidth);
+                }
+                continue;
+            }
+
+            AddWrappedTelegramLines(lines, line, wrapWidth);
+        }
+
+        var merged = string.Join('\n', lines).Trim();
+        merged = Regex.Replace(merged, @"\n{3,}", "\n\n");
+        return merged;
+    }
+
+    private static bool ShouldUseTightTelegramWrap(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hasStructuredTitle = Regex.IsMatch(
+            normalized,
+            @"(?mi)^\s*(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?제목\s*[:：]",
+            RegexOptions.CultureInvariant
+        );
+        var hasStructuredContent = Regex.IsMatch(
+            normalized,
+            @"(?mi)^\s*(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?내용\s*[:：]",
+            RegexOptions.CultureInvariant
+        );
+        return hasStructuredTitle || hasStructuredContent;
+    }
+
+    private static void AddWrappedTelegramLines(List<string> output, string line, int maxWidth)
+    {
+        var normalizedLine = (line ?? string.Empty).Trim();
+        if (normalizedLine.Length == 0)
+        {
+            return;
+        }
+
+        if (IsTelegramTitleLine(normalizedLine) || IsTelegramSourceLine(normalizedLine) || IsTelegramCategoryLine(normalizedLine))
+        {
+            output.Add(normalizedLine);
+            return;
+        }
+
+        var wrapped = WrapLongLineForTelegram(normalizedLine, maxWidth).ToArray();
+        if (wrapped.Length == 0)
+        {
+            return;
+        }
+
+        var claimLine = IsTelegramClaimLine(normalizedLine);
+        for (var i = 0; i < wrapped.Length; i += 1)
+        {
+            output.Add(wrapped[i]);
+        }
+    }
+
+    private static string CollapseTokenizedNumberedList(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        var index = 0;
+        while (index < lines.Length)
+        {
+            var line = (lines[index] ?? string.Empty).Trim();
+            if (!TryParseShortNumberedToken(line, out var token))
+            {
+                output.Add(lines[index]);
+                index += 1;
+                continue;
+            }
+
+            var runTokens = new List<string> { token };
+            var runStart = index;
+            var expectedNumber = 2;
+            var cursor = index + 1;
+            while (cursor < lines.Length)
+            {
+                var next = (lines[cursor] ?? string.Empty).Trim();
+                if (!TryParseShortNumberedToken(next, out var nextToken, out var parsedNumber)
+                    || parsedNumber != expectedNumber)
+                {
+                    break;
+                }
+
+                runTokens.Add(nextToken);
+                expectedNumber += 1;
+                cursor += 1;
+            }
+
+            if (runTokens.Count >= 6)
+            {
+                output.Add(string.Join(' ', runTokens));
+                index = cursor;
+                continue;
+            }
+
+            // run이 짧으면 원본 보존
+            for (var i = runStart; i < cursor; i += 1)
+            {
+                output.Add(lines[i]);
+            }
+            index = cursor;
+        }
+
+        var merged = string.Join('\n', output).Trim();
+        return Regex.Replace(merged, @"\n{3,}", "\n\n");
+    }
+
+    private static string MergeDetachedTelegramNumberLines(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length);
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            var current = (lines[i] ?? string.Empty).Trim();
+            if (!Regex.IsMatch(current, @"^\d+\.$", RegexOptions.CultureInvariant))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            if (i + 1 >= lines.Length)
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var nextIndex = i + 1;
+            while (nextIndex < lines.Length && string.IsNullOrWhiteSpace(lines[nextIndex]))
+            {
+                nextIndex += 1;
+            }
+
+            if (nextIndex >= lines.Length)
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            var next = (lines[nextIndex] ?? string.Empty).Trim();
+            if (next.Length == 0
+                || Regex.IsMatch(next, @"^\d+\.$", RegexOptions.CultureInvariant)
+                || next.StartsWith("```", StringComparison.Ordinal)
+                || IsMarkdownTableRow(next))
+            {
+                output.Add(lines[i]);
+                continue;
+            }
+
+            output.Add($"{current} {next}");
+            i = nextIndex;
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static string AddTelegramClaimSpacing(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized.Split('\n', StringSplitOptions.None);
+        var output = new List<string>(lines.Length + 24);
+        for (var i = 0; i < lines.Length; i += 1)
+        {
+            var trimmed = (lines[i] ?? string.Empty).Trim();
+            if (trimmed.Length == 0)
+            {
+                if (output.Count > 0 && !string.IsNullOrWhiteSpace(output[^1]))
+                {
+                    output.Add(string.Empty);
+                }
+                continue;
+            }
+
+            if (ShouldInsertTelegramBlankBefore(trimmed)
+                && output.Count > 0
+                && !string.IsNullOrWhiteSpace(output[^1]))
+            {
+                output.Add(string.Empty);
+            }
+
+            output.Add(trimmed);
+
+            var next = FindNextNonEmptyTelegramLine(lines, i + 1);
+            if (ShouldInsertTelegramBlankAfter(trimmed, next)
+                && output.Count > 0
+                && !string.IsNullOrWhiteSpace(output[^1]))
+            {
+                output.Add(string.Empty);
+            }
+        }
+
+        return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
+    }
+
+    private static bool ShouldInsertTelegramBlankBefore(string line)
+    {
+        return IsTelegramClaimLine(line) || IsTelegramSourceLine(line);
+    }
+
+    private static bool ShouldInsertTelegramBlankAfter(string current, string? next)
+    {
+        if (string.IsNullOrWhiteSpace(next))
+        {
+            return false;
+        }
+
+        var currentTrimmed = (current ?? string.Empty).Trim();
+        if (IsTelegramSourceLine(currentTrimmed))
+        {
+            return true;
+        }
+
+        var nextTrimmed = next.Trim();
+        if (!IsTelegramClaimLine(nextTrimmed) && !IsTelegramSourceLine(nextTrimmed))
+        {
+            return false;
+        }
+
+        return currentTrimmed.EndsWith(".", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith("다.", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith("요.", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith("니다.", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith(":", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith("?", StringComparison.Ordinal)
+            || currentTrimmed.EndsWith("!", StringComparison.Ordinal);
+    }
+
+    private static bool IsTelegramClaimLine(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        return IsStandaloneNumberedHeadlineLine(trimmed)
+            || trimmed.StartsWith("- ", StringComparison.Ordinal)
+            || Regex.IsMatch(trimmed, @"^\d+\.\s+", RegexOptions.CultureInvariant)
+            || Regex.IsMatch(trimmed, @"^[■□▪●◆▶▷]\s+", RegexOptions.CultureInvariant)
+            || Regex.IsMatch(
+                trimmed,
+                @"^(?:(?:No\.\d+|\d+[.)])\s*)?\*\*[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}\s*[:：]\*\*",
+                RegexOptions.CultureInvariant
+            )
+            || Regex.IsMatch(
+                trimmed,
+                @"^(?:(?:No\.\d+|\d+[.)])\s*)?(제목|내용)\s*[:：]",
+                RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+            );
+    }
+
+    private static bool IsTelegramSourceLine(string line)
+    {
+        return Regex.IsMatch(
+            (line ?? string.Empty).Trim(),
+            @"^(?:\*\*)?\s*출처\s*[:：](?:\*\*)?",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
+    }
+
+    private static bool IsTelegramTitleLine(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        return IsStandaloneNumberedHeadlineLine(trimmed)
+            || Regex.IsMatch(
+            trimmed,
+            @"^(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?제목\s*[:：]",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
+    }
+
+    private static bool IsTelegramCategoryLine(string line)
+    {
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        if (trimmed.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || trimmed.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            trimmed,
+            @"^(?:[-•▪]\s*)?(?<label>[A-Za-z가-힣0-9()'‘’,.&+\- ]{1,24})\s*[:：]\s*(?<value>.+)$",
+            RegexOptions.CultureInvariant
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        var label = match.Groups["label"].Value.Trim();
+        if (label.Length == 0)
+        {
+            return false;
+        }
+
+        if (label.Equals("제목", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("내용", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("출처", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("출처링크", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("http", StringComparison.OrdinalIgnoreCase)
+            || label.Equals("https", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string? FindNextNonEmptyTelegramLine(string[] lines, int startIndex)
+    {
+        for (var i = startIndex; i < lines.Length; i += 1)
+        {
+            var candidate = (lines[i] ?? string.Empty).Trim();
+            if (candidate.Length > 0)
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseShortNumberedToken(string line, out string token)
+    {
+        return TryParseShortNumberedToken(line, out token, out _);
+    }
+
+    private static bool TryParseShortNumberedToken(string line, out string token, out int number)
+    {
+        token = string.Empty;
+        number = 0;
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            normalized,
+            @"^(?<n>\d{1,2})\.\s+(?<token>[^\s]{1,12})$",
+            RegexOptions.CultureInvariant
+        );
+        if (!match.Success
+            || !int.TryParse(match.Groups["n"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out number))
+        {
+            return false;
+        }
+
+        token = match.Groups["token"].Value.Trim();
+        if (token.Length == 0)
+        {
+            return false;
+        }
+
+        if (token.Contains("출처", StringComparison.OrdinalIgnoreCase)
+            || token.Contains("제목", StringComparison.OrdinalIgnoreCase)
+            || token.Contains("내용", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (token.Contains(':', StringComparison.Ordinal)
+            || token.Contains('/', StringComparison.Ordinal)
+            || token.Contains('|', StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TrySplitAsHeadlineList(string line, out IReadOnlyList<string> splitLines)
+    {
+        splitLines = Array.Empty<string>();
+        var raw = (line ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return false;
+        }
+
+        if (Regex.IsMatch(raw, @"^\d+[.)]\s+"))
+        {
+            return false;
+        }
+
+        if (raw.Contains("http://", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (raw.Contains(" / ", StringComparison.Ordinal)
+            || raw.Contains("|", StringComparison.Ordinal)
+            || raw.Contains("출처:", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("제목:", StringComparison.OrdinalIgnoreCase)
+            || raw.Contains("내용:", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var commaCount = raw.Count(ch => ch == ',');
+        if (raw.Length < 90 || commaCount < 2)
+        {
+            return false;
+        }
+
+        var candidate = raw;
+        candidate = Regex.Replace(candidate, @"([.…]{1,3})(?=[^\s\n])", "$1\n");
+        candidate = Regex.Replace(candidate, @"([.…]{1,3})\s+", "$1\n");
+        candidate = Regex.Replace(candidate, @"\s+(?=[^,\n]{6,36},)", "\n");
+        candidate = Regex.Replace(candidate, @"\n{2,}", "\n");
+
+        var items = candidate
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(x => x.Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
+        if (items.Count < 3 || items.Count > 8)
+        {
+            return false;
+        }
+
+        var shortOrSingleWordCount = items.Count(item =>
+            item.Length < 8 || !item.Contains(' ', StringComparison.Ordinal));
+        if (shortOrSingleWordCount > (items.Count / 3))
+        {
+            return false;
+        }
+
+        var output = new List<string>(items.Count + 2);
+        for (var i = 0; i < items.Count; i += 1)
+        {
+            output.Add($"- {items[i]}");
+        }
+
+        splitLines = output;
+        return true;
+    }
+
+    private static IEnumerable<string> WrapLongLineForTelegram(string line, int maxWidth)
+    {
+        var value = (line ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            yield break;
+        }
+
+        var safeWidth = Math.Max(10, maxWidth);
+        while (value.Length > safeWidth)
+        {
+            var cut = value.LastIndexOf(' ', safeWidth);
+            if (cut < Math.Max(8, safeWidth / 2))
+            {
+                var nextSpace = value.IndexOf(' ', safeWidth);
+                if (nextSpace > safeWidth && nextSpace <= safeWidth + 12)
+                {
+                    cut = nextSpace;
+                }
+                else
+                {
+                    cut = safeWidth;
+                }
+            }
+
+            var head = value[..cut].Trim();
+            if (!string.IsNullOrWhiteSpace(head))
+            {
+                yield return head;
+            }
+
+            value = value[cut..].TrimStart();
+        }
+
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            yield return value;
+        }
+    }
+
+    private static string BuildLocalNowText()
+    {
+        var now = DateTimeOffset.Now;
+        var offset = FormatUtcOffsetLabel(now.Offset);
+        var timezoneId = TimeZoneInfo.Local.Id;
+        return $"{now:yyyy-MM-dd HH:mm:ss} ({offset}, {timezoneId})";
+    }
+
+    private static string FormatUtcOffsetLabel(TimeSpan offset)
+    {
+        var sign = offset < TimeSpan.Zero ? "-" : "+";
+        var abs = offset < TimeSpan.Zero ? offset.Negate() : offset;
+        return $"UTC{sign}{abs:hh\\:mm}";
+    }
+
+    private static HttpClient CreateWebFetchClient()
+    {
+        var client = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(10)
+        };
+        client.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", "Omni-node/1.0");
+        return client;
+    }
+
+    private static string ParseHelpTopicFromInput(string text)
+    {
+        var tokens = (text ?? string.Empty)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length < 2)
+        {
+            return string.Empty;
+        }
+
+        var topic = tokens[1].Trim().ToLowerInvariant();
+        if (topic is "llm" or "model" or "models" or "모델")
+        {
+            return "llm";
+        }
+
+        if (topic is "routine" or "routines" or "루틴")
+        {
+            return "routine";
+        }
+
+        if (topic is "natural" or "대화" or "자연어")
+        {
+            return "natural";
+        }
+
+        return string.Empty;
+    }
+
+    private static string BuildTelegramHelpText(string? topic = null)
+    {
+        var normalized = (topic ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalized == "llm")
+        {
+            return """
+                   [LLM 제어 도움말]
+                   단순 명령(신규):
+                   - /profile <talk|code> [low|high]
+                   - /mode <single|orchestration|multi>
+                   - /provider <single|orchestration|summary> <groq|gemini|copilot|cerebras|auto>
+                   - /model <single|orchestration|multi.groq|multi.copilot|multi.cerebras> <model-id>
+                   - /status model
+
+                   프리셋:
+                   - /talk [low|high]
+                   - /code [low|high]
+
+                   빠른 전환:
+                   - /model groq | /model gemini | /model copilot | /model cerebras
+
+                   상세 제어:
+                   - /llm status
+                   - /llm mode <single|orchestration|multi>
+                   - /llm single provider <groq|gemini|copilot|cerebras>
+                   - /llm single model <model-id>
+                   - /llm orchestration provider <auto|groq|gemini|copilot|cerebras>
+                   - /llm orchestration model <model-id>
+                   - /llm multi groq <model-id>
+                   - /llm multi copilot <model-id>
+                   - /llm multi cerebras <model-id>
+                   - /llm multi summary <auto|groq|gemini|copilot|cerebras>
+                   - /llm models [groq|gemini|copilot|cerebras|all]
+                   - /llm usage
+
+                   자연어 예시:
+                   - "llm mode multi"
+                   - "단일 모드로 바꿔"
+                   - "코딩 프리셋 high로"
+                   - "Groq 모델 openai/gpt-oss-120b로 변경"
+                   """;
+        }
+
+        if (normalized == "routine")
+        {
+            return """
+                   [루틴 도움말]
+                   - /routine list
+                   - /routine create <요청>
+                   - /routine run <routine-id>
+                   - /routine on <routine-id>
+                   - /routine off <routine-id>
+                   - /routine delete <routine-id>
+
+                   자연어 예시:
+                   - "루틴 목록 보여줘"
+                   - "루틴 생성: 매일 아침 8시에 뉴스 요약"
+                   - "루틴 실행 rt-20260301093000-ab12cd34"
+                   - "루틴 꺼 rt-20260301093000-ab12cd34"
+                   """;
+        }
+
+        if (normalized == "natural")
+        {
+            return """
+                   [자연어 제어 도움말]
+                   슬래시(/) 없이도 대부분의 설정 명령을 처리합니다.
+                   자연어 입력은 LLM 해석 + 서버 규칙 검증 후 실행됩니다.
+
+                   지원 예시:
+                   - "llm status"
+                   - "단일 모드로 바꿔"
+                   - "오케스트레이션 모드로 변경"
+                   - "메모리 초기화"
+                   - "모델 목록 보여줘"
+                   - "사용량/과금 보여줘"
+                   - "메트릭 보여줘"
+                   - "루틴 목록"
+                   - "루틴 생성: 매일 09:00 서버 상태 점검"
+
+                   보안 정책:
+                   - 프로세스 종료는 /kill <pid> 슬래시 명령으로만 허용됩니다.
+                   """;
+        }
+
+        return """
+               Omni-node Telegram 도움말
+
+               [핵심]
+               - /metrics
+               - /kill <pid>
+               - /talk [low|high]
+               - /code [low|high]
+               - /model <groq|gemini|copilot|cerebras>
+               - /llm status
+               - /llm usage
+               - /memory clear
+               - /memory create [compact]
+               - /routine list
+               - /routine create <요청>
+
+               [기본 정책]
+               - Groq 기본: meta-llama/llama-4-scout-17b-16e-instruct
+               - 한도 근접/429 시: qwen/qwen3-32b -> llama-3.1-8b-instant 순서로 자동 전환
+               - 응답 길이: 최대 2000자
+
+               [추가 도움말]
+               - /help llm
+               - /help routine
+               - /help natural
+
+               [자연어/멀티모달]
+               - 슬래시 없이도 설정 명령 입력 가능
+               - 이미지/파일 첨부 + 질문 가능(모델 지원 시 분석)
+               - URL 포함 질문 시 웹 참조 기반 요약 가능
+               """;
+    }
+
+    private string BuildTelegramUpgradeQuotaStatePath()
+    {
+        var baseDir = Path.GetDirectoryName(_config.LlmUsageStatePath);
+        if (string.IsNullOrWhiteSpace(baseDir))
+        {
+            var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            baseDir = string.IsNullOrWhiteSpace(home) ? "/tmp" : Path.Combine(home, ".omninode");
+        }
+
+        return Path.Combine(baseDir, "telegram_upgrade_quota.state");
+    }
+
+    private void LoadTelegramUpgradeQuotaState()
+    {
+        lock (_telegramUpgradeQuotaLock)
+        {
+            _telegramUpgradeQuotaDay = GetCurrentQuotaDayKey();
+            _telegramUpgradeQuotaCount = 0;
+            try
+            {
+                if (!File.Exists(_telegramUpgradeQuotaStatePath))
+                {
+                    return;
+                }
+
+                var text = File.ReadAllText(_telegramUpgradeQuotaStatePath, Encoding.UTF8).Trim();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    return;
+                }
+
+                var parts = text.Split('|', StringSplitOptions.TrimEntries);
+                if (parts.Length < 2)
+                {
+                    return;
+                }
+
+                if (!int.TryParse(parts[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var count))
+                {
+                    return;
+                }
+
+                if (parts[0] == _telegramUpgradeQuotaDay)
+                {
+                    _telegramUpgradeQuotaCount = Math.Max(0, count);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[telegram-quota] load failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void SaveTelegramUpgradeQuotaState()
+    {
+        lock (_telegramUpgradeQuotaLock)
+        {
+            try
+            {
+                var dir = Path.GetDirectoryName(_telegramUpgradeQuotaStatePath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                var content = $"{_telegramUpgradeQuotaDay}|{_telegramUpgradeQuotaCount.ToString(CultureInfo.InvariantCulture)}";
+                AtomicFileStore.WriteAllText(_telegramUpgradeQuotaStatePath, content, ownerOnly: true);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[telegram-quota] save failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void NormalizeTelegramQuotaDayLocked()
+    {
+        var day = GetCurrentQuotaDayKey();
+        if (_telegramUpgradeQuotaDay == day)
+        {
+            return;
+        }
+
+        _telegramUpgradeQuotaDay = day;
+        _telegramUpgradeQuotaCount = 0;
+        SaveTelegramUpgradeQuotaState();
+    }
+
+    private bool TryConsumeTelegramUpgradeQuota()
+    {
+        lock (_telegramUpgradeQuotaLock)
+        {
+            NormalizeTelegramQuotaDayLocked();
+            if (_telegramUpgradeQuotaCount >= TelegramUpgradeDailyCap)
+            {
+                return false;
+            }
+
+            _telegramUpgradeQuotaCount += 1;
+            SaveTelegramUpgradeQuotaState();
+            return true;
+        }
+    }
+
+    private (string DayKey, int Used, int Cap) GetTelegramUpgradeQuotaSnapshot()
+    {
+        lock (_telegramUpgradeQuotaLock)
+        {
+            NormalizeTelegramQuotaDayLocked();
+            return (_telegramUpgradeQuotaDay, _telegramUpgradeQuotaCount, TelegramUpgradeDailyCap);
+        }
+    }
+
+    private static string GetCurrentQuotaDayKey()
+    {
+        return DateTimeOffset.Now.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    }
+
+}

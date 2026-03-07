@@ -1,0 +1,21 @@
+namespace OmniNode.Middleware;
+
+public sealed class RoutineApplicationService : IRoutineApplicationService
+{
+    private readonly CommandService _inner;
+
+    public RoutineApplicationService(CommandService inner)
+    {
+        _inner = inner;
+    }
+
+    public IReadOnlyList<RoutineSummary> ListRoutines() => _inner.ListRoutines();
+    public Task<RoutineActionResult> CreateRoutineAsync(string request, string source, CancellationToken cancellationToken) => _inner.CreateRoutineAsync(request, source, cancellationToken);
+    public Task<RoutineActionResult> CreateRoutineAsync(string request, string? title, string? executionMode, string? agentProvider, string? agentModel, string? agentStartUrl, int? agentTimeoutSeconds, bool? agentUsePlaywright, string? scheduleSourceMode, int? maxRetries, int? retryDelaySeconds, string? notifyPolicy, string? scheduleKind, string? scheduleTime, IReadOnlyList<int>? weekdays, int? dayOfMonth, string? timezoneId, string source, CancellationToken cancellationToken) => _inner.CreateRoutineAsync(request, title, executionMode, agentProvider, agentModel, agentStartUrl, agentTimeoutSeconds, agentUsePlaywright, scheduleSourceMode, maxRetries, retryDelaySeconds, notifyPolicy, scheduleKind, scheduleTime, weekdays, dayOfMonth, timezoneId, source, cancellationToken);
+    public Task<RoutineActionResult> UpdateRoutineAsync(string routineId, string request, string? title, string? executionMode, string? agentProvider, string? agentModel, string? agentStartUrl, int? agentTimeoutSeconds, bool? agentUsePlaywright, string? scheduleSourceMode, int? maxRetries, int? retryDelaySeconds, string? notifyPolicy, string? scheduleKind, string? scheduleTime, IReadOnlyList<int>? weekdays, int? dayOfMonth, string? timezoneId, CancellationToken cancellationToken) => _inner.UpdateRoutineAsync(routineId, request, title, executionMode, agentProvider, agentModel, agentStartUrl, agentTimeoutSeconds, agentUsePlaywright, scheduleSourceMode, maxRetries, retryDelaySeconds, notifyPolicy, scheduleKind, scheduleTime, weekdays, dayOfMonth, timezoneId, cancellationToken);
+    public Task<RoutineActionResult> RunRoutineNowAsync(string routineId, string source, CancellationToken cancellationToken) => _inner.RunRoutineNowAsync(routineId, source, cancellationToken);
+    public RoutineRunDetailResult GetRoutineRunDetail(string routineId, long ts) => _inner.GetRoutineRunDetail(routineId, ts);
+    public Task<RoutineActionResult> ResendRoutineRunToTelegramAsync(string routineId, long ts, CancellationToken cancellationToken) => _inner.ResendRoutineRunToTelegramAsync(routineId, ts, cancellationToken);
+    public RoutineActionResult SetRoutineEnabled(string routineId, bool enabled) => _inner.SetRoutineEnabled(routineId, enabled);
+    public RoutineActionResult DeleteRoutine(string routineId) => _inner.DeleteRoutine(routineId);
+}

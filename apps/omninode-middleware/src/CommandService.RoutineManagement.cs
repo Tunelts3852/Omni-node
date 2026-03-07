@@ -1,0 +1,2011 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace OmniNode.Middleware;
+
+public sealed partial class CommandService
+{
+    private async Task<string?> TryHandleRoutineCommandAsync(string text, string source, CancellationToken cancellationToken)
+    {
+        if (!text.StartsWith("/routine", StringComparison.OrdinalIgnoreCase)
+            && !text.StartsWith("/routines", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
+        {
+            return """
+                   루틴 명령어
+                   /routine list
+                   /routine create <요청>
+                   /routine create browser --model <model> [--url <start-url>] <요청>
+                   /routine update <routine-id> <요청>
+                   /routine update <routine-id> browser --model <model> [--url <start-url>] <요청>
+                   /routine run <routine-id>
+                   /routine on <routine-id>
+                   /routine off <routine-id>
+                   /routine delete <routine-id>
+                   """;
+        }
+
+        var action = tokens[1].ToLowerInvariant();
+        if (action == "list")
+        {
+            var list = ListRoutines();
+            if (list.Count == 0)
+            {
+                return "등록된 루틴이 없습니다.";
+            }
+
+            var builder = new StringBuilder();
+            builder.AppendLine("[루틴 목록]");
+            foreach (var item in list.Take(20))
+            {
+                var modeLabel = FormatRoutineExecutionModeLabel(item.ResolvedExecutionMode);
+                builder.AppendLine($"- {item.Id} | {item.Title} | mode={modeLabel} | {(item.Enabled ? "ON" : "OFF")} | next={item.NextRunLocal}");
+            }
+
+            return builder.ToString().Trim();
+        }
+
+        if (action == "create")
+        {
+            if (tokens.Length < 3)
+            {
+                return "usage: /routine create <요청>";
+            }
+
+            RoutineActionResult created;
+            if (tokens[2].Equals("browser", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseRoutineBrowserCommand(tokens.Skip(3), out var browserSpec, out var browserError))
+                {
+                    return browserError;
+                }
+
+                created = await CreateRoutineAsync(
+                    request: browserSpec.Request,
+                    title: null,
+                    executionMode: "browser_agent",
+                    agentProvider: browserSpec.Provider,
+                    agentModel: browserSpec.Model,
+                    agentStartUrl: browserSpec.StartUrl,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: true,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    source: source,
+                    cancellationToken: cancellationToken
+                );
+            }
+            else
+            {
+                var request = string.Join(' ', tokens.Skip(2)).Trim();
+                created = await CreateRoutineAsync(request, source, cancellationToken);
+            }
+
+            return FormatRoutineActionResult(created);
+        }
+
+        if (action == "update")
+        {
+            if (tokens.Length < 4)
+            {
+                return "usage: /routine update <routine-id> <요청>";
+            }
+
+            var routineId = tokens[2];
+            RoutineActionResult updated;
+            if (tokens[3].Equals("browser", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryParseRoutineBrowserCommand(tokens.Skip(4), out var browserSpec, out var browserError))
+                {
+                    return browserError;
+                }
+
+                updated = await UpdateRoutineAsync(
+                    routineId: routineId,
+                    request: browserSpec.Request,
+                    title: null,
+                    executionMode: "browser_agent",
+                    agentProvider: browserSpec.Provider,
+                    agentModel: browserSpec.Model,
+                    agentStartUrl: browserSpec.StartUrl,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: true,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    cancellationToken: cancellationToken
+                );
+            }
+            else
+            {
+                var request = string.Join(' ', tokens.Skip(3)).Trim();
+                updated = await UpdateRoutineAsync(
+                    routineId: routineId,
+                    request: request,
+                    title: null,
+                    executionMode: null,
+                    agentProvider: null,
+                    agentModel: null,
+                    agentStartUrl: null,
+                    agentTimeoutSeconds: null,
+                    agentUsePlaywright: null,
+                    scheduleSourceMode: "auto",
+                    maxRetries: null,
+                    retryDelaySeconds: null,
+                    notifyPolicy: null,
+                    scheduleKind: null,
+                    scheduleTime: null,
+                    weekdays: null,
+                    dayOfMonth: null,
+                    timezoneId: null,
+                    cancellationToken: cancellationToken
+                );
+            }
+
+            return FormatRoutineActionResult(updated);
+        }
+
+        if (action == "run")
+        {
+            if (tokens.Length < 3)
+            {
+                return "usage: /routine run <routine-id>";
+            }
+
+            var result = await RunRoutineNowAsync(tokens[2], source, cancellationToken);
+            return FormatRoutineActionResult(result);
+        }
+
+        if (action == "on" || action == "off")
+        {
+            if (tokens.Length < 3)
+            {
+                return $"usage: /routine {action} <routine-id>";
+            }
+
+            var enabled = action == "on";
+            var result = SetRoutineEnabled(tokens[2], enabled);
+            return FormatRoutineActionResult(result);
+        }
+
+        if (action == "delete")
+        {
+            if (tokens.Length < 3)
+            {
+                return "usage: /routine delete <routine-id>";
+            }
+
+            var result = DeleteRoutine(tokens[2]);
+            return FormatRoutineActionResult(result);
+        }
+
+        return "unknown /routine command. use /routine help";
+    }
+
+    private async Task<string?> TryHandleNaturalRoutineRequestAsync(string text, string source, CancellationToken cancellationToken)
+    {
+        if (!LooksLikeRoutineRequest(text))
+        {
+            return null;
+        }
+
+        var result = await CreateRoutineAsync(text, source, cancellationToken);
+        return FormatRoutineActionResult(result);
+    }
+
+    private static string FormatRoutineActionResult(RoutineActionResult result)
+    {
+        if (!result.Ok)
+        {
+            return $"루틴 오류: {result.Message}";
+        }
+
+        if (result.Routine == null)
+        {
+            return result.Message;
+        }
+
+        return $"""
+                {result.Message}
+                id={result.Routine.Id}
+                title={result.Routine.Title}
+                mode={FormatRoutineExecutionModeLabel(result.Routine.ResolvedExecutionMode)}
+                schedule={result.Routine.ScheduleText}
+                next={result.Routine.NextRunLocal}
+                script={result.Routine.ScriptPath}
+                model={result.Routine.CoderModel}
+                """;
+    }
+
+    private sealed record RoutineBrowserCommandSpec(
+        string Request,
+        string? Provider,
+        string Model,
+        string? StartUrl
+    );
+
+    private static bool TryParseRoutineBrowserCommand(
+        IEnumerable<string> tokens,
+        out RoutineBrowserCommandSpec spec,
+        out string error
+    )
+    {
+        var tokenList = tokens.Select(token => token.Trim()).Where(token => token.Length > 0).ToList();
+        string? provider = null;
+        string? model = null;
+        string? startUrl = null;
+        var requestTokens = new List<string>();
+
+        for (var i = 0; i < tokenList.Count; i += 1)
+        {
+            var token = tokenList[i];
+            if (token.Equals("--provider", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                provider = tokenList[++i];
+                continue;
+            }
+
+            if (token.Equals("--model", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                model = tokenList[++i];
+                continue;
+            }
+
+            if (token.Equals("--url", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    return false;
+                }
+
+                startUrl = tokenList[++i];
+                continue;
+            }
+
+            requestTokens.Add(token);
+        }
+
+        var request = string.Join(' ', requestTokens).Trim();
+        if (string.IsNullOrWhiteSpace(model))
+        {
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            error = "브라우저 루틴은 --model <model> 이 필요합니다.";
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(request))
+        {
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            error = "브라우저 루틴 요청을 입력하세요.";
+            return false;
+        }
+
+        spec = new RoutineBrowserCommandSpec(request, provider, model.Trim(), startUrl);
+        error = string.Empty;
+        return true;
+    }
+
+    private static string FormatRoutineExecutionModeLabel(string? executionMode)
+    {
+        return NormalizeRoutineExecutionMode(executionMode) switch
+        {
+            "browser_agent" => "browser_agent",
+            "url" => "url",
+            "web" => "web",
+            _ => "script"
+        };
+    }
+
+    private static bool LooksLikeRoutineRequest(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var hasRepeat = ContainsAny(normalized, "매일", "매주", "반복", "루틴", "정기", "매달", "every day", "schedule");
+        var hasIntent = ContainsAny(normalized, "해줘", "만들어", "자동화", "추가", "등록", "생성", "set up", "create");
+        return hasRepeat && hasIntent;
+    }
+
+    private async Task RoutineSchedulerLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            List<string> dueIds;
+            lock (_routineLock)
+            {
+                var now = DateTimeOffset.UtcNow;
+                dueIds = _routinesById.Values
+                    .Where(x => x.Enabled && !x.Running && x.NextRunUtc <= now)
+                    .Select(x => x.Id)
+                    .ToList();
+
+                foreach (var id in dueIds)
+                {
+                    if (_routinesById.TryGetValue(id, out var routine))
+                    {
+                        routine.Running = true;
+                    }
+                }
+
+                if (dueIds.Count > 0)
+                {
+                    SaveRoutineStateLocked();
+                }
+            }
+
+            foreach (var id in dueIds)
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await RunRoutineNowAsync(id, "scheduler", CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[routine] scheduler run failed ({id}): {ex.Message}");
+                    }
+                }, CancellationToken.None);
+            }
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(20), cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+    }
+
+    private void EnsureRoutinePromptFiles()
+    {
+        try
+        {
+            Directory.CreateDirectory(_routinePromptDir);
+            var systemPromptPath = Path.Combine(_routinePromptDir, "system_prompt.md");
+            var baseConfigPath = Path.Combine(_routinePromptDir, "기본 구성.md");
+
+            if (!File.Exists(systemPromptPath))
+            {
+                File.WriteAllText(
+                    systemPromptPath,
+                    """
+                    # Routine System Prompt
+                    - 목적: 반복 작업 자동화를 위한 루틴을 계획하고 실행 가능한 코드로 생성한다.
+                    - 출력: 반드시 PLAN 섹션 + LANGUAGE 선언 + 단일 코드블록.
+                    - 가장 중요: 스케줄은 루틴 엔진이 이미 처리한다. 코드 안에서 현재 시각/요일/날짜를 다시 확인하거나 대기하지 마라.
+                    - 금지: cron 등록, while true, sleep 기반 무한 대기, CURRENT_HOUR/CURRENT_MINUTE/DAY_OF_WEEK 계산, datetime.now()로 실행 여부 판단.
+                    - 실행 방식: 코드가 호출되면 즉시 작업을 수행하고 결과를 stdout에 완결된 한국어 텍스트로 남긴다.
+                    - 결과 품질: 표준 출력은 비워두지 말고, 핵심 결과/요약/실패 원인을 사람이 읽을 수 있게 출력한다.
+                    - 제약: macOS/Linux 모두 동작 가능한 방식 우선, 외부 의존 최소화.
+                    - 보안: 파괴적 명령 금지, 사용자 경로 외 쓰기 금지, 민감정보 출력 금지.
+                    """,
+                    new UTF8Encoding(false)
+                );
+            }
+
+            if (!File.Exists(baseConfigPath))
+            {
+                File.WriteAllText(
+                    baseConfigPath,
+                    """
+                    # 기본 구성
+                    1. 스케줄은 엔진이 담당하므로 코드에서 시간/요일 조건문을 두지 않는다.
+                    2. 실행 환경은 bash 또는 python 중 하나만 사용하고, 한 번 실행될 때 즉시 끝나야 한다.
+                    3. 출력은 항상 stdout에 남긴다. 결과가 없더라도 실제 수행 결과나 실패 원인을 설명한다.
+                    4. 네트워크/외부 사이트 접근이 실패하면 stderr 또는 stdout에 원인과 대체 안내를 짧게 남긴다.
+                    5. 사용자가 적은 요청 원문에 스케줄 표현이 섞여 있어도, 구현은 순수 작업 내용만 수행한다.
+                    """,
+                    new UTF8Encoding(false)
+                );
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[routine] prompt init failed: {ex.Message}");
+        }
+    }
+
+    private void LoadRoutineState()
+    {
+        lock (_routineLock)
+        {
+            _routinesById.Clear();
+            try
+            {
+                foreach (var item in _routineStore.Load())
+                {
+                    if (string.IsNullOrWhiteSpace(item.Id))
+                    {
+                        continue;
+                    }
+                    _routinesById[item.Id] = item;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[routine] state load failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void SaveRoutineStateLocked()
+    {
+        try
+        {
+            _routineStore.Save(_routinesById.Values.ToArray());
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[routine] state save failed: {ex.Message}");
+        }
+    }
+
+    private async Task<RoutineGenerationResult> GenerateRoutineImplementationAsync(
+        string request,
+        RoutineSchedule schedule,
+        CancellationToken cancellationToken
+    )
+    {
+        var systemPromptPath = Path.Combine(_routinePromptDir, "system_prompt.md");
+        var baseConfigPath = Path.Combine(_routinePromptDir, "기본 구성.md");
+        var systemPrompt = File.Exists(systemPromptPath) ? File.ReadAllText(systemPromptPath, Encoding.UTF8) : string.Empty;
+        var baseConfig = File.Exists(baseConfigPath) ? File.ReadAllText(baseConfigPath, Encoding.UTF8) : string.Empty;
+        var objective = BuildRoutineGenerationPrompt(request, schedule.Display, systemPrompt, baseConfig);
+        var strategy = await SelectRoutineCodingStrategyAsync(objective, cancellationToken);
+
+        if (!_llmRouter.HasGroqApiKey())
+        {
+            var fallbackCode = BuildFallbackRoutineCode(request, schedule);
+            return new RoutineGenerationResult(
+                PlannerProvider: "local",
+                PlannerModel: "none",
+                CoderModel: "local-fallback",
+                Plan: "Groq API 키가 없어 로컬 기본 템플릿으로 생성했습니다.",
+                Language: "bash",
+                Code: fallbackCode
+            );
+        }
+
+        if (strategy.Mode == "split")
+        {
+            var chunks = new List<string>();
+            var partLabels = new[] { "파트 1/3", "파트 2/3", "파트 3/3" };
+            for (var i = 0; i < strategy.Models.Count; i++)
+            {
+                var model = strategy.Models[i];
+                var prompt = objective + $"\n\n[{partLabels[Math.Min(i, partLabels.Length - 1)]}] 관점으로 설계/코드 초안을 작성하세요.";
+                var generated = await GenerateByProviderSafeAsync("groq", model, prompt, cancellationToken, Math.Min(_config.CodingMaxOutputTokens, 2800));
+                chunks.Add($"[{model}]\n{generated.Text}");
+            }
+
+            var merged = string.Join("\n\n", chunks);
+            var parsed = ParseCodeCandidate(merged, "bash");
+            var language = parsed.Language is "bash" or "python" ? parsed.Language : "bash";
+            var code = string.IsNullOrWhiteSpace(parsed.Code)
+                ? BuildFallbackRoutineCode(request, schedule)
+                : EnsureRoutineShebang(parsed.Code, language);
+            if (!string.IsNullOrWhiteSpace(parsed.Code) && RoutineCodeNeedsRepair(language, code))
+            {
+                var repaired = await TryRepairRoutineCodeAsync(objective, merged, strategy.Models[0], request, schedule, cancellationToken);
+                language = repaired.Language;
+                code = repaired.Code;
+                merged = repaired.RawText;
+            }
+
+            return new RoutineGenerationResult(
+                PlannerProvider: "groq",
+                PlannerModel: "split",
+                CoderModel: string.Join(",", strategy.Models),
+                Plan: ExtractPlanText(merged),
+                Language: language,
+                Code: code
+            );
+        }
+
+        var single = await GenerateByProviderSafeAsync("groq", strategy.Models[0], objective, cancellationToken, Math.Min(_config.CodingMaxOutputTokens, 4200));
+        var singleParsed = ParseCodeCandidate(single.Text, "bash");
+        var singleLanguage = singleParsed.Language is "bash" or "python" ? singleParsed.Language : "bash";
+        var singleCode = string.IsNullOrWhiteSpace(singleParsed.Code)
+            ? BuildFallbackRoutineCode(request, schedule)
+            : EnsureRoutineShebang(singleParsed.Code, singleLanguage);
+        if (!string.IsNullOrWhiteSpace(singleParsed.Code) && RoutineCodeNeedsRepair(singleLanguage, singleCode))
+        {
+            var repaired = await TryRepairRoutineCodeAsync(objective, single.Text, strategy.Models[0], request, schedule, cancellationToken);
+            singleLanguage = repaired.Language;
+            singleCode = repaired.Code;
+            single = single with { Text = repaired.RawText };
+        }
+        return new RoutineGenerationResult(
+            PlannerProvider: "groq",
+            PlannerModel: strategy.Models[0],
+            CoderModel: strategy.Models[0],
+            Plan: ExtractPlanText(single.Text),
+            Language: singleLanguage,
+            Code: singleCode
+        );
+    }
+
+    private async Task<RoutineModelStrategy> SelectRoutineCodingStrategyAsync(string objective, CancellationToken cancellationToken)
+    {
+        static bool Has(IReadOnlySet<string> set, string modelId) => set.Contains(modelId);
+
+        var availableModels = await _groqModelCatalog.GetModelsAsync(cancellationToken);
+        var modelSet = availableModels.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var estimatedTokens = EstimatePromptTokens(objective);
+
+        var maverickReady = Has(modelSet, RoutineModelMaverick) && !IsGroqRateLimitImminent(RoutineModelMaverick, 2200);
+        var gptOssReady = Has(modelSet, RoutineModelGptOss) && !IsGroqRateLimitImminent(RoutineModelGptOss, 2200);
+        var kimiReady = Has(modelSet, RoutineModelKimi) && !IsGroqRateLimitImminent(RoutineModelKimi, 2200);
+
+        if (estimatedTokens <= 6000 && maverickReady)
+        {
+            return new RoutineModelStrategy("single", new[] { RoutineModelMaverick }, $"estimated_tpm={estimatedTokens}");
+        }
+
+        if (gptOssReady)
+        {
+            return new RoutineModelStrategy("single", new[] { RoutineModelGptOss }, $"fallback_from_maverick estimated_tpm={estimatedTokens}");
+        }
+
+        if (kimiReady)
+        {
+            return new RoutineModelStrategy("single", new[] { RoutineModelKimi }, "fallback_from_gptoss");
+        }
+
+        var split = new List<string>();
+        if (Has(modelSet, RoutineModelMaverick))
+        {
+            split.Add(RoutineModelMaverick);
+        }
+
+        if (Has(modelSet, RoutineModelGptOss))
+        {
+            split.Add(RoutineModelGptOss);
+        }
+
+        if (Has(modelSet, RoutineModelKimi))
+        {
+            split.Add(RoutineModelKimi);
+        }
+
+        if (split.Count == 0)
+        {
+            split.Add(_llmRouter.GetSelectedGroqModel());
+        }
+
+        while (split.Count < 3)
+        {
+            split.Add(split[^1]);
+        }
+
+        return new RoutineModelStrategy("split", split.Take(3).ToArray(), "all_models_budget_limited");
+    }
+
+    private static string BuildRoutineGenerationPrompt(string request, string schedule, string systemPrompt, string baseConfig)
+    {
+        return $"""
+                {systemPrompt}
+
+                {baseConfig}
+
+                [사용자 루틴 요청]
+                {request}
+
+                [정규화 스케줄]
+                {schedule}
+
+                요구사항:
+                1) 이 코드는 스케줄러가 이미 실행할 시점에 호출한다. 실행 여부를 코드 안에서 다시 판단하지 마라.
+                2) 현재 시간/요일/날짜 확인, sleep, while true, cron/crontab 등록, 백그라운드 daemon화 금지
+                3) 요청 원문에 스케줄 표현이 있어도 정규화 스케줄을 우선으로 보고, 구현은 작업 자체만 수행
+                4) 한 번 실행되면 즉시 작업을 수행하고 종료
+                5) macOS/Linux 모두 동작 가능한 루틴 코드
+                6) 외부 의존 최소화
+                7) 실행 결과를 stdout 텍스트로 요약 출력
+                8) stdout은 비워두지 말 것. 사람이 읽는 최종 결과를 3문장 이상 또는 구조화된 목록으로 출력
+                9) 민감정보 노출 금지
+                10) Linux 전용 옵션(top -bn1, free -m 등)을 그대로 쓰지 말고 macOS/Linux 공통 또는 분기 가능한 방식으로 작성
+
+                금지 예시:
+                - CURRENT_HOUR=$(date +%H)
+                - DAY_OF_WEEK=$(date +%u)
+                - if now.hour == 8:
+                - schedule.every(...)
+                - while true:
+                - sleep 60
+                - top -bn1
+
+                출력 형식:
+                PLAN:
+                - 단계1
+                - 단계2
+
+                LANGUAGE=<bash 또는 python>
+                ```bash
+                # 실행 가능한 전체 코드
+                ```
+                """;
+    }
+
+    private static int EstimatePromptTokens(string text)
+    {
+        var length = (text ?? string.Empty).Length;
+        return Math.Max(1, length / 3);
+    }
+
+    private static string ExtractPlanText(string raw)
+    {
+        var text = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "계획 텍스트 없음";
+        }
+
+        var fenceIndex = text.IndexOf("```", StringComparison.Ordinal);
+        if (fenceIndex <= 0)
+        {
+            return text.Length <= 1500 ? text : text[..1500] + "...";
+        }
+
+        var plan = text[..fenceIndex].Trim();
+        return string.IsNullOrWhiteSpace(plan) ? "계획 텍스트 없음" : (plan.Length <= 1500 ? plan : plan[..1500] + "...");
+    }
+
+    private static string EnsureRoutineShebang(string code, string language)
+    {
+        var normalized = (code ?? string.Empty).Trim().TrimStart('\uFEFF');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        if (language == "bash")
+        {
+            var body = normalized;
+            if (body.StartsWith("#!/usr/bin/env bash", StringComparison.Ordinal))
+            {
+                body = body["#!/usr/bin/env bash".Length..].TrimStart();
+            }
+            else if (body.StartsWith("#!/bin/bash", StringComparison.Ordinal))
+            {
+                body = body["#!/bin/bash".Length..].TrimStart();
+            }
+
+            if (body.StartsWith("set -euo pipefail", StringComparison.Ordinal))
+            {
+                body = body["set -euo pipefail".Length..].TrimStart();
+            }
+
+            return """
+                   #!/usr/bin/env bash
+                   set -euo pipefail
+
+                   # Omni-node portability shim (macOS/Linux)
+                   if ! command -v free >/dev/null 2>&1; then
+                     free() {
+                       echo "              total        used        free"
+                       echo "Mem:           n/a         n/a         n/a"
+                       if command -v vm_stat >/dev/null 2>&1; then
+                         echo ""
+                         vm_stat | head -n 6
+                       fi
+                       return 0
+                     }
+                   fi
+
+                   if [ "$(uname -s)" = "Darwin" ]; then
+                     top() {
+                       local remapped=()
+                       local replaced=0
+                       for arg in "$@"; do
+                         if [ "$arg" = "-bn1" ]; then
+                           remapped+=("-l" "1")
+                           replaced=1
+                         else
+                           remapped+=("$arg")
+                         fi
+                       done
+                       if [ "$replaced" -eq 1 ]; then
+                         command top "${remapped[@]}"
+                         return $?
+                       fi
+                       command top "$@"
+                     }
+                   fi
+
+                   """ + body;
+        }
+
+        if (language == "python" && !normalized.StartsWith("#!/usr/bin/env python3", StringComparison.Ordinal))
+        {
+            return "#!/usr/bin/env python3\n" + normalized;
+        }
+
+        return normalized;
+    }
+
+    private static string BuildFallbackRoutineCode(string request, RoutineSchedule schedule)
+    {
+        var escaped = EscapeForSingleQuotes(request);
+        return $"""
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                echo "[Routine] 요청: '{escaped}'"
+                echo "[Routine] 스케줄: {schedule.Display}"
+                echo "[Routine] 실행시각: $(date '+%Y-%m-%d %H:%M:%S')"
+                echo "[Routine] 자동 생성 코드가 유효하지 않아 기본 템플릿으로 실행했습니다."
+                echo "[Routine] 실제 작업 로직은 루틴 수정 저장으로 재생성하세요."
+                """;
+    }
+
+    private static string EscapeForSingleQuotes(string text)
+    {
+        return (text ?? string.Empty).Replace("'", "'\"'\"'", StringComparison.Ordinal);
+    }
+
+    private static string BuildRoutineExecutionText(RoutineDefinition routine, CodeExecutionResult exec)
+    {
+        var stdout = (exec.StdOut ?? string.Empty).Trim();
+        var stderr = (exec.StdErr ?? string.Empty).Trim();
+        var summary = new StringBuilder();
+        summary.AppendLine($"[Routine:{routine.Id}] {routine.Title}");
+        summary.AppendLine($"status={exec.Status} exit={exec.ExitCode}");
+        summary.AppendLine($"model={routine.CoderModel}");
+        summary.AppendLine($"script={routine.ScriptPath}");
+        summary.AppendLine($"run_dir={exec.RunDirectory}");
+        if (!string.IsNullOrWhiteSpace(stdout))
+        {
+            summary.AppendLine();
+            summary.AppendLine("[stdout]");
+            summary.AppendLine(stdout.Length <= 1600 ? stdout : stdout[..1600] + "...");
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            summary.AppendLine();
+            summary.AppendLine("[stderr]");
+            summary.AppendLine(stderr.Length <= 1200 ? stderr : stderr[..1200] + "...");
+        }
+        else if (string.IsNullOrWhiteSpace(stdout))
+        {
+            summary.AppendLine();
+            summary.AppendLine("[stdout]");
+            summary.AppendLine("(출력 없음)");
+        }
+
+        return summary.ToString().Trim();
+    }
+
+    private static string ResolveCronRunEntryStatus(CodeExecutionResult exec)
+    {
+        var normalized = NormalizeCronRunStatus(exec.Status);
+        if (!string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        return exec.ExitCode == 0 ? "ok" : "error";
+    }
+
+    private static string? BuildCronRunEntryError(CodeExecutionResult exec, string output, string status)
+    {
+        if (!string.Equals(status, "error", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var stderr = (exec.StdErr ?? string.Empty).Trim();
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            return TrimForCronError(stderr);
+        }
+
+        return TrimForCronError(output);
+    }
+
+    private static string? BuildCronRunEntrySummary(string output)
+    {
+        var normalized = (output ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return null;
+        }
+
+        const int maxChars = 800;
+        if (normalized.Length <= maxChars)
+        {
+            return normalized;
+        }
+
+        return normalized[..maxChars] + "...";
+    }
+
+    private static bool ShouldRunCronAgentTurnBridge(RoutineDefinition routine)
+    {
+        if (!string.Equals(
+                NormalizeCronSessionTargetOrDefault(routine.CronSessionTarget),
+                "isolated",
+                StringComparison.Ordinal
+            ))
+        {
+            return false;
+        }
+
+        return string.Equals(
+            NormalizeCronPayloadKindOrDefault(routine.CronPayloadKind),
+            "agentTurn",
+            StringComparison.Ordinal
+        );
+    }
+
+    private CodeExecutionResult ExecuteCronAgentTurnBridge(
+        RoutineDefinition routine,
+        CancellationToken cancellationToken
+    )
+    {
+        var command = "sessions_spawn runtime=acp mode=run";
+        if (cancellationToken.IsCancellationRequested)
+        {
+            var canceledStdOut = $"""
+                                  [cron.agentTurn.bridge]
+                                  routineId={routine.Id}
+                                  status=error
+                                  reason=canceled
+                                  """;
+            return new CodeExecutionResult(
+                "cron-agentturn",
+                ResolveWorkspaceRoot(),
+                "-",
+                command,
+                1,
+                canceledStdOut,
+                "cancellation requested",
+                "error"
+            );
+        }
+
+        var payloadText = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+        var payloadModel = NormalizeOptionalCronPayloadString(routine.CronPayloadModel);
+        var payloadThinking = NormalizeOptionalCronPayloadString(routine.CronPayloadThinking);
+        var payloadTimeoutSeconds = routine.CronPayloadTimeoutSeconds;
+        var payloadLightContext = routine.CronPayloadLightContext;
+
+        var spawnTask = BuildCronAgentTurnSpawnTask(
+            payloadText,
+            payloadModel,
+            payloadThinking,
+            payloadTimeoutSeconds,
+            payloadLightContext
+        );
+        var spawnResult = _sessionSpawnTool.Spawn(
+            task: spawnTask,
+            label: $"cron-{routine.Title}",
+            runtime: "acp",
+            runTimeoutSeconds: payloadTimeoutSeconds,
+            timeoutSeconds: payloadTimeoutSeconds,
+            thread: false,
+            mode: "run",
+            acpModel: payloadModel,
+            acpThinking: payloadThinking,
+            acpLightContext: payloadLightContext
+        );
+
+        if (string.Equals(spawnResult.Status, "accepted", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(spawnResult.ChildSessionKey))
+        {
+            var optionNote = BuildCronAgentTurnOptionsBlock(
+                payloadModel,
+                payloadThinking,
+                payloadTimeoutSeconds,
+                payloadLightContext
+            );
+            if (!string.IsNullOrWhiteSpace(optionNote))
+            {
+                _ = _conversationStore.AppendMessage(
+                    spawnResult.ChildSessionKey,
+                    "system",
+                    optionNote,
+                    "cron_agentturn_options"
+                );
+            }
+        }
+
+        var accepted = string.Equals(spawnResult.Status, "accepted", StringComparison.OrdinalIgnoreCase);
+        var resolvedCommand = $"{command} timeoutSeconds={(spawnResult.RunTimeoutSeconds).ToString(CultureInfo.InvariantCulture)}";
+        var stdout = BuildCronAgentTurnBridgeStdOut(
+            routine,
+            spawnResult,
+            payloadModel,
+            payloadThinking,
+            payloadTimeoutSeconds,
+            payloadLightContext
+        );
+        var stderr = accepted
+            ? string.Empty
+            : string.IsNullOrWhiteSpace(spawnResult.Error)
+                ? "sessions_spawn returned error"
+                : spawnResult.Error!;
+
+        return new CodeExecutionResult(
+            "cron-agentturn",
+            ResolveWorkspaceRoot(),
+            "-",
+            resolvedCommand,
+            accepted ? 0 : 1,
+            stdout,
+            stderr,
+            accepted ? "ok" : "error"
+        );
+    }
+
+    private static string BuildCronAgentTurnSpawnTask(
+        string message,
+        string? model,
+        string? thinking,
+        int? timeoutSeconds,
+        bool? lightContext
+    )
+    {
+        var optionBlock = BuildCronAgentTurnOptionsBlock(model, thinking, timeoutSeconds, lightContext);
+        if (string.IsNullOrWhiteSpace(optionBlock))
+        {
+            return message;
+        }
+
+        return $"{optionBlock}\n\n{message}";
+    }
+
+    private static string BuildCronAgentTurnBridgeStdOut(
+        RoutineDefinition routine,
+        SessionSpawnToolResult spawnResult,
+        string? model,
+        string? thinking,
+        int? timeoutSeconds,
+        bool? lightContext
+    )
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("[cron.agentTurn.bridge]");
+        builder.AppendLine($"routineId={routine.Id}");
+        builder.AppendLine($"spawnStatus={spawnResult.Status}");
+        builder.AppendLine($"runtime={spawnResult.Runtime}");
+        builder.AppendLine($"mode={spawnResult.Mode}");
+        builder.AppendLine($"runId={spawnResult.RunId}");
+        if (!string.IsNullOrWhiteSpace(spawnResult.ChildSessionKey))
+        {
+            builder.AppendLine($"childSessionKey={spawnResult.ChildSessionKey}");
+        }
+        if (!string.IsNullOrWhiteSpace(spawnResult.BackendSessionId))
+        {
+            builder.AppendLine($"backendSessionId={spawnResult.BackendSessionId}");
+        }
+        if (!string.IsNullOrWhiteSpace(spawnResult.ThreadBindingKey))
+        {
+            builder.AppendLine($"threadBindingKey={spawnResult.ThreadBindingKey}");
+        }
+
+        var optionBlock = BuildCronAgentTurnOptionsBlock(model, thinking, timeoutSeconds, lightContext);
+        if (!string.IsNullOrWhiteSpace(optionBlock))
+        {
+            builder.AppendLine();
+            builder.AppendLine(optionBlock);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string? BuildCronAgentTurnOptionsBlock(
+        string? model,
+        string? thinking,
+        int? timeoutSeconds,
+        bool? lightContext
+    )
+    {
+        var lines = new List<string>();
+        if (!string.IsNullOrWhiteSpace(model))
+        {
+            lines.Add($"- model: {model}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(thinking))
+        {
+            lines.Add($"- thinking: {thinking}");
+        }
+
+        if (timeoutSeconds.HasValue)
+        {
+            lines.Add($"- timeoutSeconds: {timeoutSeconds.Value.ToString(CultureInfo.InvariantCulture)}");
+        }
+
+        if (lightContext.HasValue)
+        {
+            lines.Add($"- lightContext: {(lightContext.Value ? "true" : "false")}");
+        }
+
+        if (lines.Count == 0)
+        {
+            return null;
+        }
+
+        return "[cron.agentTurn.options]\n" + string.Join("\n", lines);
+    }
+
+    private static void AppendRoutineRunLogEntry(RoutineDefinition routine, RoutineRunLogEntry entry)
+    {
+        routine.CronRunLog ??= new List<RoutineRunLogEntry>();
+        routine.CronRunLog.Add(entry);
+        const int maxEntries = 200;
+        if (routine.CronRunLog.Count <= maxEntries)
+        {
+            return;
+        }
+
+        var removeCount = routine.CronRunLog.Count - maxEntries;
+        routine.CronRunLog.RemoveRange(0, removeCount);
+    }
+
+    private static RoutineSummary ToRoutineSummary(RoutineDefinition routine)
+    {
+        var localNext = routine.NextRunUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+        var localLast = routine.LastRunUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
+        var scheduleSourceMode = NormalizeRoutineScheduleSourceMode(routine.ScheduleSourceMode, routine.Request);
+        var executionRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+        var explicitExecutionMode = NormalizeRoutineExecutionMode(routine.ExecutionMode);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(executionRequest, explicitExecutionMode);
+        var scheduleKind = "daily";
+        var timeOfDay = $"{routine.Hour:D2}:{routine.Minute:D2}";
+        int? dayOfMonth = null;
+        var weekdays = Array.Empty<int>();
+        if (TryParseSupportedRoutineCronExpression(
+                routine.CronScheduleExpr,
+                out var parsedKind,
+                out var parsedHour,
+                out var parsedMinute,
+                out var parsedDayOfMonth,
+                out var parsedWeekdays,
+                out _,
+                out _
+            ))
+        {
+            scheduleKind = parsedKind;
+            timeOfDay = $"{parsedHour:D2}:{parsedMinute:D2}";
+            dayOfMonth = parsedDayOfMonth;
+            weekdays = parsedWeekdays;
+        }
+
+        return new RoutineSummary(
+            routine.Id,
+            routine.Title,
+            routine.Request,
+            explicitExecutionMode,
+            resolvedExecutionMode,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentProvider(routine.AgentProvider, routine.AgentModel) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentModel(routine.AgentModel) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeOptionalAgentMetaValue(routine.AgentStartUrl) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) : null,
+            resolvedExecutionMode == "browser_agent" && NormalizeRoutineAgentUsePlaywright(routine.AgentUsePlaywright),
+            routine.ScheduleText,
+            scheduleSourceMode,
+            NormalizeRoutineRetryCount(routine.MaxRetries),
+            NormalizeRoutineRetryDelaySeconds(routine.RetryDelaySeconds),
+            NormalizeRoutineNotifyPolicy(routine.NotifyPolicy),
+            routine.Enabled,
+            localNext,
+            localLast,
+            routine.LastStatus,
+            routine.LastOutput,
+            routine.ScriptPath,
+            routine.Language,
+            routine.CoderModel,
+            scheduleKind,
+            routine.CronScheduleExpr,
+            routine.TimezoneId,
+            timeOfDay,
+            dayOfMonth,
+            weekdays,
+            BuildRoutineRunSummaries(routine)
+        );
+    }
+
+    private static bool TryResolveRoutineScheduleConfig(
+        string request,
+        string scheduleSourceMode,
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        out RoutineScheduleConfig config,
+        out string error
+    )
+    {
+        if (string.Equals(scheduleSourceMode, "manual", StringComparison.Ordinal))
+        {
+            return TryBuildRoutineScheduleConfig(
+                scheduleKind,
+                scheduleTime,
+                weekdays,
+                dayOfMonth,
+                timezoneId,
+                out config,
+                out error
+            );
+        }
+
+        config = ResolveRoutineScheduleConfigFromRequest(request, timezoneId);
+        error = string.Empty;
+        return true;
+    }
+
+    private static RoutineScheduleConfig ResolveRoutineScheduleConfigFromRequest(string request, string? timezoneId)
+    {
+        if (TryParseRoutineScheduleConfigFromRequest(request, timezoneId, out var parsed))
+        {
+            return parsed;
+        }
+
+        var fallback = ParseDailySchedule(request);
+        return BuildDailyRoutineScheduleConfig(fallback.Hour, fallback.Minute, timezoneId ?? TimeZoneInfo.Local.Id);
+    }
+
+    private static bool TryParseRoutineScheduleConfigFromRequest(
+        string? request,
+        string? timezoneId,
+        out RoutineScheduleConfig config
+    )
+    {
+        config = BuildDailyRoutineScheduleConfig(8, 0, timezoneId ?? TimeZoneInfo.Local.Id);
+        var text = (request ?? string.Empty).Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        var resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        var hour = 8;
+        var minute = 0;
+        var hasExplicitTime = TryExtractRoutineNaturalTime(text, out hour, out minute);
+
+        if (TryExtractRoutineMonthlyDay(text, out var dayOfMonth))
+        {
+            config = new RoutineScheduleConfig(
+                "monthly",
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay("monthly", hour, minute, resolvedTimezoneId, dayOfMonth, Array.Empty<int>()),
+                resolvedTimezoneId,
+                $"{minute} {hour} {dayOfMonth} * *",
+                dayOfMonth,
+                Array.Empty<int>()
+            );
+            return true;
+        }
+
+        if (TryExtractRoutineWeekdays(text, out var weekdays))
+        {
+            config = new RoutineScheduleConfig(
+                "weekly",
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay("weekly", hour, minute, resolvedTimezoneId, null, weekdays),
+                resolvedTimezoneId,
+                $"{minute} {hour} * * {string.Join(",", weekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}",
+                null,
+                weekdays
+            );
+            return true;
+        }
+
+        if (ContainsRoutineScheduleExpression(text) || hasExplicitTime)
+        {
+            config = BuildDailyRoutineScheduleConfig(hour, minute, resolvedTimezoneId);
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryExtractRoutineNaturalTime(string text, out int hour, out int minute)
+    {
+        hour = 8;
+        minute = 0;
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        var hhmm = Regex.Match(normalized, @"(?<!\d)(?<hour>\d{1,2})\s*:\s*(?<minute>\d{1,2})(?!\d)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (hhmm.Success
+            && int.TryParse(hhmm.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hhmmHour)
+            && int.TryParse(hhmm.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var hhmmMinute))
+        {
+            hour = Math.Clamp(hhmmHour, 0, 23);
+            minute = Math.Clamp(hhmmMinute, 0, 59);
+            return true;
+        }
+
+        var korean = Regex.Match(
+            normalized,
+            @"(?:(?<period>아침|오전|오후|저녁|밤|새벽)\s*)?(?<hour>\d{1,2})\s*시(?:\s*(?:(?<minute>\d{1,2})\s*분|(?<half>반)))?",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!korean.Success
+            || !int.TryParse(korean.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedHour))
+        {
+            return false;
+        }
+
+        hour = Math.Clamp(parsedHour, 0, 23);
+        if (korean.Groups["half"].Success)
+        {
+            minute = 30;
+        }
+        else if (korean.Groups["minute"].Success
+                 && int.TryParse(korean.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedMinute))
+        {
+            minute = Math.Clamp(parsedMinute, 0, 59);
+        }
+        else
+        {
+            minute = 0;
+        }
+
+        var period = korean.Groups["period"].Value.Trim();
+        if ((period == "오후" || period == "저녁" || period == "밤") && hour < 12)
+        {
+            hour += 12;
+        }
+        else if ((period == "오전" || period == "아침" || period == "새벽") && hour == 12)
+        {
+            hour = 0;
+        }
+
+        return true;
+    }
+
+    private static bool TryExtractRoutineMonthlyDay(string text, out int dayOfMonth)
+    {
+        dayOfMonth = 1;
+        var match = Regex.Match(
+            text ?? string.Empty,
+            @"매(?:월|달)\s*(?<day>\d{1,2})\s*일(?:마다)?",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!match.Success
+            || !int.TryParse(match.Groups["day"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return false;
+        }
+
+        dayOfMonth = Math.Clamp(parsed, 1, 31);
+        return true;
+    }
+
+    private static bool TryExtractRoutineWeekdays(string text, out int[] weekdays)
+    {
+        weekdays = Array.Empty<int>();
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalized.Contains("평일", StringComparison.Ordinal))
+        {
+            weekdays = new[] { 1, 2, 3, 4, 5 };
+            return true;
+        }
+
+        if (normalized.Contains("주말", StringComparison.Ordinal))
+        {
+            weekdays = new[] { 6, 0 };
+            return true;
+        }
+
+        var collected = Regex.Matches(
+                normalized,
+                @"(?<day>[월화수목금토일])요일(?:마다)?",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+            )
+            .Cast<Match>()
+            .Select(match => ParseRoutineWeekdayToken(match.Groups["day"].Value))
+            .Where(static value => value.HasValue)
+            .Select(static value => value!.Value)
+            .ToArray();
+
+        if (collected.Length == 0)
+        {
+            return false;
+        }
+
+        weekdays = NormalizeRoutineWeekdays(collected);
+        return weekdays.Length > 0;
+    }
+
+    private static int? ParseRoutineWeekdayToken(string token)
+    {
+        return (token ?? string.Empty).Trim() switch
+        {
+            "월" => 1,
+            "화" => 2,
+            "수" => 3,
+            "목" => 4,
+            "금" => 5,
+            "토" => 6,
+            "일" => 0,
+            _ => null
+        };
+    }
+
+    private static RoutineSchedule ParseDailySchedule(string request)
+    {
+        var text = (request ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new RoutineSchedule(8, 0, "매일 08:00");
+        }
+
+        var hhmm = Regex.Match(text, @"(\d{1,2})\s*:\s*(\d{1,2})", RegexOptions.IgnoreCase);
+        if (hhmm.Success
+            && int.TryParse(hhmm.Groups[1].Value, out var hour1)
+            && int.TryParse(hhmm.Groups[2].Value, out var minute1))
+        {
+            hour1 = Math.Clamp(hour1, 0, 23);
+            minute1 = Math.Clamp(minute1, 0, 59);
+            return new RoutineSchedule(hour1, minute1, $"매일 {hour1:D2}:{minute1:D2}");
+        }
+
+        var match = Regex.Match(text, @"매일\s*(아침|오전|오후|저녁|밤)?\s*(\d{1,2})\s*시(?:\s*(\d{1,2})\s*분)?", RegexOptions.IgnoreCase);
+        if (!match.Success)
+        {
+            return new RoutineSchedule(8, 0, "매일 08:00");
+        }
+
+        var period = match.Groups[1].Value.Trim();
+        _ = int.TryParse(match.Groups[2].Value, out var hour);
+        _ = int.TryParse(match.Groups[3].Value, out var minute);
+        hour = Math.Clamp(hour, 0, 23);
+        minute = Math.Clamp(minute, 0, 59);
+        if ((period == "오후" || period == "저녁" || period == "밤") && hour < 12)
+        {
+            hour += 12;
+        }
+
+        if ((period == "오전" || period == "아침") && hour == 12)
+        {
+            hour = 0;
+        }
+
+        return new RoutineSchedule(hour, minute, $"매일 {hour:D2}:{minute:D2}");
+    }
+
+    private static RoutineScheduleConfig BuildDailyRoutineScheduleConfig(int hour, int minute, string timezoneId)
+    {
+        var resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        return new RoutineScheduleConfig(
+            "daily",
+            hour,
+            minute,
+            BuildRoutineScheduleDisplay("daily", hour, minute, resolvedTimezoneId, null, Array.Empty<int>()),
+            resolvedTimezoneId,
+            $"{minute} {hour} * * *",
+            null,
+            Array.Empty<int>()
+        );
+    }
+
+    private static bool TryBuildRoutineScheduleConfig(
+        string? scheduleKind,
+        string? scheduleTime,
+        IReadOnlyList<int>? weekdays,
+        int? dayOfMonth,
+        string? timezoneId,
+        out RoutineScheduleConfig config,
+        out string error
+    )
+    {
+        config = BuildDailyRoutineScheduleConfig(8, 0, TimeZoneInfo.Local.Id);
+        error = string.Empty;
+        var kind = NormalizeRoutineScheduleKind(scheduleKind);
+        if (!TryParseRoutineTimeOfDay(scheduleTime, out var hour, out var minute, out error))
+        {
+            return false;
+        }
+
+        string resolvedTimezoneId;
+        try
+        {
+            resolvedTimezoneId = ResolveTimeZone(timezoneId).Id;
+        }
+        catch (Exception ex)
+        {
+            error = $"시간대가 올바르지 않습니다: {ex.Message}";
+            return false;
+        }
+
+        if (string.Equals(kind, "weekly", StringComparison.Ordinal))
+        {
+            var normalizedWeekdays = NormalizeRoutineWeekdays(weekdays);
+            if (normalizedWeekdays.Length == 0)
+            {
+                error = "주간 스케줄은 요일을 하나 이상 선택해야 합니다.";
+                return false;
+            }
+
+            config = new RoutineScheduleConfig(
+                kind,
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay(kind, hour, minute, resolvedTimezoneId, null, normalizedWeekdays),
+                resolvedTimezoneId,
+                $"{minute} {hour} * * {string.Join(",", normalizedWeekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}",
+                null,
+                normalizedWeekdays
+            );
+            return true;
+        }
+
+        if (string.Equals(kind, "monthly", StringComparison.Ordinal))
+        {
+            var normalizedDayOfMonth = dayOfMonth ?? 1;
+            if (normalizedDayOfMonth < 1 || normalizedDayOfMonth > 31)
+            {
+                error = "월간 스케줄의 날짜는 1일부터 31일 사이여야 합니다.";
+                return false;
+            }
+
+            config = new RoutineScheduleConfig(
+                kind,
+                hour,
+                minute,
+                BuildRoutineScheduleDisplay(kind, hour, minute, resolvedTimezoneId, normalizedDayOfMonth, Array.Empty<int>()),
+                resolvedTimezoneId,
+                $"{minute} {hour} {normalizedDayOfMonth} * *",
+                normalizedDayOfMonth,
+                Array.Empty<int>()
+            );
+            return true;
+        }
+
+        config = new RoutineScheduleConfig(
+            "daily",
+            hour,
+            minute,
+            BuildRoutineScheduleDisplay("daily", hour, minute, resolvedTimezoneId, null, Array.Empty<int>()),
+            resolvedTimezoneId,
+            $"{minute} {hour} * * *",
+            null,
+            Array.Empty<int>()
+        );
+        return true;
+    }
+
+    private static bool TryParseRoutineTimeOfDay(string? rawTime, out int hour, out int minute, out string error)
+    {
+        hour = 8;
+        minute = 0;
+        error = string.Empty;
+        var normalized = (rawTime ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return true;
+        }
+
+        var match = Regex.Match(normalized, @"^(?<hour>\d{1,2})\s*:\s*(?<minute>\d{1,2})$");
+        if (!match.Success
+            || !int.TryParse(match.Groups["hour"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out hour)
+            || !int.TryParse(match.Groups["minute"].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out minute)
+            || hour < 0
+            || hour > 23
+            || minute < 0
+            || minute > 59)
+        {
+            error = "시간 형식은 HH:MM 이어야 합니다.";
+            return false;
+        }
+
+        return true;
+    }
+
+    private static string NormalizeRoutineScheduleKind(string? kind)
+    {
+        var normalized = (kind ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "weekly" => "weekly",
+            "monthly" => "monthly",
+            _ => "daily"
+        };
+    }
+
+    private static int[] NormalizeRoutineWeekdays(IReadOnlyList<int>? weekdays)
+    {
+        if (weekdays == null || weekdays.Count == 0)
+        {
+            return Array.Empty<int>();
+        }
+
+        var normalized = weekdays
+            .Select(static value => value == 7 ? 0 : value)
+            .Where(static value => value >= 0 && value <= 6)
+            .Distinct()
+            .OrderBy(static value => value == 0 ? 7 : value)
+            .ToArray();
+        return normalized;
+    }
+
+    private static int NormalizeRoutineRetryCount(int? retryCount)
+    {
+        return Math.Clamp(retryCount ?? 1, 0, 5);
+    }
+
+    private static int NormalizeRoutineRetryDelaySeconds(int? retryDelaySeconds)
+    {
+        return Math.Clamp(retryDelaySeconds ?? 15, 0, 300);
+    }
+
+    private static string NormalizeRoutineNotifyPolicy(string? notifyPolicy)
+    {
+        var normalized = (notifyPolicy ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "on_change" => "on_change",
+            "error_only" => "error_only",
+            "never" => "never",
+            _ => "always"
+        };
+    }
+
+    private static bool IsRoutineRetryableStatus(string? status)
+    {
+        var normalized = (status ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized is "error" or "timeout";
+    }
+
+    private static string ComputeRoutineOutputFingerprint(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));
+        return Convert.ToHexString(bytes);
+    }
+
+    private static bool RoutineMatchesSchedule(RoutineDefinition routine, RoutineScheduleConfig config)
+    {
+        return string.Equals(routine.ScheduleText, config.Display, StringComparison.Ordinal)
+            && string.Equals(routine.TimezoneId, config.TimezoneId, StringComparison.Ordinal)
+            && routine.Hour == config.Hour
+            && routine.Minute == config.Minute
+            && string.Equals(routine.CronScheduleExpr ?? string.Empty, config.CronExpr, StringComparison.Ordinal)
+            && string.Equals(NormalizeCronScheduleKind(routine.CronScheduleKind), "cron", StringComparison.Ordinal);
+    }
+
+    private static string BuildRoutineScheduleDisplay(
+        string kind,
+        int hour,
+        int minute,
+        string timezoneId,
+        int? dayOfMonth,
+        IReadOnlyList<int> weekdays
+    )
+    {
+        var suffix = string.Equals(timezoneId, TimeZoneInfo.Local.Id, StringComparison.OrdinalIgnoreCase)
+            ? string.Empty
+            : $" ({timezoneId})";
+        if (string.Equals(kind, "weekly", StringComparison.Ordinal))
+        {
+            return $"매주 {FormatRoutineWeekdays(weekdays)} {hour:D2}:{minute:D2}{suffix}";
+        }
+
+        if (string.Equals(kind, "monthly", StringComparison.Ordinal))
+        {
+            return $"매월 {Math.Clamp(dayOfMonth ?? 1, 1, 31)}일 {hour:D2}:{minute:D2}{suffix}";
+        }
+
+        return $"매일 {hour:D2}:{minute:D2}{suffix}";
+    }
+
+    private static string FormatRoutineWeekdays(IReadOnlyList<int> weekdays)
+    {
+        if (weekdays == null || weekdays.Count == 0)
+        {
+            return "월";
+        }
+
+        return string.Join(", ", weekdays.Select(FormatRoutineWeekday));
+    }
+
+    private static string FormatRoutineWeekday(int value)
+    {
+        return value switch
+        {
+            0 => "일",
+            1 => "월",
+            2 => "화",
+            3 => "수",
+            4 => "목",
+            5 => "금",
+            6 => "토",
+            _ => "월"
+        };
+    }
+
+    private static bool TryParseSupportedRoutineCronExpression(
+        string? expr,
+        out string kind,
+        out int hour,
+        out int minute,
+        out int? dayOfMonth,
+        out int[] weekdays,
+        out string normalizedExpr,
+        out string error
+    )
+    {
+        kind = "daily";
+        hour = 0;
+        minute = 0;
+        dayOfMonth = null;
+        weekdays = Array.Empty<int>();
+        normalizedExpr = "0 8 * * *";
+        error = "지원되지 않는 cron 식입니다.";
+
+        var tokens = (expr ?? string.Empty)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length != 5)
+        {
+            error = "cron 식은 5개 필드(m h dom mon dow)여야 합니다.";
+            return false;
+        }
+
+        if (!int.TryParse(tokens[0], NumberStyles.Integer, CultureInfo.InvariantCulture, out minute)
+            || minute < 0 || minute > 59)
+        {
+            error = "cron 분은 0-59여야 합니다.";
+            return false;
+        }
+
+        if (!int.TryParse(tokens[1], NumberStyles.Integer, CultureInfo.InvariantCulture, out hour)
+            || hour < 0 || hour > 23)
+        {
+            error = "cron 시는 0-23이어야 합니다.";
+            return false;
+        }
+
+        if (!string.Equals(tokens[3], "*", StringComparison.Ordinal))
+        {
+            error = "cron month 필드는 현재 '*'만 지원합니다.";
+            return false;
+        }
+
+        if (string.Equals(tokens[2], "*", StringComparison.Ordinal)
+            && string.Equals(tokens[4], "*", StringComparison.Ordinal))
+        {
+            kind = "daily";
+            normalizedExpr = $"{minute} {hour} * * *";
+            return true;
+        }
+
+        if (string.Equals(tokens[2], "*", StringComparison.Ordinal))
+        {
+            var parsedWeekdays = new List<int>();
+            foreach (var rawPart in tokens[4].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!int.TryParse(rawPart, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+                {
+                    error = "주간 cron 요일은 0-6 또는 7(일요일)만 지원합니다.";
+                    return false;
+                }
+
+                if (parsed == 7)
+                {
+                    parsed = 0;
+                }
+
+                if (parsed < 0 || parsed > 6)
+                {
+                    error = "주간 cron 요일은 0-6 또는 7(일요일)만 지원합니다.";
+                    return false;
+                }
+
+                parsedWeekdays.Add(parsed);
+            }
+
+            weekdays = NormalizeRoutineWeekdays(parsedWeekdays);
+            if (weekdays.Length == 0)
+            {
+                error = "주간 cron 요일은 하나 이상 필요합니다.";
+                return false;
+            }
+
+            kind = "weekly";
+            normalizedExpr = $"{minute} {hour} * * {string.Join(",", weekdays.Select(static x => x.ToString(CultureInfo.InvariantCulture)))}";
+            return true;
+        }
+
+        if (string.Equals(tokens[4], "*", StringComparison.Ordinal)
+            && int.TryParse(tokens[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedDayOfMonth)
+            && parsedDayOfMonth >= 1
+            && parsedDayOfMonth <= 31)
+        {
+            kind = "monthly";
+            dayOfMonth = parsedDayOfMonth;
+            normalizedExpr = $"{minute} {hour} {parsedDayOfMonth} * *";
+            return true;
+        }
+
+        error = "지원되는 cron 형식은 daily/weekly/monthly 뿐입니다.";
+        return false;
+    }
+
+    private static IReadOnlyList<RoutineRunSummary> BuildRoutineRunSummaries(RoutineDefinition routine)
+    {
+        return (routine.CronRunLog ?? new List<RoutineRunLogEntry>())
+            .OrderByDescending(static entry => entry.Ts)
+            .Take(20)
+            .Select(entry => new RoutineRunSummary(
+                entry.Ts,
+                entry.RunAtMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(entry.RunAtMs.Value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    : "-",
+                string.IsNullOrWhiteSpace(entry.Status) ? "-" : entry.Status!,
+                string.IsNullOrWhiteSpace(entry.Source) ? (entry.Action ?? "-") : entry.Source!,
+                Math.Max(1, entry.AttemptCount),
+                entry.Summary ?? string.Empty,
+                string.IsNullOrWhiteSpace(entry.Error) ? null : entry.Error,
+                string.IsNullOrWhiteSpace(entry.TelegramStatus) ? null : entry.TelegramStatus,
+                string.IsNullOrWhiteSpace(entry.ArtifactPath) ? null : entry.ArtifactPath,
+                string.IsNullOrWhiteSpace(entry.AgentSessionId) ? null : entry.AgentSessionId,
+                string.IsNullOrWhiteSpace(entry.AgentRunId) ? null : entry.AgentRunId,
+                string.IsNullOrWhiteSpace(entry.AgentProvider) ? null : entry.AgentProvider,
+                string.IsNullOrWhiteSpace(entry.AgentModel) ? null : entry.AgentModel,
+                string.IsNullOrWhiteSpace(entry.ToolProfile) ? null : entry.ToolProfile,
+                string.IsNullOrWhiteSpace(entry.StartUrl) ? null : entry.StartUrl,
+                string.IsNullOrWhiteSpace(entry.FinalUrl) ? null : entry.FinalUrl,
+                string.IsNullOrWhiteSpace(entry.PageTitle) ? null : entry.PageTitle,
+                string.IsNullOrWhiteSpace(entry.ScreenshotPath) ? null : entry.ScreenshotPath,
+                entry.DurationMs,
+                FormatRoutineDuration(entry.DurationMs),
+                entry.NextRunAtMs.HasValue
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(entry.NextRunAtMs.Value).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")
+                    : null
+            ))
+            .ToArray();
+    }
+
+    private static string FormatRoutineDuration(long? durationMs)
+    {
+        if (!durationMs.HasValue || durationMs.Value < 0)
+        {
+            return "-";
+        }
+
+        if (durationMs.Value < 1000)
+        {
+            return $"{durationMs.Value}ms";
+        }
+
+        var seconds = durationMs.Value / 1000d;
+        if (seconds < 60d)
+        {
+            return $"{seconds:0.0}s";
+        }
+
+        var minutes = seconds / 60d;
+        return $"{minutes:0.0}m";
+    }
+
+    private async Task<(string Language, string Code, string RawText)> TryRepairRoutineCodeAsync(
+        string objective,
+        string rawText,
+        string model,
+        string request,
+        RoutineSchedule schedule,
+        CancellationToken cancellationToken
+    )
+    {
+        var truncatedRaw = (rawText ?? string.Empty).Trim();
+        if (truncatedRaw.Length > 5000)
+        {
+            truncatedRaw = truncatedRaw[..5000] + "\n...(truncated)...";
+        }
+
+        var repairPrompt = $"""
+                           {objective}
+
+                           [검토 결과]
+                           이전 초안은 잘못되었습니다.
+                           - 코드 내부에서 실행 시각/요일/날짜를 다시 판단하거나 대기 로직을 넣었습니다.
+                           - 루틴 엔진이 이미 스케줄을 처리하므로, 코드는 호출 즉시 작업을 수행해야 합니다.
+
+                           [수정 지시]
+                           - 시간/요일/date/datetime/weekday/sleep/while true/cron 관련 실행 조건을 모두 제거하세요.
+                           - 한 번 실행되면 즉시 작업을 수행하고 종료하세요.
+                           - stdout에 실제 결과를 남기세요.
+                           - 이전 초안을 참조하되, 잘못된 스케줄 제어 로직은 버리세요.
+
+                           [이전 초안]
+                           {truncatedRaw}
+                           """;
+
+        var regenerated = await GenerateByProviderSafeAsync(
+            "groq",
+            model,
+            repairPrompt,
+            cancellationToken,
+            Math.Min(_config.CodingMaxOutputTokens, 4200)
+        );
+        var reparsed = ParseCodeCandidate(regenerated.Text, "bash");
+        var repairedLanguage = reparsed.Language is "bash" or "python" ? reparsed.Language : "bash";
+        var repairedCode = string.IsNullOrWhiteSpace(reparsed.Code)
+            ? BuildFallbackRoutineCode(request, schedule)
+            : EnsureRoutineShebang(reparsed.Code, repairedLanguage);
+
+        if (string.IsNullOrWhiteSpace(reparsed.Code) || RoutineCodeNeedsRepair(repairedLanguage, repairedCode))
+        {
+            return ("bash", BuildFallbackRoutineCode(request, schedule), regenerated.Text);
+        }
+
+        return (repairedLanguage, repairedCode, regenerated.Text);
+    }
+
+    private static bool RoutineCodeNeedsRepair(string language, string code)
+    {
+        var normalizedLanguage = (language ?? string.Empty).Trim().ToLowerInvariant();
+        var normalizedCode = (code ?? string.Empty).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalizedCode))
+        {
+            return true;
+        }
+
+        var hasScheduleGate =
+            normalizedCode.Contains("current_hour", StringComparison.Ordinal)
+            || normalizedCode.Contains("current_minute", StringComparison.Ordinal)
+            || normalizedCode.Contains("day_of_week", StringComparison.Ordinal)
+            || normalizedCode.Contains("schedule.every", StringComparison.Ordinal)
+            || normalizedCode.Contains("crontab", StringComparison.Ordinal)
+            || normalizedCode.Contains("apscheduler", StringComparison.Ordinal)
+            || normalizedCode.Contains("while true", StringComparison.Ordinal)
+            || normalizedCode.Contains("sleep 60", StringComparison.Ordinal)
+            || normalizedCode.Contains("time.sleep(", StringComparison.Ordinal)
+            || normalizedCode.Contains("datetime.now()", StringComparison.Ordinal)
+            || normalizedCode.Contains("weekday()", StringComparison.Ordinal)
+            || normalizedCode.Contains("date +%u", StringComparison.Ordinal)
+            || normalizedCode.Contains("date +%w", StringComparison.Ordinal)
+            || normalizedCode.Contains("top -bn1", StringComparison.Ordinal);
+
+        if (hasScheduleGate)
+        {
+            return true;
+        }
+
+        if (normalizedLanguage == "bash")
+        {
+            return !normalizedCode.Contains("echo ", StringComparison.Ordinal)
+                && !normalizedCode.Contains("printf ", StringComparison.Ordinal)
+                && !normalizedCode.Contains("cat <<", StringComparison.Ordinal);
+        }
+
+        if (normalizedLanguage == "python")
+        {
+            return !normalizedCode.Contains("print(", StringComparison.Ordinal);
+        }
+
+        return false;
+    }
+
+    private static string WriteRoutineScript(string runDir, string language, string code)
+    {
+        var scriptFileName = string.Equals(language, "python", StringComparison.OrdinalIgnoreCase) ? "run.py" : "run.sh";
+        var scriptPath = Path.Combine(runDir, scriptFileName);
+        File.WriteAllText(scriptPath, code, new UTF8Encoding(false));
+        if (!OperatingSystem.IsWindows())
+        {
+            try
+            {
+                File.SetUnixFileMode(scriptPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+            catch
+            {
+            }
+        }
+
+        return scriptPath;
+    }
+
+    private static string BuildRoutineTitle(string request)
+    {
+        var text = (request ?? string.Empty)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal)
+            .Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "새 루틴";
+        }
+
+        var title = text.Length <= 26 ? text : text[..26].TrimEnd() + "...";
+        return title;
+    }
+
+    private static DateTimeOffset ComputeNextDailyRunUtc(int hour, int minute, string timezoneId, DateTimeOffset nowUtc)
+    {
+        var tz = ResolveTimeZone(timezoneId);
+        var nowLocal = TimeZoneInfo.ConvertTime(nowUtc, tz);
+        var nextLocal = new DateTime(nowLocal.Year, nowLocal.Month, nowLocal.Day, hour, minute, 0, DateTimeKind.Unspecified);
+        if (nextLocal <= nowLocal.DateTime)
+        {
+            nextLocal = nextLocal.AddDays(1);
+        }
+
+        var offset = tz.GetUtcOffset(nextLocal);
+        return new DateTimeOffset(nextLocal, offset).ToUniversalTime();
+    }
+
+    private static TimeZoneInfo ResolveTimeZone(string? timezoneId)
+    {
+        if (!string.IsNullOrWhiteSpace(timezoneId))
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(timezoneId.Trim());
+            }
+            catch
+            {
+            }
+        }
+
+        return TimeZoneInfo.Local;
+    }
+
+}
