@@ -1,3 +1,17 @@
+function summarizeRoutineStatusMessage(text) {
+  const lines = `${text || ""}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+  if (lines.length === 0) {
+    return ""
+  }
+
+  const first = lines[0]
+  return first.length > 180 ? `${first.slice(0, 177)}...` : first
+}
+
 export function handleConversationMemoryMessage(msg, context) {
   const {
     autoCreateConversationRef,
@@ -314,6 +328,7 @@ export function handleRoutineMessage(msg, context) {
   const {
     setRoutines,
     setRoutineSelectedId,
+    setRoutineProgress,
     isPortraitMobileLayout,
     setResponsivePane,
     log,
@@ -338,11 +353,66 @@ export function handleRoutineMessage(msg, context) {
     return true
   }
 
+  if (msg.type === "routine_progress") {
+    setRoutineProgress((prev) => {
+      const now = Date.now()
+      const base = prev || {}
+      const startedAt = Number.isFinite(base.startedAt) && base.startedAt > 0 ? base.startedAt : now
+      return {
+        ...base,
+        active: !msg.done,
+        operation: msg.operation || base.operation || "create",
+        percent: Number.isFinite(msg.percent) ? msg.percent : (base.percent || 0),
+        message: summarizeRoutineStatusMessage(msg.message) || base.message || "",
+        stageKey: msg.stageKey || base.stageKey || "",
+        stageTitle: msg.stageTitle || base.stageTitle || "",
+        stageDetail: msg.stageDetail || base.stageDetail || "",
+        stageIndex: Number.isFinite(msg.stageIndex) ? msg.stageIndex : (base.stageIndex || 0),
+        stageTotal: Number.isFinite(msg.stageTotal) ? msg.stageTotal : (base.stageTotal || 5),
+        done: !!msg.done,
+        ok: msg.done ? msg.ok !== false : null,
+        startedAt,
+        updatedAt: now,
+        completedAt: msg.done ? now : 0
+      }
+    })
+    return true
+  }
+
   if (msg.type === "routine_result") {
     const ok = !!msg.ok
     const messageText = msg.message || (ok ? "루틴 처리 완료" : "루틴 처리 실패")
+    const messageSummary = summarizeRoutineStatusMessage(messageText) || messageText
     log(messageText, ok ? "info" : "error")
     setError("routine:main", ok ? "" : `오류: ${messageText}`)
+    setRoutineProgress((prev) => {
+      const base = prev || {}
+      if ((base.operation || "") !== "create" || !base.active) {
+        return base
+      }
+
+      const now = Date.now()
+      const nextStageTitle = ok ? (base.stageTitle || "초기 실행") : (base.stageTitle || "루틴 생성")
+      const nextStageDetail = ok
+        ? (base.stageDetail || "생성 직후 실행 결과를 반영했습니다.")
+        : (messageSummary || base.stageDetail || "루틴 생성 중 오류가 발생했습니다.")
+      return {
+        ...base,
+        active: false,
+        operation: base.operation || "create",
+        percent: ok ? 100 : Math.max(8, Math.min(96, Number(base.percent) || 0)),
+        message: messageSummary,
+        stageTitle: nextStageTitle,
+        stageDetail: nextStageDetail,
+        stageIndex: Math.max(Number(base.stageIndex) || 0, ok ? Number(base.stageTotal) || 5 : Number(base.stageIndex) || 1),
+        stageTotal: Number(base.stageTotal) || 5,
+        done: true,
+        ok,
+        startedAt: Number.isFinite(base.startedAt) && base.startedAt > 0 ? base.startedAt : now,
+        updatedAt: now,
+        completedAt: now
+      }
+    })
     if (msg.routine && msg.routine.id) {
       setRoutineSelectedId(msg.routine.id)
       if (isPortraitMobileLayout) {
@@ -445,6 +515,11 @@ export function handleExecutionFlowMessage(msg, context) {
         [key]: {
           phase: msg.phase || base.phase || "",
           message: msg.message || base.message || "",
+          stageKey: msg.stageKey || base.stageKey || "",
+          stageTitle: msg.stageTitle || base.stageTitle || "",
+          stageDetail: msg.stageDetail || base.stageDetail || "",
+          stageIndex: Number.isFinite(msg.stageIndex) ? msg.stageIndex : (base.stageIndex || 0),
+          stageTotal: Number.isFinite(msg.stageTotal) ? msg.stageTotal : (base.stageTotal || 0),
           iteration: Number.isFinite(msg.iteration) ? msg.iteration : (base.iteration || 0),
           maxIterations: Number.isFinite(msg.maxIterations) ? msg.maxIterations : (base.maxIterations || 0),
           percent: Number.isFinite(msg.percent) ? msg.percent : (base.percent || 0),
@@ -555,7 +630,9 @@ export function handleExecutionFlowMessage(msg, context) {
 
     if (msg.type === "coding_result") {
       setCodingResultByConversation((prev) => ({ ...prev, [conv.id]: msg }))
-      setShowExecutionLogsByConversation((prev) => ({ ...prev, [conv.id]: false }))
+      const rawStatus = `${msg.execution && typeof msg.execution.status === "string" ? msg.execution.status : ""}`.trim().toLowerCase()
+      const shouldShowLogs = /(error|fail|timeout|cancel|killed|aborted)/i.test(rawStatus)
+      setShowExecutionLogsByConversation((prev) => ({ ...prev, [conv.id]: shouldShowLogs }))
       setFilePreviewByConversation((prev) => {
         const next = { ...prev }
         delete next[conv.id]

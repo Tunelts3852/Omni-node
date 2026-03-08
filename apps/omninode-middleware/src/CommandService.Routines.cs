@@ -2,6 +2,34 @@ namespace OmniNode.Middleware;
 
 public sealed partial class CommandService
 {
+    private const int RoutineCreateStageTotal = 5;
+
+    private static void ReportRoutineCreateProgress(
+        Action<RoutineProgressUpdate>? progressCallback,
+        string message,
+        int percent,
+        string stageKey,
+        string stageTitle,
+        string stageDetail,
+        int stageIndex,
+        bool done = false,
+        bool? ok = null
+    )
+    {
+        progressCallback?.Invoke(new RoutineProgressUpdate(
+            "create",
+            message,
+            Math.Max(0, Math.Min(100, percent)),
+            done,
+            ok,
+            stageKey,
+            stageTitle,
+            stageDetail,
+            stageIndex,
+            RoutineCreateStageTotal
+        ));
+    }
+
     public IReadOnlyList<RoutineSummary> ListRoutines()
     {
         lock (_routineLock)
@@ -13,7 +41,12 @@ public sealed partial class CommandService
         }
     }
 
-    public async Task<RoutineActionResult> CreateRoutineAsync(string request, string source, CancellationToken cancellationToken)
+    public async Task<RoutineActionResult> CreateRoutineAsync(
+        string request,
+        string source,
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
+    )
     {
         var input = (request ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(input))
@@ -37,7 +70,8 @@ public sealed partial class CommandService
             NormalizeRoutineNotifyPolicy(null),
             scheduleConfig,
             source,
-            cancellationToken
+            cancellationToken,
+            progressCallback
         );
     }
 
@@ -60,7 +94,8 @@ public sealed partial class CommandService
         int? dayOfMonth,
         string? timezoneId,
         string source,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     )
     {
         var input = (request ?? string.Empty).Trim();
@@ -103,7 +138,8 @@ public sealed partial class CommandService
             NormalizeRoutineNotifyPolicy(notifyPolicy),
             scheduleConfig,
             source,
-            cancellationToken
+            cancellationToken,
+            progressCallback
         );
     }
 
@@ -126,7 +162,8 @@ public sealed partial class CommandService
         IReadOnlyList<int>? weekdays,
         int? dayOfMonth,
         string? timezoneId,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     )
     {
         var key = (routineId ?? string.Empty).Trim();
@@ -590,7 +627,7 @@ public sealed partial class CommandService
                 }
 
                 if (string.Equals(telegramDispatch.Status, "sent", StringComparison.Ordinal)
-                    && source.Equals("scheduler", StringComparison.OrdinalIgnoreCase)
+                    && IsRoutineScheduledSource(source)
                     && !string.IsNullOrWhiteSpace(telegramDispatch.Fingerprint))
                 {
                     update.LastNotifiedFingerprint = telegramDispatch.Fingerprint;

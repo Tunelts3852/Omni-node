@@ -31,11 +31,6 @@ internal sealed class FileRoutineStore : IRoutineStore
             return Array.Empty<RoutineDefinition>();
         }
 
-        foreach (var item in state.Items)
-        {
-            item.Running = false;
-        }
-
         return state.Items
             .Where(item => !string.IsNullOrWhiteSpace(item.Id))
             .ToArray();

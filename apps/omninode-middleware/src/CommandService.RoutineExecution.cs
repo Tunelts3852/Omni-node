@@ -29,13 +29,23 @@ public sealed partial class CommandService
         string notifyPolicy,
         RoutineScheduleConfig scheduleConfig,
         string source,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     )
     {
         var createdAt = DateTimeOffset.UtcNow;
         var id = $"rt-{createdAt:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
         var runDir = Path.Combine(_config.WorkspaceRootDir, "routines", id);
         Directory.CreateDirectory(runDir);
+        ReportRoutineCreateProgress(
+            progressCallback,
+            "루틴 요청을 분석하는 중입니다.",
+            10,
+            "request_analysis",
+            "요청 분석",
+            "스케줄과 실행 경로를 확인하고 있습니다.",
+            1
+        );
 
         var taskRequest = ResolveRoutineExecutionRequestText(request, title, scheduleSourceMode);
         var normalizedExecutionMode = NormalizeRoutineExecutionMode(executionMode);
@@ -80,13 +90,34 @@ public sealed partial class CommandService
             normalizedAgentModel,
             normalizedAgentStartUrl
         );
+        ReportRoutineCreateProgress(
+            progressCallback,
+            "생성 전략을 준비하는 중입니다.",
+            24,
+            "planning",
+            "생성 전략 준비",
+            string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal)
+                ? "스크립트 생성 경로와 모델 전략을 준비하고 있습니다."
+                : "실행 모드에 맞는 구성 경로를 확정하고 있습니다.",
+            2
+        );
 
         if (string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal))
         {
             generation = await GenerateRoutineImplementationAsync(
                 taskRequest,
                 new RoutineSchedule(scheduleConfig.Hour, scheduleConfig.Minute, scheduleConfig.Display),
-                cancellationToken
+                cancellationToken,
+                progressCallback
+            );
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "생성한 실행 코드를 저장하는 중입니다.",
+                82,
+                "save",
+                "루틴 등록",
+                "생성 결과를 스크립트 파일과 루틴 상태에 반영하고 있습니다.",
+                4
             );
             scriptPath = WriteRoutineScript(runDir, generation.Language, generation.Code);
             language = generation.Language;
@@ -98,8 +129,47 @@ public sealed partial class CommandService
         }
         else if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
         {
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "브라우저 에이전트 실행 구성을 만드는 중입니다.",
+                62,
+                "implementation",
+                "실행 구성 생성",
+                "브라우저 에이전트 루틴은 코드 파일 없이 실행 구성을 저장합니다.",
+                3
+            );
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "브라우저 에이전트 루틴을 저장하는 중입니다.",
+                82,
+                "save",
+                "루틴 등록",
+                "생성 결과를 저장하고 즉시 실행 준비를 마칩니다.",
+                4
+            );
             plannerModel = normalizedAgentProvider ?? "acp";
             coderModel = normalizedAgentModel ?? "browser-agent";
+        }
+        else
+        {
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "실행 구성을 정리하는 중입니다.",
+                62,
+                "implementation",
+                "실행 구성 생성",
+                "웹/URL 기반 루틴이므로 별도 스크립트 파일 없이 실행 구성을 만듭니다.",
+                3
+            );
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "루틴 메타데이터를 저장하는 중입니다.",
+                82,
+                "save",
+                "루틴 등록",
+                "생성 결과를 저장하고 스케줄에 연결합니다.",
+                4
+            );
         }
 
         var routine = new RoutineDefinition
@@ -158,6 +228,15 @@ public sealed partial class CommandService
             SaveRoutineStateLocked();
         }
 
+        ReportRoutineCreateProgress(
+            progressCallback,
+            "생성 직후 초기 실행을 진행하는 중입니다.",
+            94,
+            "initial_run",
+            "초기 실행",
+            "루틴이 실제로 한 번 실행되며 결과를 기록합니다.",
+            5
+        );
         var runNow = await RunRoutineNowAsync(routine.Id, source, cancellationToken);
         return runNow with
         {
@@ -424,7 +503,7 @@ public sealed partial class CommandService
         }
 
         var enforceTelegramOutputStyle = source.Equals("telegram", StringComparison.OrdinalIgnoreCase)
-            || (source.Equals("scheduler", StringComparison.OrdinalIgnoreCase) && routine.NotifyTelegram);
+            || (IsRoutineScheduledSource(source) && routine.NotifyTelegram);
         var taskRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
 
         if (string.Equals(mode, "gemini-url-single", StringComparison.Ordinal))
@@ -781,9 +860,15 @@ public sealed partial class CommandService
 
     private static bool ShouldSendRoutineResultToTelegram(string source)
     {
-        return source.Equals("scheduler", StringComparison.OrdinalIgnoreCase)
+        return IsRoutineScheduledSource(source)
             || source.Equals("telegram_test", StringComparison.OrdinalIgnoreCase)
             || source.Equals("telegram_resend", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRoutineScheduledSource(string source)
+    {
+        return source.Equals("scheduler", StringComparison.OrdinalIgnoreCase)
+            || source.Equals("cron-wake", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string BuildFallbackRoutineRunDetailContent(RoutineDefinition routine, RoutineRunLogEntry entry)

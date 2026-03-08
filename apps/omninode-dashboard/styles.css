@@ -1339,7 +1339,7 @@ body,
 
 .routine-hero {
   margin-bottom: 14px;
-  padding: 20px 22px;
+  padding: 10px 12px;
   border: 1px solid rgba(214, 224, 236, 0.94);
   border-radius: 22px;
   background:
@@ -1347,21 +1347,222 @@ body,
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 249, 255, 0.96));
   box-shadow: 0 12px 28px rgba(16, 32, 59, 0.06);
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 18px;
-}
-
-.routine-hero-copy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
+  justify-content: stretch;
+  align-items: stretch;
+  gap: 0;
 }
 
 .routine-hero-actions {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.routine-progress-panel {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(248, 251, 255, 0.92), rgba(255, 255, 255, 0.9)),
+    radial-gradient(circle at top right, rgba(103, 149, 223, 0.1), transparent 38%);
+  box-shadow: none;
+}
+
+.routine-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.routine-progress-head-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.routine-progress-title {
+  display: block;
+  margin-top: 1px;
+  font-size: 15px;
+  line-height: 1.2;
+  color: #21354d;
+}
+
+.routine-progress-elapsed {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6b7f97;
+  white-space: nowrap;
+}
+
+.routine-progress-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  border: 1px solid rgba(198, 210, 224, 0.9);
+  color: #5d7089;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.routine-progress-badge.idle {
+  color: #6a7d95;
+}
+
+.routine-progress-badge.working {
+  color: #2158a5;
+  border-color: rgba(132, 172, 233, 0.92);
+  background: rgba(234, 243, 255, 0.98);
+}
+
+.routine-progress-badge.ok {
+  color: #18704a;
+  border-color: rgba(138, 211, 176, 0.9);
+  background: rgba(235, 250, 242, 0.98);
+}
+
+.routine-progress-badge.error {
+  color: #9f2f2f;
+  border-color: rgba(236, 181, 181, 0.9);
+  background: rgba(255, 239, 239, 0.98);
+}
+
+.routine-progress-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  color: #627894;
+}
+
+.routine-progress-caption {
+  min-width: 0;
+  color: #5e7390;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.routine-progress-percent {
+  flex: 0 0 auto;
+  color: #36598d;
+  white-space: nowrap;
+}
+
+.routine-progress-bar {
+  position: relative;
+  width: 100%;
+  height: 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(220, 229, 240, 0.96);
+}
+
+.routine-progress-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6d9ce9, #3a6bc4);
+  box-shadow: 0 6px 14px rgba(63, 107, 196, 0.24);
+  transition: width 220ms ease;
+}
+
+.routine-progress-stage-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+}
+
+.routine-progress-stage {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 8px 9px;
+  border: 1px solid rgba(214, 224, 236, 0.92);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.routine-progress-stage-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 800;
+  color: #60758f;
+  background: rgba(238, 243, 248, 0.96);
+}
+
+.routine-progress-stage-copy {
+  display: block;
+  min-width: 0;
+}
+
+.routine-progress-stage-title {
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  color: #2b4159;
+  white-space: normal;
+  word-break: keep-all;
+  overflow-wrap: normal;
+  text-wrap: pretty;
+}
+
+.routine-progress-stage-detail {
+  display: none;
+}
+
+.routine-progress-stage.done {
+  border-color: rgba(171, 218, 196, 0.9);
+  background: rgba(242, 251, 246, 0.96);
+}
+
+.routine-progress-stage.done .routine-progress-stage-index {
+  color: #19744d;
+  background: rgba(208, 240, 223, 0.96);
+}
+
+.routine-progress-stage.active {
+  border-color: rgba(139, 177, 234, 0.94);
+  background: rgba(239, 246, 255, 0.98);
+  box-shadow: 0 8px 18px rgba(69, 112, 190, 0.08);
+}
+
+.routine-progress-stage.active .routine-progress-stage-index {
+  color: #235aa8;
+  background: rgba(211, 226, 255, 0.98);
+}
+
+.routine-progress-stage.error {
+  border-color: rgba(230, 175, 175, 0.9);
+  background: rgba(255, 244, 244, 0.98);
+}
+
+.routine-progress-stage.error .routine-progress-stage-index {
+  color: #9f2f2f;
+  background: rgba(255, 222, 222, 0.98);
 }
 
 .routine-hero-kicker,
@@ -1757,6 +1958,11 @@ body,
 
 .routine-submit-btn {
   min-width: 132px;
+}
+
+.routine-submit-btn:disabled {
+  cursor: wait;
+  opacity: 0.78;
 }
 
 .routine-list {
@@ -2775,8 +2981,47 @@ select.input {
   }
 
   .routine-hero {
-    padding: 16px 18px;
+    padding: 12px 14px;
     flex-direction: column;
+  }
+
+  .routine-progress-panel {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+
+  .routine-progress-stage-list {
+    grid-template-columns: 1fr;
+  }
+
+  .routine-progress-stage {
+    grid-template-columns: 26px minmax(0, 1fr);
+    align-items: flex-start;
+    min-height: 0;
+    padding: 9px 10px;
+    border-radius: 14px;
+  }
+
+  .routine-progress-stage-index {
+    width: 26px;
+    height: 26px;
+    font-size: 12px;
+  }
+
+  .routine-progress-stage-title {
+    font-size: 13px;
+  }
+
+  .routine-progress-stage-detail {
+    display: block;
+    font-size: 12px;
+    line-height: 1.45;
+    color: #6a7f98;
+  }
+
+  .routine-progress-caption {
+    white-space: normal;
   }
 
   .routine-overview-grid {

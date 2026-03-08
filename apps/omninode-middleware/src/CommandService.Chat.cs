@@ -385,7 +385,12 @@ public sealed partial class CommandService
                 );
         }
 
-        var contextualInput = BuildContextualInput(session.SessionId, preparedInput.Text, session.LinkedMemoryNotes);
+        var contextualInput = BuildContextualInput(
+            session.SessionId,
+            preparedInput.Text,
+            session.LinkedMemoryNotes,
+            includeLocalTimeHint: true
+        );
         LlmSingleChatResult generated;
         try
         {
@@ -651,7 +656,12 @@ public sealed partial class CommandService
                 basePrepared.RetryStopReason
             );
         }
-        var contextualInput = BuildContextualInput(session.SessionId, basePrepared.Text, session.LinkedMemoryNotes);
+        var contextualInput = BuildContextualInput(
+            session.SessionId,
+            basePrepared.Text,
+            session.LinkedMemoryNotes,
+            includeLocalTimeHint: true
+        );
 
         var generated = await ChatOrchestrationAsync(
             contextualInput,
@@ -829,7 +839,12 @@ public sealed partial class CommandService
                 localCodexModel
             );
         }
-        var contextualInput = BuildContextualInput(session.SessionId, basePrepared.Text, session.LinkedMemoryNotes);
+        var contextualInput = BuildContextualInput(
+            session.SessionId,
+            basePrepared.Text,
+            session.LinkedMemoryNotes,
+            includeLocalTimeHint: true
+        );
 
         var generated = await ChatMultiAsync(
             contextualInput,

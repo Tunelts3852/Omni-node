@@ -9,7 +9,8 @@ public sealed partial class CommandService
         string? model,
         string input,
         CancellationToken cancellationToken,
-        int? maxOutputTokens = null
+        int? maxOutputTokens = null,
+        bool useRawCodexPrompt = false
     )
     {
         var normalized = NormalizeProvider(provider, allowAuto: false);
@@ -45,7 +46,12 @@ public sealed partial class CommandService
         if (normalized == "codex")
         {
             var selected = NormalizeModelSelection(model) ?? _config.CodexModel;
-            var response = await _codexWrapper.GenerateChatAsync(input, selected, cancellationToken);
+            var response = await _codexWrapper.GenerateChatAsync(
+                input,
+                selected,
+                cancellationToken,
+                useChatEnvelope: !useRawCodexPrompt
+            );
             return new LlmSingleChatResult("codex", selected, response);
         }
 
@@ -133,7 +139,8 @@ public sealed partial class CommandService
         string? model,
         string input,
         CancellationToken cancellationToken,
-        int? maxOutputTokens = null
+        int? maxOutputTokens = null,
+        bool useRawCodexPrompt = false
     )
     {
         var normalized = NormalizeProvider(provider, allowAuto: false);
@@ -158,7 +165,14 @@ public sealed partial class CommandService
 
             try
             {
-                lastResult = await GenerateByProviderAsync(normalized, model, input, timeoutCts.Token, maxOutputTokens);
+                lastResult = await GenerateByProviderAsync(
+                    normalized,
+                    model,
+                    input,
+                    timeoutCts.Token,
+                    maxOutputTokens,
+                    useRawCodexPrompt
+                );
                 lastException = null;
                 if (normalized == "gemini"
                     && attempt < maxAttempts

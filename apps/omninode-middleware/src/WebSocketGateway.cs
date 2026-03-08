@@ -184,6 +184,7 @@ public sealed partial class WebSocketGateway
             routineService,
             SendRoutinesAsync,
             SendRoutineActionResultAsync,
+            SendRoutineProgressAsync,
             SendRoutineRunDetailAsync
         );
         _aiCommandDispatcher = new WsAiCommandDispatcher(
@@ -2443,6 +2444,39 @@ public sealed partial class WebSocketGateway
         );
     }
 
+    private async Task SendRoutineProgressAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        RoutineProgressUpdate update,
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await SendTextAsync(
+                socket,
+                sendLock,
+                "{"
+                + "\"type\":\"routine_progress\","
+                + $"\"operation\":\"{EscapeJson(update.Operation)}\","
+                + $"\"message\":\"{EscapeJson(update.Message)}\","
+                + $"\"percent\":{Math.Max(0, Math.Min(100, update.Percent))},"
+                + $"\"done\":{(update.Done ? "true" : "false")},"
+                + $"\"ok\":{(update.Ok.HasValue ? (update.Ok.Value ? "true" : "false") : "null")},"
+                + $"\"stageKey\":\"{EscapeJson(update.StageKey)}\","
+                + $"\"stageTitle\":\"{EscapeJson(update.StageTitle)}\","
+                + $"\"stageDetail\":\"{EscapeJson(update.StageDetail)}\","
+                + $"\"stageIndex\":{Math.Max(0, update.StageIndex)},"
+                + $"\"stageTotal\":{Math.Max(0, update.StageTotal)}"
+                + "}",
+                cancellationToken
+            );
+        }
+        catch
+        {
+        }
+    }
+
     private async Task SendChatResultAsync(
         WebSocket socket,
         SemaphoreSlim sendLock,
@@ -2609,13 +2643,14 @@ public sealed partial class WebSocketGateway
     {
         try
         {
+            var effectiveMode = string.IsNullOrWhiteSpace(update.Mode) ? mode : update.Mode;
             await SendTextAsync(
                 socket,
                 sendLock,
                 "{"
                 + "\"type\":\"coding_progress\","
                 + $"\"scope\":\"{EscapeJson(scope)}\","
-                + $"\"mode\":\"{EscapeJson(mode)}\","
+                + $"\"mode\":\"{EscapeJson(effectiveMode)}\","
                 + $"\"provider\":\"{EscapeJson(update.Provider)}\","
                 + $"\"model\":\"{EscapeJson(update.Model)}\","
                 + $"\"phase\":\"{EscapeJson(update.Phase)}\","
@@ -2623,7 +2658,12 @@ public sealed partial class WebSocketGateway
                 + $"\"iteration\":{update.Iteration},"
                 + $"\"maxIterations\":{update.MaxIterations},"
                 + $"\"percent\":{update.Percent},"
-                + $"\"done\":{(update.Done ? "true" : "false")}"
+                + $"\"done\":{(update.Done ? "true" : "false")},"
+                + $"\"stageKey\":\"{EscapeJson(update.StageKey)}\","
+                + $"\"stageTitle\":\"{EscapeJson(update.StageTitle)}\","
+                + $"\"stageDetail\":\"{EscapeJson(update.StageDetail)}\","
+                + $"\"stageIndex\":{update.StageIndex},"
+                + $"\"stageTotal\":{update.StageTotal}"
                 + "}",
                 cancellationToken
             );

@@ -8,6 +8,8 @@ Omni-node는 로컬 PC 제어, LLM 오케스트레이션, 코딩 자동 실행, 
 
 현재 canonical 레이아웃은 `apps/`, `docs/`, `workspace/` 3층입니다. 루트의 기존 `omninode-*`, `coding`, `runtime`, 문서 파일 경로는 하위 호환을 위한 심볼릭 링크로 유지합니다.
 
+문서와 쉘 예시에서 기본 워크스페이스 경로는 항상 `/Users/songhabin/Omni-node/workspace/coding`으로 표기합니다. 기존 `coding` 경로는 하위 호환 alias로만 취급합니다.
+
 ## 한눈에 보기
 
 - 실제 런타임 중심 모듈: `apps/omninode-core/`, `apps/omninode-middleware/`, `apps/omninode-dashboard/`, `apps/omninode-sandbox/`
@@ -50,6 +52,7 @@ dotnet run --project apps/omninode-middleware/OmniNode.Middleware.csproj
 | [docs/아키텍처_흐름.md](docs/아키텍처_흐름.md) | 인증, 대화/코딩, 검색 가드, 루틴 실행 흐름 |
 | [docs/디렉터리_가이드.md](docs/디렉터리_가이드.md) | 저장소 전체 디렉터리와 주요 파일 안내 |
 | [docs/환경변수_및_상태파일.md](docs/환경변수_및_상태파일.md) | 주요 환경변수, 시크릿 로딩 방식, 상태 파일 위치 |
+| [docs/CLEANUP.md](docs/CLEANUP.md) | 지워도 되는 것, 보존할 것, 1분 유지보수 체크리스트 |
 | [docs/검증_가이드.md](docs/검증_가이드.md) | 빌드/스모크/회귀 검증 명령 모음 |
 
 ### 하위 호환 루트 링크
@@ -72,7 +75,7 @@ flowchart TD
     TL --> CS
     CS --> PR["ProviderRegistry / ToolRegistry"]
     CS --> LR["LlmRouter"]
-    CS --> SG["LegacyGeminiGroundingSearchGateway"]
+    CS --> SG["Search Pipeline"]
     CS --> MEM["ConversationStore / MemoryNoteStore / MemorySearchTool"]
     CS --> CODE["UniversalCodeRunner / PythonSandboxClient"]
     CS --> UDS["UdsCoreClient"]
@@ -90,11 +93,11 @@ flowchart TD
 
 ## 저장소 스냅샷
 
-`.git` 제외 기준 현재 워크스페이스에는 총 2,861개 파일이 있습니다.
+`.git` 및 하위 호환 심볼릭 링크 제외 기준 현재 워크스페이스에는 총 2,864개 실파일이 있습니다.
 
 | 경로 | 파일 수 | 성격 |
 |---|---:|---|
-| `workspace/coding/` | 1,697 | 코딩 작업공간, 예제, 루틴 산출물, 가상환경 |
+| `workspace/coding/` | 1,699 | 코딩 작업공간, 예제, 루틴 산출물, 가상환경 |
 | `node_modules/` | 547 | Playwright 의존성 |
 | `docs/gemini-retriever-plan/` | 303 | 검색 전환 계획 및 루프 자동화 기록 |
 | `apps/omninode-middleware/` | 171 | .NET 9 미들웨어 소스와 체크 스크립트 |
@@ -111,10 +114,17 @@ flowchart TD
 - 루트 `package.json`은 앱 dev server 스크립트 저장소는 아니지만 `npm test` 통합 검증 엔트리를 제공합니다.
 - 프런트엔드는 별도 dev server가 아니라 미들웨어가 정적 파일을 직접 서빙합니다.
 
+## 위생 기준 요약
+
+- 기준 경로는 `apps/`, `docs/`, `workspace/`이며, 기본 워크스페이스 예시는 항상 `/Users/songhabin/Omni-node/workspace/coding`입니다.
+- 영속 상태 원본은 `~/.omninode`, 작업 산출물은 `workspace/`, 임시 실행 흔적은 `/tmp`, `workspace/.runtime`, `workspace/runtime`으로 구분해서 봅니다.
+- 재생성 가능한 캐시는 과감히 청소해도 되지만, 상태 원본과 실행 이력은 보존 여부를 먼저 판단합니다.
+- 청소 기준과 1분 유지보수 체크리스트는 [docs/CLEANUP.md](docs/CLEANUP.md)에 정리했습니다.
+
 ## 현재 구현 관점에서 중요한 포인트
 
 - 자동 제공자 우선순위는 `gemini -> groq -> cerebras -> copilot -> codex` 순서입니다.
-- 검색 경로는 `LegacyGeminiGroundingSearchGateway` 중심의 grounding 경로를 기본으로 하되, `ISearchAnswerComposer`와 `search_cache_fallback` 대체 경로를 함께 둡니다.
+- 검색 경로의 기준 추상화는 특정 gateway 하나가 아니라 `grounding + guard + composer fallback`을 묶는 검색 파이프라인입니다. `LegacyGeminiGroundingSearchGateway`, `GeminiGroundedRetriever`, `ISearchAnswerComposer`, `search_cache_fallback`은 그 내부 구성 요소로 봐야 문서 해석이 가장 자연스럽습니다.
 - 검색 응답은 `SearchAnswerGuard`의 fail-closed 정책을 통과해야 하며, 근거가 부족하면 답변이 차단됩니다.
 - 대시보드는 OTP 기반 인증을 사용하고, 텔레그램이 미설정이면 로컬 OTP fallback 로그로도 인증할 수 있습니다.
 - 루틴은 `~/.omninode/routines.json` 상태와 `workspace/coding/routines/` 실행 산출물을 함께 사용합니다.
@@ -146,4 +156,4 @@ npm test
 python3 apps/omninode-sandbox/executor.py --code "print('ok')"
 ```
 
-보다 자세한 검증 항목은 [docs/검증_가이드.md](docs/검증_가이드.md)를 보세요.
+권장 기억 순서는 `부팅 검증 -> 기본 건강검진 -> 실행기 검증`입니다. 보다 자세한 검증 항목은 [docs/검증_가이드.md](docs/검증_가이드.md)를 보세요.

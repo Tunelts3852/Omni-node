@@ -2902,6 +2902,11 @@ public sealed partial class CommandService
             return false;
         }
 
+        if (LooksLikeLocalDateTimeQuestion(normalized))
+        {
+            return false;
+        }
+
         return ContainsAny(
             normalized,
             "최신",
@@ -2938,20 +2943,21 @@ public sealed partial class CommandService
             return false;
         }
 
+        if (LooksLikeLocalDateTimeQuestion(normalized))
+        {
+            return false;
+        }
+
         return ContainsAny(
                 normalized,
                 "검색해서",
-                "알려줘",
-                "말해줘",
                 "검색해줘",
                 "검색해 줘",
                 "검색해봐",
-                "찾아봐",
-                "찾아봐줘",
-                "알아봐",
-                "알아봐줘",
+                "웹 검색",
                 "웹에서",
                 "인터넷에서",
+                "web search",
                 "search for",
                 "look up",
                 "lookup"
@@ -2966,8 +2972,17 @@ public sealed partial class CommandService
     private static bool LooksLikeClearlyNonWebQuestion(string input)
     {
         var normalized = (input ?? string.Empty).Trim().ToLowerInvariant();
-        if (normalized.Length == 0
-            || LooksLikeRealtimeQuestion(normalized)
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (LooksLikeLocalDateTimeQuestion(normalized))
+        {
+            return true;
+        }
+
+        if (LooksLikeRealtimeQuestion(normalized)
             || LooksLikeExplicitWebLookupQuestion(normalized))
         {
             return false;
@@ -3003,6 +3018,72 @@ public sealed partial class CommandService
         }
 
         return false;
+    }
+
+    private static bool LooksLikeLocalDateTimeQuestion(string input)
+    {
+        var normalized = Regex.Replace((input ?? string.Empty).Trim().ToLowerInvariant(), @"\s+", " ");
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (ContainsAny(
+                normalized,
+                "시간복잡도",
+                "time complexity",
+                "runtime complexity",
+                "응답 시간",
+                "실행 시간",
+                "timeout",
+                "타임아웃",
+                "러닝타임"))
+        {
+            return false;
+        }
+
+        if (ContainsAny(
+                normalized,
+                "지금 몇시",
+                "지금 몇 시",
+                "몇시야",
+                "몇 시야",
+                "현재 시간",
+                "현재 시각",
+                "지금 시간",
+                "로컬 시간",
+                "오늘 날짜",
+                "오늘 며칠",
+                "현재 날짜",
+                "로컬 날짜",
+                "무슨 요일",
+                "어느 요일",
+                "몇월 몇일",
+                "몇 월 몇 일",
+                "현재 타임존",
+                "현재 시간대",
+                "로컬 타임존",
+                "로컬 시간대",
+                "what time is it",
+                "current time",
+                "local time",
+                "today's date",
+                "today date",
+                "current date",
+                "what date is it",
+                "what day is it",
+                "current timezone",
+                "local timezone",
+                "time zone"))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(
+            normalized,
+            @"(?:^|\s)몇\s*시(?:야|예요|인가요|입니까)?(?:\?|$)|(?:^|\s)몇\s*일(?:이야|인가요|입니까)?(?:\?|$)",
+            RegexOptions.CultureInvariant | RegexOptions.IgnoreCase
+        );
     }
 
     private static bool LooksLikeComparisonRequest(string input)

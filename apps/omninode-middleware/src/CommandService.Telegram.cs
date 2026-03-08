@@ -1278,14 +1278,34 @@ public sealed partial class CommandService
 
         if (webSearchEnabled && snapshot.Mode == "single")
         {
-            var webDecision = await DecideNeedWebBySelectedProviderAsync(
-                text,
-                snapshotSingleProvider,
-                snapshotSingleModel,
-                cancellationToken
-            );
-            var shouldFallbackToGeminiWeb = !webDecision.DecisionSucceeded && LooksLikeRealtimeQuestion(text);
-            if (webDecision.NeedWeb || shouldFallbackToGeminiWeb)
+            var decisionPath = "heuristic_no_web";
+            var shouldUseGeminiWeb = false;
+            var shouldFallbackToGeminiWeb = false;
+
+            if (LooksLikeExplicitWebLookupQuestion(text))
+            {
+                decisionPath = "heuristic_explicit_web";
+                shouldUseGeminiWeb = true;
+            }
+            else if (LooksLikeRealtimeQuestion(text))
+            {
+                decisionPath = "heuristic_web";
+                shouldUseGeminiWeb = true;
+            }
+            else if (!LooksLikeClearlyNonWebQuestion(text))
+            {
+                var webDecision = await DecideNeedWebBySelectedProviderAsync(
+                    text,
+                    snapshotSingleProvider,
+                    snapshotSingleModel,
+                    cancellationToken
+                );
+                shouldFallbackToGeminiWeb = !webDecision.DecisionSucceeded && LooksLikeRealtimeQuestion(text);
+                shouldUseGeminiWeb = webDecision.NeedWeb || shouldFallbackToGeminiWeb;
+                decisionPath = webDecision.DecisionSucceeded ? "llm" : "heuristic_fallback";
+            }
+
+            if (shouldUseGeminiWeb)
             {
                 var allowMarkdownTable = LooksLikeTableRenderRequest(text);
                 var memoryHint = BuildSafeWebMemoryPreferenceHint(
@@ -1303,7 +1323,7 @@ public sealed partial class CommandService
                     session.Scope,
                     session.Mode,
                     session.Thread.Id,
-                    webDecision.DecisionSucceeded ? "llm" : "heuristic_fallback",
+                    decisionPath,
                     0,
                     "telegram",
                     cancellationToken

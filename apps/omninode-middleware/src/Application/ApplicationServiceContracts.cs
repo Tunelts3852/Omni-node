@@ -187,7 +187,12 @@ public interface IToolApplicationService
 public interface IRoutineApplicationService
 {
     IReadOnlyList<RoutineSummary> ListRoutines();
-    Task<RoutineActionResult> CreateRoutineAsync(string request, string source, CancellationToken cancellationToken);
+    Task<RoutineActionResult> CreateRoutineAsync(
+        string request,
+        string source,
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
+    );
     Task<RoutineActionResult> CreateRoutineAsync(
         string request,
         string? title,
@@ -207,7 +212,8 @@ public interface IRoutineApplicationService
         int? dayOfMonth,
         string? timezoneId,
         string source,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     );
     Task<RoutineActionResult> UpdateRoutineAsync(
         string routineId,
@@ -228,7 +234,8 @@ public interface IRoutineApplicationService
         IReadOnlyList<int>? weekdays,
         int? dayOfMonth,
         string? timezoneId,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     );
     Task<RoutineActionResult> RunRoutineNowAsync(string routineId, string source, CancellationToken cancellationToken);
     RoutineRunDetailResult GetRoutineRunDetail(string routineId, long ts);

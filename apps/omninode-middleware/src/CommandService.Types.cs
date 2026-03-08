@@ -218,7 +218,12 @@ public sealed record CodingProgressUpdate(
     int Iteration,
     int MaxIterations,
     int Percent,
-    bool Done
+    bool Done,
+    string StageKey = "",
+    string StageTitle = "",
+    string StageDetail = "",
+    int StageIndex = 0,
+    int StageTotal = 0
 );
 internal sealed record ParsedCode(string Language, string Code);
 internal sealed record ScaffoldFileSpec(string Path, string Content);
@@ -275,6 +280,18 @@ public sealed record RoutineSummary(
     IReadOnlyList<RoutineRunSummary> Runs
 );
 public sealed record RoutineActionResult(bool Ok, string Message, RoutineSummary? Routine);
+public sealed record RoutineProgressUpdate(
+    string Operation,
+    string Message,
+    int Percent,
+    bool Done,
+    bool? Ok = null,
+    string StageKey = "",
+    string StageTitle = "",
+    string StageDetail = "",
+    int StageIndex = 0,
+    int StageTotal = 0
+);
 public sealed record RoutineRunSummary(
     long Ts,
     string RunAtLocal,

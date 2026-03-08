@@ -383,22 +383,43 @@ public sealed partial class CommandService
             })
             .ToList();
 
+        var workerInputs = workerPlan
+            .Select((item, index) => new
+            {
+                Index = index,
+                Provider = item.Provider,
+                Model = resolvedWorkerModels[item.Provider],
+                PrepareTask = PrepareInputForProviderAsync(
+                    contextualInput + "\n\n" + item.RolePrompt,
+                    item.Provider,
+                    resolvedWorkerModels[item.Provider],
+                    request.Attachments,
+                    request.WebUrls,
+                    request.WebSearchEnabled,
+                    false,
+                    cancellationToken
+                )
+            })
+            .ToArray();
+        await Task.WhenAll(workerInputs.Select(item => item.PrepareTask));
+
         var workerTasks = new List<Task<CodingWorkerResult>>();
-        for (var i = 0; i < workerPlan.Count; i++)
+        progressCallback?.Invoke(new CodingProgressUpdate(
+            "orchestration",
+            "-",
+            "-",
+            "coordination",
+            "워커 역할을 정리하고 초안을 수집합니다.",
+            0,
+            0,
+            6,
+            false
+        ));
+        foreach (var workerInput in workerInputs)
         {
-            var provider = workerPlan[i].Provider;
-            var rolePrompt = workerPlan[i].RolePrompt;
-            var model = resolvedWorkerModels[provider];
-            var providerPrepared = await PrepareInputForProviderAsync(
-                contextualInput + "\n\n" + rolePrompt,
-                provider,
-                model,
-                request.Attachments,
-                request.WebUrls,
-                request.WebSearchEnabled,
-                false,
-                cancellationToken
-            );
+            var provider = workerInput.Provider;
+            var model = workerInput.Model;
+            var providerPrepared = workerInput.PrepareTask.Result;
             if (!string.IsNullOrWhiteSpace(providerPrepared.UnsupportedMessage))
             {
                 workerTasks.Add(Task.FromResult(BuildUnsupportedCodingWorkerResult(
@@ -413,7 +434,7 @@ public sealed partial class CommandService
             var prompt = BuildCodingAgentObjectivePrompt(
                 providerPrepared.Text,
                 request.Language,
-                $"오케스트레이션 워커-{i + 1}"
+                $"오케스트레이션 워커-{workerInput.Index + 1}"
             );
 
             workerTasks.Add(
@@ -424,13 +445,25 @@ public sealed partial class CommandService
                     request.Language,
                     cancellationToken,
                     progressCallback,
-                    "orchestration-worker"
+                    "orchestration-worker",
+                    allowRunActions: false
                 )
             );
         }
 
         await Task.WhenAll(workerTasks);
         var workerResults = workerTasks.Select(x => x.Result).ToArray();
+        progressCallback?.Invoke(new CodingProgressUpdate(
+            "orchestration",
+            "-",
+            "-",
+            "coordination",
+            $"워커 {workerResults.Length}개의 초안을 수집했습니다. 통합 구현으로 넘어갑니다.",
+            0,
+            0,
+            18,
+            false
+        ));
         var availabilityByProvider = await GetProviderAvailabilityMapAsync(cancellationToken);
         var selectionByProvider = BuildProviderSelectionMap(
             request.GroqModel,
@@ -493,8 +526,7 @@ public sealed partial class CommandService
             progressCallback
         );
 
-        var workersSummary = string.Join("\n", workerResults.Select(x => $"- {x.Provider}:{x.Model} ({x.Language})"));
-        var orchestrationSummary = workersSummary + "\n\n" + finalOutcome.Summary;
+        var orchestrationSummary = $"워커 초안 {workerResults.Length}개를 통합했습니다.\n{finalOutcome.Summary}";
         var citationBundleOrchestration = BuildAndLogCitationMappings(
             request.Source,
             "coding-orchestration",
@@ -672,31 +704,58 @@ public sealed partial class CommandService
             );
         }
 
+        var workerInputs = workers
+            .Select(provider => new
+            {
+                Provider = provider,
+                Model = ResolveModel(
+                    provider,
+                    provider switch
+                    {
+                        "groq" => request.GroqModel,
+                        "gemini" => request.GeminiModel,
+                        "cerebras" => request.CerebrasModel,
+                        "copilot" => request.CopilotModel,
+                        "codex" => request.CodexModel,
+                        _ => null
+                    }
+                )
+            })
+            .Select(item => new
+            {
+                item.Provider,
+                item.Model,
+                PrepareTask = PrepareInputForProviderAsync(
+                    contextualInput,
+                    item.Provider,
+                    item.Model,
+                    request.Attachments,
+                    request.WebUrls,
+                    request.WebSearchEnabled,
+                    false,
+                    cancellationToken
+                )
+            })
+            .ToArray();
+        await Task.WhenAll(workerInputs.Select(item => item.PrepareTask));
+
         var workerTaskList = new List<Task<CodingWorkerResult>>();
-        foreach (var provider in workers)
+        progressCallback?.Invoke(new CodingProgressUpdate(
+            "multi",
+            "-",
+            "-",
+            "coordination",
+            "워커별 구현안을 병렬로 수집합니다.",
+            0,
+            0,
+            8,
+            false
+        ));
+        foreach (var workerInput in workerInputs)
         {
-            var model = ResolveModel(
-                provider,
-                provider switch
-                {
-                    "groq" => request.GroqModel,
-                    "gemini" => request.GeminiModel,
-                    "cerebras" => request.CerebrasModel,
-                    "copilot" => request.CopilotModel,
-                    "codex" => request.CodexModel,
-                    _ => null
-                }
-            );
-            var providerPrepared = await PrepareInputForProviderAsync(
-                contextualInput,
-                provider,
-                model,
-                request.Attachments,
-                request.WebUrls,
-                request.WebSearchEnabled,
-                false,
-                cancellationToken
-            );
+            var provider = workerInput.Provider;
+            var model = workerInput.Model;
+            var providerPrepared = workerInput.PrepareTask.Result;
             if (!string.IsNullOrWhiteSpace(providerPrepared.UnsupportedMessage))
             {
                 workerTaskList.Add(Task.FromResult(BuildUnsupportedCodingWorkerResult(
@@ -716,13 +775,25 @@ public sealed partial class CommandService
                 request.Language,
                 cancellationToken,
                 progressCallback,
-                "multi-worker"
+                "multi-worker",
+                allowRunActions: false
             ));
         }
         var workerTasks = workerTaskList.ToArray();
         await Task.WhenAll(workerTasks);
 
         var workerResults = workerTasks.Select(x => x.Result).ToArray();
+        progressCallback?.Invoke(new CodingProgressUpdate(
+            "multi",
+            "-",
+            "-",
+            "comparison",
+            $"워커 {workerResults.Length}개의 초안을 비교하고 통합 대상을 정리합니다.",
+            0,
+            0,
+            40,
+            false
+        ));
         var availabilityByProvider = await GetProviderAvailabilityMapAsync(cancellationToken);
         var selectionByProvider = BuildProviderSelectionMap(
             request.GroqModel,
@@ -737,59 +808,76 @@ public sealed partial class CommandService
         var successfulWorkers = workerChatResults
             .Where(x => IsUsableWorkerResult(x, availabilityByProvider, selectionByProvider))
             .ToArray();
-        var requestedSummaryProvider = NormalizeProvider(request.Provider, allowAuto: true);
-        var resolvedSummaryProvider = ResolveProviderForAggregation(
-            requestedSummaryProvider,
+        var requestedAggregateProvider = NormalizeProvider(request.Provider, allowAuto: true);
+        var aggregateProvider = ResolveProviderForAggregation(
+            requestedAggregateProvider,
             successfulWorkers,
             availabilityByProvider,
             selectionByProvider,
-            allowProviderWithoutWorkerFallback: false
+            allowProviderWithoutWorkerFallback: true
         );
-
-        var summaryPrompt = BuildMultiCodingSummaryPrompt(rawInput, workerResults);
-        var summaryModel = "-";
-        string summaryText;
-        if (resolvedSummaryProvider == "none")
+        if (aggregateProvider == "none")
         {
-            summaryText = "요약: 사용 가능한 LLM이 없어 자동 요약을 건너뜁니다.";
+            aggregateProvider = workerResults[0].Provider;
         }
-        else
+        else if (selectionByProvider.TryGetValue(aggregateProvider, out var selection)
+            && IsDisabledModelSelection(selection))
         {
-            var summaryModelOverride = request.Model;
-            if (string.IsNullOrWhiteSpace(summaryModelOverride))
+            aggregateProvider = workerResults[0].Provider;
+        }
+
+        var aggregateModelOverride = request.Model;
+        if (string.IsNullOrWhiteSpace(aggregateModelOverride))
+        {
+            aggregateModelOverride = aggregateProvider switch
             {
-                summaryModelOverride = resolvedSummaryProvider switch
-                {
-                    "groq" => request.GroqModel,
-                    "gemini" => request.GeminiModel,
-                    "cerebras" => request.CerebrasModel,
-                    "copilot" => request.CopilotModel,
-                    "codex" => request.CodexModel,
-                    _ => null
-                };
-            }
-
-            summaryModel = ResolveModel(resolvedSummaryProvider, summaryModelOverride);
-            var summary = await GenerateByProviderSafeAsync(
-                resolvedSummaryProvider,
-                summaryModel,
-                summaryPrompt,
-                cancellationToken,
-                _config.CodingMaxOutputTokens
-            );
-            summaryText = SanitizeChatOutput(summary.Text);
+                "groq" => request.GroqModel,
+                "gemini" => request.GeminiModel,
+                "cerebras" => request.CerebrasModel,
+                "copilot" => request.CopilotModel,
+                "codex" => request.CodexModel,
+                _ => null
+            };
         }
+
+        var aggregateModel = ResolveModel(aggregateProvider, aggregateModelOverride);
+        progressCallback?.Invoke(new CodingProgressUpdate(
+            "multi",
+            aggregateProvider,
+            aggregateModel,
+            "comparison",
+            "워커 초안을 통합해 최종 구현안을 작성합니다.",
+            0,
+            0,
+            52,
+            false
+        ));
+
+        var aggregatePrompt = BuildCodingAgentObjectivePrompt(
+            BuildMultiCodingAggregatePrompt(contextualInput, workerResults, request.Language),
+            request.Language,
+            "다중 코딩 통합"
+        );
+        var finalOutcome = await RunAutonomousCodingLoopAsync(
+            aggregateProvider,
+            aggregateModel,
+            aggregatePrompt,
+            request.Language,
+            "multi",
+            cancellationToken,
+            progressCallback
+        );
+        var multiSummary = $"워커 초안 {workerResults.Length}개를 비교해 최종 구현으로 통합했습니다.\n{finalOutcome.Summary}";
 
         var citationBundleMulti = BuildAndLogCitationMappings(
             request.Source,
             "coding-multi",
             sharedPrepared.Citations,
-            ("summary", summaryText)
+            ("summary", multiSummary)
         );
         var citationValidationGuardFailure = BuildCitationValidationGuardFailure(citationBundleMulti.Validation);
         var effectiveGuardFailure = sharedPrepared.GuardFailure ?? citationValidationGuardFailure;
-        var responseSummary = summaryText;
-        var representative = workerResults.FirstOrDefault(x => x.Execution.Status == "ok") ?? workerResults[0];
+        var responseSummary = multiSummary;
         var assistantText = BuildMultiCodingAssistantText(workerResults, responseSummary);
         if (citationValidationGuardFailure is not null)
         {
@@ -798,33 +886,27 @@ public sealed partial class CommandService
             assistantText = responseSummary;
         }
         _conversationStore.AppendMessage(thread.Id, "user", rawInput, "coding-multi");
-        _conversationStore.AppendMessage(thread.Id, "assistant", assistantText, $"coding-multi:summary={resolvedSummaryProvider}:{summaryModel}");
-        await EnsureConversationTitleFromFirstTurnAsync(thread.Id, resolvedSummaryProvider, summaryModel, cancellationToken);
+        _conversationStore.AppendMessage(thread.Id, "assistant", assistantText, $"coding-multi:final={aggregateProvider}:{aggregateModel}");
+        await EnsureConversationTitleFromFirstTurnAsync(thread.Id, aggregateProvider, aggregateModel, cancellationToken);
 
         var note = await MaybeCompressConversationAsync(
             thread.Id,
             $"{session.Scope}-{session.Mode}",
-            resolvedSummaryProvider,
-            summaryModel,
+            aggregateProvider,
+            aggregateModel,
             cancellationToken
         );
         var updated = _conversationStore.Get(thread.Id) ?? thread;
-        var mergedChangedFiles = workerResults
-            .SelectMany(x => x.ChangedFiles)
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
         return new CodingRunResult(
             "multi",
             updated.Id,
-            resolvedSummaryProvider,
-            summaryModel,
-            representative.Language,
-            representative.Code,
-            representative.Execution,
+            aggregateProvider,
+            aggregateModel,
+            finalOutcome.Language,
+            finalOutcome.Code,
+            finalOutcome.Execution,
             workerResults,
-            mergedChangedFiles,
+            finalOutcome.ChangedFiles,
             responseSummary,
             updated,
             note,
@@ -874,7 +956,7 @@ public sealed partial class CommandService
             );
     }
 
-    private async Task<Dictionary<string, string>> NegotiateOrchestrationRolesAsync(
+    private Task<Dictionary<string, string>> NegotiateOrchestrationRolesAsync(
         IReadOnlyList<string> providers,
         IReadOnlyDictionary<string, string> modelByProvider,
         string contextualInput,
@@ -882,92 +964,50 @@ public sealed partial class CommandService
         CancellationToken cancellationToken
     )
     {
+        _ = modelByProvider;
+        _ = language;
+        _ = cancellationToken;
         var defaults = BuildDefaultOrchestrationRoles(providers);
         if (providers.Count <= 1)
         {
-            return defaults;
+            return Task.FromResult(defaults);
         }
 
-        var providerList = string.Join(", ", providers);
-        var proposalTasks = providers.ToDictionary(
-            provider => provider,
-            provider =>
-            {
-                var model = modelByProvider[provider];
-                var prompt = $"""
-                              자동 오케스트레이션 코딩의 역할 협의 단계입니다.
-                              참여 워커: {providerList}
-                              너의 워커: {provider}
-                              목표 요약:
-                              {contextualInput}
+        var normalizedInput = (contextualInput ?? string.Empty).ToLowerInvariant();
+        var uiHeavy = ContainsAny(normalizedInput, "ui", "ux", "layout", "frontend", "html", "css", "컴포넌트", "화면");
+        var reviewHeavy = ContainsAny(normalizedInput, "bug", "error", "fix", "debug", "test", "회귀", "검증", "오류", "테스트");
+        var resolved = new Dictionary<string, string>(defaults, StringComparer.OrdinalIgnoreCase);
 
-                              언어 힌트: {language}
-                              다른 워커와 중복을 최소화하는 "내 역할"을 1문장으로 제안하세요.
-                              출력 형식:
-                              역할: <한 문장>
-                              """;
-                return GenerateByProviderSafeAsync(provider, model, prompt, cancellationToken, 180);
-            },
-            StringComparer.OrdinalIgnoreCase
-        );
-        await Task.WhenAll(proposalTasks.Values);
-
-        var proposalLines = new List<string>();
-        foreach (var provider in providers)
+        if (resolved.ContainsKey("copilot"))
         {
-            var text = SanitizeChatOutput(proposalTasks[provider].Result.Text);
-            var role = ExtractNegotiatedRoleText(text);
-            if (string.IsNullOrWhiteSpace(role))
-            {
-                role = defaults[provider];
-            }
-
-            proposalLines.Add($"{provider}: {role}");
+            resolved["copilot"] = uiHeavy
+                ? "주 구현 담당. 화면/컴포넌트 초안을 빠르게 구성하고 필요한 파일 구조를 제안하세요."
+                : "주 구현 담당. 핵심 기능이 실제로 동작하는 첫 초안을 만드세요.";
         }
 
-        var mediator = providers.Contains("gemini", StringComparer.OrdinalIgnoreCase)
-            ? "gemini"
-            : providers.Contains("groq", StringComparer.OrdinalIgnoreCase)
-                ? "groq"
-                : providers[0];
-        var mediatorModel = modelByProvider[mediator];
-        var mergePrompt = $"""
-                           아래는 워커별 역할 제안입니다.
-                           {string.Join("\n", proposalLines)}
-
-                           참여 워커: {providerList}
-                           역할이 겹치지 않게 최종 배분을 확정하세요.
-                           출력 형식(줄 단위):
-                           provider: role
-                           예시:
-                           copilot: 코드 생성
-                           gemini: 설계 검증
-                           groq: 로그/실행 보조
-                           """;
-        var merged = await GenerateByProviderSafeAsync(mediator, mediatorModel, mergePrompt, cancellationToken, 260);
-        var mergedText = SanitizeChatOutput(merged.Text);
-        var resolved = ParseNegotiatedRoleAssignments(mergedText, providers);
-        if (resolved.Count == 0)
+        if (resolved.ContainsKey("codex"))
         {
-            resolved = proposalLines
-                .Select(line =>
-                {
-                    var split = line.Split(':', 2);
-                    return (Provider: split[0].Trim(), Role: split.Length > 1 ? split[1].Trim() : string.Empty);
-                })
-                .Where(item => !string.IsNullOrWhiteSpace(item.Provider))
-                .ToDictionary(item => item.Provider, item => item.Role, StringComparer.OrdinalIgnoreCase);
+            resolved["codex"] = reviewHeavy
+                ? "정밀 수정/최종 검증 담당. 실패 원인, 엣지케이스, 누락된 검증 포인트를 우선 보완하세요."
+                : "정밀 구현 담당. 누락된 세부 동작과 예외 처리를 보완하세요.";
         }
 
-        foreach (var provider in providers)
+        if (resolved.ContainsKey("gemini"))
         {
-            if (!resolved.TryGetValue(provider, out var role) || string.IsNullOrWhiteSpace(role))
-            {
-                resolved[provider] = defaults[provider];
-            }
+            resolved["gemini"] = "설계/리스크 리뷰 담당. 요구사항 누락, 예외 흐름, 테스트 포인트를 점검하세요.";
         }
 
-        return resolved;
+        if (resolved.ContainsKey("groq"))
+        {
+            resolved["groq"] = "빠른 보조 담당. 로그 해석, 단순 수정 포인트, 대안 구현 아이디어를 압축해서 제시하세요.";
+        }
+
+        if (resolved.ContainsKey("cerebras"))
+        {
+            resolved["cerebras"] = "대용량 초안 담당. 여러 파일에 걸친 구조 정리와 보완 코드를 제안하세요.";
+        }
+
+        return Task.FromResult(resolved);
     }
 
     private static string ExtractNegotiatedRoleText(string text)

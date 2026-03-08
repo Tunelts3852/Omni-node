@@ -34,6 +34,7 @@ import {
 import { createCodingState } from "./modules/coding-state.js";
 import {
   createRoutineOutputPreviewState,
+  createRoutineProgressState,
   createRoutineState
 } from "./modules/routine-state.js";
 import {
@@ -1272,6 +1273,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     if (msg.type === "coding_progress") {
       const provider = normalizeProviderName(msg.provider);
       const detailText = `${msg.phase || ""} ${msg.message || ""}`.trim();
+      const stageText = `${msg.stageTitle || ""}`.trim();
       const finished = !!msg.done;
       const failed = finished && hasFailureCue(detailText);
       const statusLabel = finished ? (failed ? "failed" : "success") : "progress";
@@ -1284,7 +1286,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         statusLabel,
         statusTone,
         hasError: failed,
-        detail: `phase=${msg.phase || "-"} iter=${Number.isFinite(msg.iteration) ? msg.iteration : "-"}`
+        detail: `${stageText ? `stage=${stageText} ` : ""}phase=${msg.phase || "-"} iter=${Number.isFinite(msg.iteration) ? msg.iteration : "-"}`
       }];
     }
 
@@ -2059,6 +2061,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     const [routineCreateForm, setRoutineCreateForm] = useState(() => createRoutineFormState());
     const [routineEditForm, setRoutineEditForm] = useState(() => createRoutineFormState());
     const [routineSelectedId, setRoutineSelectedId] = useState(ROUTINE_STATE_DEFAULTS.routineSelectedId);
+    const [routineProgress, setRoutineProgress] = useState(() => createRoutineProgressState(ROUTINE_STATE_DEFAULTS.progress));
     const [groqUsageWindowBaseByModel, setGroqUsageWindowBaseByModel] = useState(() => ({ ...ROUTINE_STATE_DEFAULTS.groqUsageWindowBaseByModel }));
     const [viewportSize, setViewportSize] = useState(() => getViewportSnapshot());
     const [mainShellViewportTop, setMainShellViewportTop] = useState(0);
@@ -3420,6 +3423,11 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
           [key]: {
             phase: "queued",
             message: "요청 접수됨",
+            stageKey: "",
+            stageTitle: "",
+            stageDetail: "",
+            stageIndex: 0,
+            stageTotal: 0,
             iteration: 0,
             maxIterations: 0,
             percent: 1,
@@ -4876,6 +4884,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       if (handleRoutineMessage(msg, {
         setRoutines,
         setRoutineSelectedId,
+        setRoutineProgress,
         isPortraitMobileLayout,
         setResponsivePane,
         log,
@@ -5014,6 +5023,23 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       setError("routine:main", "");
       const ok = send({ type: "create_routine", ...payload });
       if (ok) {
+        const now = Date.now();
+        setRoutineProgress(createRoutineProgressState({
+          active: true,
+          operation: "create",
+          percent: 6,
+          message: "루틴 생성 요청을 전송했습니다.",
+          stageKey: "request_analysis",
+          stageTitle: "요청 분석",
+          stageDetail: "스케줄과 실행 경로를 확인하고 있습니다.",
+          stageIndex: 1,
+          stageTotal: 5,
+          done: false,
+          ok: null,
+          startedAt: now,
+          updatedAt: now,
+          completedAt: 0
+        }));
         setRoutineCreateForm((prev) => createRoutineFormState({
           executionMode: prev.executionMode,
           agentProvider: prev.agentProvider,
@@ -5032,6 +5058,23 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
           timezoneId: prev.timezoneId || getRoutineLocalTimezone()
         }));
       } else {
+        const now = Date.now();
+        setRoutineProgress(createRoutineProgressState({
+          active: false,
+          operation: "create",
+          percent: 0,
+          message: "오류: WebSocket 연결이 끊어졌습니다.",
+          stageKey: "request_analysis",
+          stageTitle: "요청 분석",
+          stageDetail: "루틴 생성 요청을 보내지 못했습니다.",
+          stageIndex: 1,
+          stageTotal: 5,
+          done: true,
+          ok: false,
+          startedAt: now,
+          updatedAt: now,
+          completedAt: now
+        }));
         setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
       }
     }
@@ -5993,6 +6036,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         errorByKey,
         routineCreateForm,
         routineEditForm,
+        routineProgress,
         routineAgentProviderOptions,
         routineAgentModelOptions,
         patchRoutineForm,

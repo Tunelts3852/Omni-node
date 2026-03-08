@@ -3322,18 +3322,6 @@ public sealed partial class CommandService
                 .Where(x => x.Enabled && !x.Running && x.NextRunUtc <= now)
                 .Select(x => x.Id)
                 .ToList();
-            foreach (var id in dueIds)
-            {
-                if (_routinesById.TryGetValue(id, out var routine))
-                {
-                    routine.Running = true;
-                }
-            }
-
-            if (dueIds.Count > 0)
-            {
-                SaveRoutineStateLocked();
-            }
         }
 
         foreach (var id in dueIds)
@@ -3342,7 +3330,11 @@ public sealed partial class CommandService
             {
                 try
                 {
-                    await RunRoutineNowAsync(id, source, CancellationToken.None).ConfigureAwait(false);
+                    var result = await RunRoutineNowAsync(id, source, CancellationToken.None).ConfigureAwait(false);
+                    if (!result.Ok)
+                    {
+                        Console.Error.WriteLine($"[routine] wake run skipped ({id}): {result.Message}");
+                    }
                 }
                 catch (Exception ex)
                 {

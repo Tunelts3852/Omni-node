@@ -35,7 +35,7 @@ public sealed partial class CommandService
         "importlib","inspect","io","ipaddress","itertools","json","linecache","locale","logging","lzma","math","mimetypes","multiprocessing",
         "numbers","operator","os","pathlib","pickle","pkgutil","platform","plistlib","pprint","queue","random","re","sched","secrets","select",
         "selectors","shelve","shlex","shutil","signal","site","socket","sqlite3","ssl","stat","statistics","string","stringprep","struct",
-        "subprocess","sys","sysconfig","tarfile","tempfile","textwrap","threading","time","timeit","tokenize","traceback","types","typing",
+        "subprocess","sys","sysconfig","tarfile","tempfile","textwrap","threading","time","timeit","tkinter","_tkinter","tokenize","traceback","types","typing",
         "unittest","urllib","uuid","venv","warnings","wave","weakref","webbrowser","xml","xmlrpc","zipfile","zoneinfo","zlib"
     };
     private static readonly HashSet<string> NodeBuiltinModules = new(StringComparer.OrdinalIgnoreCase)
@@ -173,7 +173,12 @@ public sealed partial class CommandService
         return SessionContext.Create(thread, source);
     }
 
-    private string BuildContextualInput(string conversationId, string input, IReadOnlyList<string>? requestMemoryNotes)
+    private string BuildContextualInput(
+        string conversationId,
+        string input,
+        IReadOnlyList<string>? requestMemoryNotes,
+        bool includeLocalTimeHint = false
+    )
     {
         var notes = MergeMemoryNoteNames(
             _conversationStore.Get(conversationId)?.LinkedMemoryNotes ?? Array.Empty<string>(),
@@ -214,6 +219,14 @@ public sealed partial class CommandService
             builder.AppendLine();
         }
 
+        if (includeLocalTimeHint && LooksLikeLocalDateTimeQuestion(input))
+        {
+            builder.AppendLine("[로컬 시간]");
+            builder.AppendLine(BuildLocalNowText());
+            builder.AppendLine("- 현재 시각/날짜/요일/타임존 관련 질문은 위 로컬 시간을 기준으로 답하세요.");
+            builder.AppendLine();
+        }
+
         builder.AppendLine("[새 요청]");
         builder.AppendLine(input.Trim());
         var contextual = builder.ToString().Trim();
@@ -241,6 +254,7 @@ public sealed partial class CommandService
                 return;
             }
 
+            var isCodingScope = thread.Scope.Equals("coding", StringComparison.OrdinalIgnoreCase);
             var titleLooksFailed = IsLikelyProviderFailureText(thread.Title);
             var selectedUser = titleLooksFailed
                 ? thread.Messages.LastOrDefault(x => x.Role.Equals("user", StringComparison.OrdinalIgnoreCase))?.Text?.Trim()
@@ -248,6 +262,25 @@ public sealed partial class CommandService
             var selectedAssistant = titleLooksFailed
                 ? SelectAssistantTextForAutoTitle(thread, preferLatest: true)
                 : SelectAssistantTextForAutoTitle(thread, preferLatest: false);
+
+            if (isCodingScope)
+            {
+                var localTitle = !string.IsNullOrWhiteSpace(selectedUser)
+                    ? BuildFallbackConversationTitle(selectedUser)
+                    : string.Empty;
+                if (string.IsNullOrWhiteSpace(localTitle))
+                {
+                    localTitle = BuildFallbackConversationTitleFromAssistant(selectedAssistant);
+                }
+
+                if (!string.IsNullOrWhiteSpace(localTitle))
+                {
+                    _conversationStore.UpdateTitle(conversationId, localTitle);
+                }
+
+                return;
+            }
+
             if (string.IsNullOrWhiteSpace(selectedUser))
             {
                 return;
@@ -1917,9 +1950,21 @@ public sealed partial class CommandService
         string languageHint,
         CancellationToken cancellationToken,
         Action<CodingProgressUpdate>? progressCallback = null,
-        string progressMode = "worker"
+        string progressMode = "worker",
+        bool allowRunActions = true
     )
     {
+        if (!allowRunActions)
+        {
+            return await RunDraftCodingWorkerAsync(
+                provider,
+                model,
+                prompt,
+                languageHint,
+                cancellationToken
+            );
+        }
+
         var outcome = await RunAutonomousCodingLoopAsync(
             provider,
             model,
@@ -1928,7 +1973,8 @@ public sealed partial class CommandService
             "worker",
             cancellationToken,
             progressCallback,
-            progressMode
+            progressMode,
+            allowRunActions
         );
         return new CodingWorkerResult(
             provider,
@@ -1941,6 +1987,71 @@ public sealed partial class CommandService
         );
     }
 
+    private async Task<CodingWorkerResult> RunDraftCodingWorkerAsync(
+        string provider,
+        string model,
+        string objective,
+        string languageHint,
+        CancellationToken cancellationToken
+    )
+    {
+        var draftPrompt = BuildDraftCodingWorkerPrompt(objective, languageHint);
+        var generated = await GenerateByProviderSafeAsync(
+            provider,
+            model,
+            draftPrompt,
+            cancellationToken,
+            Math.Min(Math.Max(1400, _config.CodingMaxOutputTokens), 3200),
+            useRawCodexPrompt: true
+        );
+
+        var rawResponse = (generated.Text ?? string.Empty).Trim();
+        var parsed = ExtractFallbackCode(rawResponse, languageHint, objective);
+        if (string.IsNullOrWhiteSpace(parsed.Code))
+        {
+            var codeOnlyPrompt = BuildFallbackCodeOnlyPrompt(objective, languageHint);
+            var fallback = await GenerateByProviderSafeAsync(
+                provider,
+                model,
+                codeOnlyPrompt,
+                cancellationToken,
+                Math.Min(Math.Max(1400, _config.CodingMaxOutputTokens), 3200),
+                useRawCodexPrompt: true
+            );
+            var fallbackRaw = (fallback.Text ?? string.Empty).Trim();
+            var fallbackParsed = ExtractFallbackCode(fallbackRaw, languageHint, objective);
+            if (!string.IsNullOrWhiteSpace(fallbackParsed.Code))
+            {
+                parsed = fallbackParsed;
+                rawResponse = string.IsNullOrWhiteSpace(rawResponse) ? fallbackRaw : $"{rawResponse}\n\n[code-only-fallback]\n{fallbackRaw}";
+            }
+        }
+
+        var resolvedLanguage = string.IsNullOrWhiteSpace(parsed.Language)
+            ? ResolveInitialCodingLanguage(languageHint, objective)
+            : NormalizeLanguageForCode(parsed.Language);
+        var execution = new CodeExecutionResult(
+            resolvedLanguage,
+            "-",
+            "-",
+            "(draft-only)",
+            0,
+            string.Empty,
+            string.Empty,
+            "skipped"
+        );
+
+        return new CodingWorkerResult(
+            provider,
+            model,
+            resolvedLanguage,
+            parsed.Code,
+            string.IsNullOrWhiteSpace(rawResponse) ? "초안 생성 결과가 비어 있습니다." : rawResponse,
+            execution,
+            Array.Empty<string>()
+        );
+    }
+
     private async Task<AutonomousCodingOutcome> RunAutonomousCodingLoopAsync(
         string provider,
         string model,
@@ -1949,7 +2060,8 @@ public sealed partial class CommandService
         string modeLabel,
         CancellationToken cancellationToken,
         Action<CodingProgressUpdate>? progressCallback = null,
-        string? progressModeOverride = null
+        string? progressModeOverride = null,
+        bool allowRunActions = true
     )
     {
         var workspaceRoot = ResolveWorkspaceRoot();
@@ -1964,7 +2076,10 @@ public sealed partial class CommandService
         var lastWritePath = "-";
         var lastRawResponse = string.Empty;
         var changedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var executedRunAction = false;
+        var deferredRunCommand = string.Empty;
+        var hasDeferredRunAction = false;
+        var consecutivePlanParseFailures = 0;
+        var consecutiveNoActionPlans = 0;
         var lastExecution = new CodeExecutionResult(
             currentLanguage,
             workspaceRoot,
@@ -1976,32 +2091,44 @@ public sealed partial class CommandService
             "skipped"
         );
 
-        progressCallback?.Invoke(new CodingProgressUpdate(
+        progressCallback?.Invoke(BuildCodingProgressUpdate(
             progressMode,
             provider,
             model,
             "start",
-            "작업을 시작했습니다.",
+            "요청을 해석하고 작업 범위를 정리합니다.",
             0,
             maxIterations,
+            3,
+            false,
+            "request",
+            "요청 분석",
+            BuildCodingObjectiveProgressDetail(objective, languageHint),
             1,
-            false
+            VisibleCodingStageTotal
+        ));
+
+        var initialSnapshot = BuildWorkspaceSnapshot(workspaceRoot, provider);
+        progressCallback?.Invoke(BuildCodingProgressUpdate(
+            progressMode,
+            provider,
+            model,
+            "scanning",
+            "현재 작업공간 상태를 확인합니다.",
+            0,
+            maxIterations,
+            10,
+            false,
+            "workspace",
+            "작업공간 점검",
+            BuildWorkspaceProgressDetail(initialSnapshot),
+            2,
+            VisibleCodingStageTotal
         ));
 
         for (var i = 1; i <= maxIterations; i++)
         {
-            progressCallback?.Invoke(new CodingProgressUpdate(
-                progressMode,
-                provider,
-                model,
-                "planning",
-                $"반복 {i}/{maxIterations}: 계획 생성 중",
-                i,
-                maxIterations,
-                Math.Clamp((int)Math.Round((double)(i - 1) / maxIterations * 70d), 1, 85),
-                false
-            ));
-            var snapshot = BuildWorkspaceSnapshot(workspaceRoot, provider);
+            var snapshot = i == 1 ? initialSnapshot : BuildWorkspaceSnapshot(workspaceRoot, provider);
             var recent = BuildRecentLoopLogs(iterations, provider);
             var loopPrompt = BuildCodingLoopPrompt(
                 objective,
@@ -2022,59 +2149,121 @@ public sealed partial class CommandService
                 model,
                 loopPrompt,
                 cancellationToken,
-                GetCodingPlanMaxOutputTokens(provider)
+                GetCodingPlanMaxOutputTokens(provider),
+                useRawCodexPrompt: true
             );
             lastRawResponse = generated.Text;
             var plan = ParseCodingLoopPlan(generated.Text);
             if (plan == null)
             {
+                consecutivePlanParseFailures++;
+                consecutiveNoActionPlans = 0;
                 iterations.Add($"iter={i} plan_parse_failed");
-                progressCallback?.Invoke(new CodingProgressUpdate(
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
                     progressMode,
                     provider,
                     model,
                     "retry",
-                    $"반복 {i}/{maxIterations}: 계획 파싱 실패, 재시도",
+                    $"반복 {i}/{maxIterations}: 계획 파싱 실패로 다음 반복에서 복구합니다.",
                     i,
                     maxIterations,
-                    Math.Clamp((int)Math.Round((double)i / maxIterations * 70d), 2, 88),
-                    false
+                    Math.Clamp((int)Math.Round((double)i / maxIterations * 55d), 18, 54),
+                    false,
+                    "planning",
+                    "구현 계획",
+                    "응답 형식을 다시 정렬한 뒤 계획을 재생성합니다.",
+                    3,
+                    VisibleCodingStageTotal
                 ));
+                if (consecutivePlanParseFailures >= 2)
+                {
+                    iterations.Add($"iter={i} plan_parse_abort");
+                    break;
+                }
+
                 continue;
             }
 
+            consecutivePlanParseFailures = 0;
             var actionResults = new List<string>();
             var actions = plan.Actions.Take(maxActions).ToArray();
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
+                progressMode,
+                provider,
+                model,
+                "planning",
+                $"반복 {i}/{maxIterations}: 이번 구현 계획을 정리했습니다.",
+                i,
+                maxIterations,
+                Math.Clamp((int)Math.Round((double)i / maxIterations * 45d), 16, 48),
+                false,
+                "planning",
+                "구현 계획",
+                BuildCodingPlanProgressDetail(plan, actions, actions.Any(action => string.Equals(action.Type, "run", StringComparison.OrdinalIgnoreCase))),
+                3,
+                VisibleCodingStageTotal
+            ));
             if (actions.Length == 0)
             {
+                consecutiveNoActionPlans++;
                 actionResults.Add("actions=none");
                 iterations.Add($"iter={i} analysis={TrimForOutput(plan.Analysis ?? string.Empty)} | {string.Join(" ; ", actionResults)}");
-                progressCallback?.Invoke(new CodingProgressUpdate(
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
                     progressMode,
                     provider,
                     model,
                     "idle",
-                    $"반복 {i}/{maxIterations}: 실행 액션이 없습니다.",
+                    $"반복 {i}/{maxIterations}: 이번 반복에는 실행할 액션이 없습니다.",
                     i,
                     maxIterations,
-                    Math.Clamp((int)Math.Round((double)i / maxIterations * 75d), 3, 90),
-                    false
+                    Math.Clamp((int)Math.Round((double)i / maxIterations * 58d), 20, 60),
+                    false,
+                    "planning",
+                    "구현 계획",
+                    "생성된 계획에 실질 액션이 없어 다음 반복으로 넘어갑니다.",
+                    3,
+                    VisibleCodingStageTotal
                 ));
                 if (plan.Done)
                 {
                     break;
                 }
+
+                if (consecutiveNoActionPlans >= 2)
+                {
+                    iterations.Add($"iter={i} actions_none_abort");
+                    break;
+                }
+
                 continue;
             }
 
+            consecutiveNoActionPlans = 0;
+            var iterationChangedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var action in actions)
             {
+                if (string.Equals(action.Type, "run", StringComparison.OrdinalIgnoreCase))
+                {
+                    var candidateCommand = (action.Command ?? string.Empty).Trim();
+                    if (!string.IsNullOrWhiteSpace(candidateCommand))
+                    {
+                        deferredRunCommand = candidateCommand;
+                        hasDeferredRunAction = true;
+                        actionResults.Add($"run_deferred:{TrimForOutput(candidateCommand, 120)}");
+                    }
+                    else
+                    {
+                        actionResults.Add("run_deferred:empty_command");
+                    }
+
+                    continue;
+                }
+
                 var exec = await ExecuteCodingLoopActionAsync(action, workspaceRoot, cancellationToken);
                 actionResults.Add(exec.Message);
                 if (exec.Execution != null)
                 {
                     lastExecution = exec.Execution;
-                    executedRunAction = true;
                 }
 
                 if (!string.IsNullOrWhiteSpace(exec.LastWrittenFile))
@@ -2091,20 +2280,26 @@ public sealed partial class CommandService
                 if (exec.Changed && !string.IsNullOrWhiteSpace(exec.ChangedPath))
                 {
                     changedFiles.Add(exec.ChangedPath);
+                    iterationChangedPaths.Add(exec.ChangedPath);
                 }
             }
 
             iterations.Add($"iter={i} analysis={TrimForOutput(plan.Analysis ?? string.Empty)} | {string.Join(" ; ", actionResults)}");
-            progressCallback?.Invoke(new CodingProgressUpdate(
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
                 progressMode,
                 provider,
                 model,
-                "executing",
-                $"반복 {i}/{maxIterations}: {actions.Length}개 액션 실행",
+                "writing",
+                $"반복 {i}/{maxIterations}: 파일 생성/수정을 진행했습니다.",
                 i,
                 maxIterations,
-                Math.Clamp((int)Math.Round((double)i / maxIterations * 85d), 5, 95),
-                false
+                Math.Clamp((int)Math.Round((double)i / maxIterations * 78d), 28, 82),
+                false,
+                "writing",
+                "파일 생성 및 수정",
+                BuildCodingWriteProgressDetail(iterationChangedPaths, hasDeferredRunAction),
+                4,
+                VisibleCodingStageTotal
             ));
             if (plan.Done && (lastExecution.Status == "ok" || lastExecution.Status == "skipped"))
             {
@@ -2114,16 +2309,21 @@ public sealed partial class CommandService
 
         if (changedFiles.Count == 0)
         {
-            progressCallback?.Invoke(new CodingProgressUpdate(
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
                 progressMode,
                 provider,
                 model,
                 "fallback",
-                "플랜 파싱 복구 경로를 시도합니다.",
+                "변경 파일이 없어 복구 생성 경로를 시도합니다.",
                 maxIterations,
                 maxIterations,
-                92,
-                false
+                86,
+                false,
+                "recovery",
+                "마무리 및 복구",
+                "플랜 결과가 비어 있어 코드 블록 기반 복구 생성을 시도합니다.",
+                5,
+                VisibleCodingStageTotal
             ));
 
             var fallbackPrompt = BuildFallbackCodeOnlyPrompt(objective, currentLanguage);
@@ -2132,7 +2332,8 @@ public sealed partial class CommandService
                 model,
                 fallbackPrompt,
                 cancellationToken,
-                Math.Min(_config.CodingMaxOutputTokens, 4096)
+                Math.Min(_config.CodingMaxOutputTokens, 4096),
+                useRawCodexPrompt: true
             );
             lastRawResponse = fallbackGenerated.Text;
             var fallbackCode = ExtractFallbackCode(fallbackGenerated.Text, currentLanguage, objective);
@@ -2183,17 +2384,55 @@ public sealed partial class CommandService
             currentLanguage = "html";
         }
 
-        if (!executedRunAction && changedFiles.Count > 0)
+        if (changedFiles.Count > 0)
         {
-            var verifyCommand = BuildVerificationCommand(currentLanguage, changedFiles, workspaceRoot);
-            if (!string.IsNullOrWhiteSpace(verifyCommand))
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
+                progressMode,
+                provider,
+                model,
+                "finalizing",
+                "최종 실행 전에 변경 사항을 정리합니다.",
+                maxIterations,
+                maxIterations,
+                92,
+                false,
+                "recovery",
+                "마무리 및 복구",
+                $"{changedFiles.Count}개 파일 변경을 기준으로 마지막 검증 명령을 준비합니다.",
+                5,
+                VisibleCodingStageTotal
+            ));
+        }
+
+        if (allowRunActions)
+        {
+            var finalCommand = string.IsNullOrWhiteSpace(deferredRunCommand)
+                ? BuildVerificationCommand(currentLanguage, changedFiles, workspaceRoot)
+                : deferredRunCommand;
+            if (!string.IsNullOrWhiteSpace(finalCommand))
             {
-                var shell = await RunWorkspaceCommandWithAutoInstallAsync(verifyCommand, workspaceRoot, cancellationToken);
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
+                    progressMode,
+                    provider,
+                    model,
+                    "verifying",
+                    "최종 실행 및 검증을 1회 수행합니다.",
+                    maxIterations,
+                    maxIterations,
+                    97,
+                    false,
+                    "verification",
+                    "최종 실행 및 검증",
+                    $"실행 명령: {TrimForOutput(finalCommand, 180)}",
+                    6,
+                    VisibleCodingStageTotal
+                ));
+                var shell = await RunWorkspaceCommandWithAutoInstallAsync(finalCommand, workspaceRoot, cancellationToken);
                 lastExecution = new CodeExecutionResult(
                     "bash",
                     workspaceRoot,
                     "-",
-                    verifyCommand,
+                    finalCommand,
                     shell.ExitCode,
                     shell.StdOut,
                     shell.StdErr,
@@ -2219,7 +2458,7 @@ public sealed partial class CommandService
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var summary = BuildAutonomousCodingSummary(iterations, orderedChangedFiles, lastExecution, maxIterations);
-        progressCallback?.Invoke(new CodingProgressUpdate(
+        progressCallback?.Invoke(BuildCodingProgressUpdate(
             progressMode,
             provider,
             model,
@@ -2228,7 +2467,12 @@ public sealed partial class CommandService
             maxIterations,
             maxIterations,
             100,
-            true
+            true,
+            "verification",
+            "최종 실행 및 검증",
+            $"최종 상태: {lastExecution.Status} (exit={lastExecution.ExitCode})",
+            6,
+            VisibleCodingStageTotal
         ));
         return new AutonomousCodingOutcome(currentLanguage, lastCode, lastRawResponse, lastExecution, orderedChangedFiles, summary);
     }
@@ -2957,8 +3201,14 @@ public sealed partial class CommandService
 
     private int GetCodingPlanMaxOutputTokens(string provider)
     {
-        _ = provider;
-        return Math.Max(900, _config.CodingMaxOutputTokens);
+        if (string.Equals(provider, "groq", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(provider, "gemini", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(provider, "cerebras", StringComparison.OrdinalIgnoreCase))
+        {
+            return Math.Clamp(_config.CodingMaxOutputTokens, 1200, 3200);
+        }
+
+        return Math.Clamp(_config.CodingMaxOutputTokens, 1200, 2400);
     }
 
     private int ResolveMaxIterations(string provider, bool oneShotMode)
@@ -2985,6 +3235,125 @@ public sealed partial class CommandService
         }
 
         return Math.Max(1, _config.CodingAgentMaxActionsPerIteration);
+    }
+
+    private const int VisibleCodingStageTotal = 6;
+
+    private static CodingProgressUpdate BuildCodingProgressUpdate(
+        string progressMode,
+        string provider,
+        string model,
+        string phase,
+        string message,
+        int iteration,
+        int maxIterations,
+        int percent,
+        bool done,
+        string stageKey = "",
+        string stageTitle = "",
+        string stageDetail = "",
+        int stageIndex = 0,
+        int stageTotal = 0
+    )
+    {
+        return new CodingProgressUpdate(
+            progressMode,
+            provider,
+            model,
+            phase,
+            message,
+            iteration,
+            maxIterations,
+            percent,
+            done,
+            stageKey,
+            stageTitle,
+            stageDetail,
+            stageIndex,
+            stageTotal
+        );
+    }
+
+    private static string BuildCodingObjectiveProgressDetail(string objective, string languageHint)
+    {
+        var compact = Regex.Replace((objective ?? string.Empty).Trim(), @"\s+", " ");
+        if (compact.Length > 180)
+        {
+            compact = compact[..180] + "...";
+        }
+
+        var language = string.IsNullOrWhiteSpace(languageHint) ? "auto" : languageHint.Trim();
+        return string.IsNullOrWhiteSpace(compact)
+            ? $"언어 힌트: {language}"
+            : $"{compact} · 언어 힌트: {language}";
+    }
+
+    private static string BuildWorkspaceProgressDetail(string workspaceSnapshot)
+    {
+        var lines = (workspaceSnapshot ?? string.Empty)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (lines.Length == 0)
+        {
+            return "워크스페이스 스냅샷 없음";
+        }
+
+        var headline = lines[0];
+        if (headline.StartsWith("total_files=", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"작업공간 점검 완료 · {headline.Replace("total_files=", "파일 수 ", StringComparison.OrdinalIgnoreCase)}";
+        }
+
+        return TrimForOutput(headline, 180);
+    }
+
+    private static string BuildCodingPlanProgressDetail(CodingLoopPlan plan, IReadOnlyList<CodingLoopAction> actions, bool hasDeferredRunAction)
+    {
+        var parts = new List<string>();
+        var analysis = Regex.Replace((plan.Analysis ?? string.Empty).Trim(), @"\s+", " ");
+        if (!string.IsNullOrWhiteSpace(analysis))
+        {
+            parts.Add(TrimForOutput(analysis, 180));
+        }
+
+        var targetPaths = actions
+            .Where(action => !string.Equals(action.Type, "run", StringComparison.OrdinalIgnoreCase))
+            .Select(action => (action.Path ?? string.Empty).Trim())
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(4)
+            .ToArray();
+        if (targetPaths.Length > 0)
+        {
+            parts.Add("대상 파일: " + string.Join(", ", targetPaths));
+        }
+
+        if (hasDeferredRunAction)
+        {
+            parts.Add("실행은 마지막 단계에서 1회만 수행");
+        }
+
+        return parts.Count == 0 ? "이번 반복 구현 계획을 정리했습니다." : string.Join(" · ", parts);
+    }
+
+    private static string BuildCodingWriteProgressDetail(IReadOnlyCollection<string> changedPaths, bool hasDeferredRunAction)
+    {
+        var parts = new List<string>();
+        if (changedPaths.Count > 0)
+        {
+            parts.Add($"변경 파일 {changedPaths.Count}개");
+            parts.Add(string.Join(", ", changedPaths.Take(4)));
+        }
+        else
+        {
+            parts.Add("실제 파일 변경은 아직 없음");
+        }
+
+        if (hasDeferredRunAction)
+        {
+            parts.Add("중간 실행 없이 최종 검증만 예약");
+        }
+
+        return string.Join(" · ", parts.Where(part => !string.IsNullOrWhiteSpace(part)));
     }
 
     private bool ShouldUseOneShotMode(string provider, string objective, string languageHint)
@@ -3093,8 +3462,8 @@ public sealed partial class CommandService
         builder.AppendLine("[최근 실행 결과]");
         builder.AppendLine($"status={lastExecution.Status}");
         builder.AppendLine($"command={lastExecution.Command}");
-        builder.AppendLine($"stdout={TrimForOutput(lastExecution.StdOut)}");
-        builder.AppendLine($"stderr={TrimForOutput(lastExecution.StdErr)}");
+        builder.AppendLine($"stdout={TrimForOutput(lastExecution.StdOut, 1200)}");
+        builder.AppendLine($"stderr={TrimForOutput(lastExecution.StdErr, 1200)}");
         builder.AppendLine();
         builder.AppendLine("[최근 루프 로그]");
         builder.AppendLine(string.IsNullOrWhiteSpace(recentLogs) ? "(none)" : recentLogs);
@@ -3109,8 +3478,10 @@ public sealed partial class CommandService
         builder.AppendLine("주의: type을 `mkdir|write_file`처럼 합치지 말고 반드시 단일 값만 사용");
         builder.AppendLine($"제약: actions 최대 {_config.CodingAgentMaxActionsPerIteration}개");
         builder.AppendLine("규칙:");
+        builder.AppendLine("- analysis에는 이번 반복에서 무엇을 만들고 어떤 파일을 건드릴지 짧게 적는다");
+        builder.AppendLine("- done=false 이면 actions에 최소 1개의 실질 액션(mkdir/write_file/append_file/read_file/delete_file/run)을 반드시 넣는다");
         builder.AppendLine("- 경로는 가능하면 상대경로 사용");
-        builder.AppendLine("- run은 빌드/테스트/실행 명령 중심으로 작성");
+        builder.AppendLine("- run은 마지막 검증 단계에서 1회만 수행되므로 중간 반복에서는 가능한 한 넣지 말고 파일 생성/수정에 집중");
         builder.AppendLine("- JSON 문자열 내부 줄바꿈은 반드시 \\n 으로 이스케이프");
         builder.AppendLine("- 가능한 한 한 번에 필요한 파일을 모두 생성하고, 마지막 검증(run) 1회만 수행");
         builder.AppendLine("- 실행 성공 및 요구사항 충족 시 즉시 done=true, actions=[]");
@@ -3126,13 +3497,50 @@ public sealed partial class CommandService
                 모드: {modeLabel}
                 언어 힌트: {languageHint}
                 요구사항:
+                - 기존 파일 구조를 우선 존중하고 필요한 최소 범위만 수정
                 - 필요한 폴더/파일 생성 및 수정
                 - 빌드/컴파일/실행/테스트 수행
                 - 오류 발생 시 원인 분석 후 수정 반복
+                - 더미 구현, TODO만 남기는 미완성 결과, 가짜 성공 보고 금지
+                - 실패한 명령을 같은 형태로 반복하지 말고 원인을 바꿔 수정
+                - 최종 요약에는 실제 변경 내용과 검증 결과만 반영
                 - 최종적으로 실행 가능한 상태를 목표로 진행
 
                 사용자 요청:
                 {input}
+                """;
+    }
+
+    private static string BuildDraftCodingWorkerPrompt(string objective, string languageHint)
+    {
+        return $"""
+                너는 병렬 코딩 워커 초안 생성기다.
+                실제 파일 수정/삭제/실행은 하지 말고 최종 통합용 초안만 작성하라.
+                언어 힌트: {languageHint}
+
+                [작업 목표]
+                {objective}
+
+                규칙:
+                - 가장 가능성 높은 구현안 1개만 제시
+                - 불필요한 서론, 사과, 메타 설명 금지
+                - 필요한 파일은 상대경로로 적기
+                - 더미 코드, TODO, 의사코드 금지
+                - 마지막에는 반드시 LANGUAGE=<언어> 줄과 최소 1개의 코드블록 포함
+                - 여러 파일이 필요하면 `FILE: 상대경로` 줄 다음에 코드블록을 이어서 작성
+
+                출력 형식:
+                [요약]
+                - 핵심 구현 전략
+                [파일]
+                - 상대경로: 역할
+                [리스크]
+                - 남는 위험 또는 검증 포인트
+                LANGUAGE=<언어>
+                FILE: <핵심 파일 상대경로>
+                ```<언어>
+                // 핵심 코드
+                ```
                 """;
     }
 
@@ -3145,9 +3553,12 @@ public sealed partial class CommandService
                 return "(workspace not found)";
             }
 
-            var maxEntries = string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase)
-                ? Math.Max(20, _config.CodingWorkspaceSnapshotMaxEntries)
-                : 160;
+            var maxEntries = Math.Max(
+                20,
+                string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase)
+                    ? Math.Min(_config.CodingWorkspaceSnapshotMaxEntries, 60)
+                    : _config.CodingWorkspaceSnapshotMaxEntries
+            );
             var files = Directory.EnumerateFiles(workspaceRoot, "*", SearchOption.AllDirectories)
                 .Select(path => Path.GetRelativePath(workspaceRoot, path))
                 .Where(path => !path.StartsWith(".git", StringComparison.OrdinalIgnoreCase))
@@ -3488,6 +3899,15 @@ public sealed partial class CommandService
             if (LooksLikePythonCommand(command))
             {
                 var missingModule = ExtractPythonMissingModule(stdErr);
+                if (IsPythonSystemModule(missingModule))
+                {
+                    var installedSystemModule = await TryInstallPythonSystemModuleAsync(missingModule!, workDir, logs, errors, cancellationToken);
+                    if (installedSystemModule)
+                    {
+                        return true;
+                    }
+                }
+
                 var pythonPackage = ResolvePythonPackageName(missingModule);
                 if (!string.IsNullOrWhiteSpace(pythonPackage))
                 {
@@ -3533,6 +3953,80 @@ public sealed partial class CommandService
             errors.Add($"누락 의존성 자동 설치 오류: {ex.Message}");
         }
 
+        return false;
+    }
+
+    private static bool IsPythonSystemModule(string? moduleName)
+    {
+        return string.Equals(moduleName, "tkinter", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(moduleName, "_tkinter", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<bool> TryInstallPythonSystemModuleAsync(
+        string moduleName,
+        string workDir,
+        List<string> logs,
+        List<string> errors,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!IsPythonSystemModule(moduleName))
+        {
+            return false;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var brewCheck = await RunWorkspaceCommandAsync("command -v brew >/dev/null 2>&1", workDir, cancellationToken);
+            if (brewCheck.ExitCode != 0)
+            {
+                errors.Add("tkinter 자동 설치 건너뜀: brew 없음");
+                return false;
+            }
+
+            var versionResult = await RunWorkspaceCommandAsync(
+                "python3 - <<'PY'\nimport sys\nprint(f\"{sys.version_info.major}.{sys.version_info.minor}\")\nPY",
+                workDir,
+                cancellationToken
+            );
+            var version = versionResult.ExitCode == 0 ? versionResult.StdOut.Trim() : string.Empty;
+            var formulaCandidates = new List<string>();
+            if (!string.IsNullOrWhiteSpace(version))
+            {
+                formulaCandidates.Add($"python-tk@{version}");
+            }
+
+            formulaCandidates.Add("python-tk");
+            foreach (var formula in formulaCandidates.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                var brewInstall = $"brew install {EscapeShellArg(formula)}";
+                var installResult = await RunWorkspaceCommandAsync(brewInstall, workDir, cancellationToken);
+                AppendInstallOutcome($"tkinter 시스템 패키지 설치({formula})", brewInstall, installResult, logs, errors);
+                if (installResult.ExitCode == 0)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (OperatingSystem.IsLinux())
+        {
+            var aptCheck = await RunWorkspaceCommandAsync("command -v apt-get >/dev/null 2>&1", workDir, cancellationToken);
+            if (aptCheck.ExitCode != 0)
+            {
+                errors.Add("tkinter 자동 설치 건너뜀: apt-get 없음 (python3-tk)");
+                return false;
+            }
+
+            var aptInstall = "if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y python3-tk; elif command -v sudo >/dev/null 2>&1; then sudo -n apt-get update && sudo -n apt-get install -y python3-tk; else exit 126; fi";
+            var installResult = await RunWorkspaceCommandAsync(aptInstall, workDir, cancellationToken);
+            AppendInstallOutcome("tkinter 시스템 패키지 설치(python3-tk)", aptInstall, installResult, logs, errors);
+            return installResult.ExitCode == 0;
+        }
+
+        errors.Add($"tkinter 자동 설치 미지원 OS ({moduleName})");
         return false;
     }
 
@@ -3780,6 +4274,11 @@ public sealed partial class CommandService
 
         var root = rootParts[0].Trim();
         if (string.IsNullOrWhiteSpace(root))
+        {
+            return null;
+        }
+
+        if (IsPythonSystemModule(root))
         {
             return null;
         }
@@ -4119,28 +4618,73 @@ public sealed partial class CommandService
         string languageHint
     )
     {
+        return BuildParallelCodingAggregatePrompt(
+            "오케스트레이션 통합",
+            input,
+            workers,
+            languageHint,
+            "역할별 초안의 장점을 취합해 한 번에 완성도 높은 최종 구현으로 정리"
+        );
+    }
+
+    private static string BuildMultiCodingAggregatePrompt(
+        string input,
+        IReadOnlyList<CodingWorkerResult> workers,
+        string languageHint
+    )
+    {
+        return BuildParallelCodingAggregatePrompt(
+            "다중 코딩 통합",
+            input,
+            workers,
+            languageHint,
+            "여러 모델 초안을 비교해 가장 안정적인 구현안을 선택하고 부족한 부분은 보완"
+        );
+    }
+
+    private static string BuildParallelCodingAggregatePrompt(
+        string modeLabel,
+        string input,
+        IReadOnlyList<CodingWorkerResult> workers,
+        string languageHint,
+        string strategyHint
+    )
+    {
         var builder = new StringBuilder();
-        builder.AppendLine("다음은 병렬 워커들이 생성한 코드/실행 결과입니다.");
+        builder.AppendLine($"다음은 {modeLabel} 단계에서 수집한 병렬 워커 초안들입니다.");
         builder.AppendLine($"요청: {input}");
         builder.AppendLine($"언어 힌트: {languageHint}");
+        builder.AppendLine($"통합 전략: {strategyHint}");
         builder.AppendLine();
         foreach (var worker in workers)
         {
             builder.AppendLine($"[Worker {worker.Provider}:{worker.Model}]");
-            builder.AppendLine($"language={worker.Language}");
-            builder.AppendLine("code:");
-            builder.AppendLine(worker.Code);
-            builder.AppendLine("stdout:");
-            builder.AppendLine(worker.Execution.StdOut);
-            builder.AppendLine("stderr:");
-            builder.AppendLine(worker.Execution.StdErr);
+            builder.AppendLine($"status={worker.Execution.Status} exit={worker.Execution.ExitCode} language={worker.Language}");
+            if (worker.ChangedFiles.Count > 0)
+            {
+                builder.AppendLine("changed_files=" + string.Join(", ", worker.ChangedFiles.Take(6)));
+            }
+
+            var draft = (worker.RawResponse ?? string.Empty).Trim();
+            if (!string.IsNullOrWhiteSpace(draft))
+            {
+                builder.AppendLine("draft:");
+                builder.AppendLine(TrimForOutput(draft, 2200));
+            }
+            else if (!string.IsNullOrWhiteSpace(worker.Code))
+            {
+                builder.AppendLine("code:");
+                builder.AppendLine(TrimForOutput(worker.Code, 2200));
+            }
+
             builder.AppendLine();
         }
 
         builder.AppendLine("요구사항:");
-        builder.AppendLine("1) 워커 결과를 통합해 최종 코드를 1개만 선택/개선");
-        builder.AppendLine("2) 반드시 실행 가능한 코드로 정리");
-        builder.AppendLine("3) 출력 형식: LANGUAGE=... + 단일 코드블록");
+        builder.AppendLine("1) 워커 초안을 참고하되 그대로 복붙하지 말고 충돌과 중복을 정리");
+        builder.AppendLine("2) 실제 워크스페이스에는 필요한 최소 파일만 생성/수정");
+        builder.AppendLine("3) 더미 구현, TODO만 남는 미완성 결과, 가짜 성공 보고 금지");
+        builder.AppendLine("4) 최종 실행/검증까지 마칠 수 있는 현실적인 구현을 선택");
         return builder.ToString().Trim();
     }
 
@@ -4203,7 +4747,7 @@ public sealed partial class CommandService
 
         var iterationCount = Math.Min(Math.Max(iterations.Count, 0), Math.Max(maxIterations, 0));
         var builder = new StringBuilder();
-        builder.AppendLine($"반복: {iterationCount}/{Math.Max(maxIterations, 1)}");
+        builder.AppendLine($"내부 반복: {iterationCount}/{Math.Max(maxIterations, 1)}");
         builder.AppendLine($"변경 파일: {changedFiles.Count}개");
         builder.AppendLine($"실행 상태: {execution.Status} (exit={execution.ExitCode})");
         if (!string.IsNullOrWhiteSpace(execution.Command) && execution.Command != "(none)" && execution.Command != "-")

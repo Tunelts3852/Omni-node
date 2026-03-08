@@ -357,19 +357,6 @@ public sealed partial class CommandService
                     .Where(x => x.Enabled && !x.Running && x.NextRunUtc <= now)
                     .Select(x => x.Id)
                     .ToList();
-
-                foreach (var id in dueIds)
-                {
-                    if (_routinesById.TryGetValue(id, out var routine))
-                    {
-                        routine.Running = true;
-                    }
-                }
-
-                if (dueIds.Count > 0)
-                {
-                    SaveRoutineStateLocked();
-                }
             }
 
             foreach (var id in dueIds)
@@ -378,7 +365,11 @@ public sealed partial class CommandService
                 {
                     try
                     {
-                        await RunRoutineNowAsync(id, "scheduler", CancellationToken.None);
+                        var result = await RunRoutineNowAsync(id, "scheduler", CancellationToken.None);
+                        if (!result.Ok)
+                        {
+                            Console.Error.WriteLine($"[routine] scheduler run skipped ({id}): {result.Message}");
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -452,6 +443,7 @@ public sealed partial class CommandService
         lock (_routineLock)
         {
             _routinesById.Clear();
+            var recoveredRunningCount = 0;
             try
             {
                 foreach (var item in _routineStore.Load())
@@ -460,7 +452,20 @@ public sealed partial class CommandService
                     {
                         continue;
                     }
+
+                    if (item.Running)
+                    {
+                        item.Running = false;
+                        recoveredRunningCount += 1;
+                    }
+
                     _routinesById[item.Id] = item;
+                }
+
+                if (recoveredRunningCount > 0)
+                {
+                    SaveRoutineStateLocked();
+                    Console.Error.WriteLine($"[routine] recovered {recoveredRunningCount} stale running flag(s) on load");
                 }
             }
             catch (Exception ex)
@@ -485,7 +490,8 @@ public sealed partial class CommandService
     private async Task<RoutineGenerationResult> GenerateRoutineImplementationAsync(
         string request,
         RoutineSchedule schedule,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        Action<RoutineProgressUpdate>? progressCallback = null
     )
     {
         var systemPromptPath = Path.Combine(_routinePromptDir, "system_prompt.md");
@@ -493,7 +499,25 @@ public sealed partial class CommandService
         var systemPrompt = File.Exists(systemPromptPath) ? File.ReadAllText(systemPromptPath, Encoding.UTF8) : string.Empty;
         var baseConfig = File.Exists(baseConfigPath) ? File.ReadAllText(baseConfigPath, Encoding.UTF8) : string.Empty;
         var objective = BuildRoutineGenerationPrompt(request, schedule.Display, systemPrompt, baseConfig);
+        ReportRoutineCreateProgress(
+            progressCallback,
+            "실행 코드를 만들 생성 전략을 고르는 중입니다.",
+            34,
+            "planning",
+            "생성 전략 준비",
+            "모델 가용성과 예산을 기준으로 최적 경로를 선택합니다.",
+            2
+        );
         var strategy = await SelectRoutineCodingStrategyAsync(objective, cancellationToken);
+        ReportRoutineCreateProgress(
+            progressCallback,
+            "실행 구성을 생성하는 중입니다.",
+            52,
+            "implementation",
+            "실행 구성 생성",
+            $"선택 전략: {strategy.Mode} / 모델: {string.Join(", ", strategy.Models)}",
+            3
+        );
 
         if (!_llmRouter.HasGroqApiKey())
         {
@@ -528,6 +552,15 @@ public sealed partial class CommandService
                 : EnsureRoutineShebang(parsed.Code, language);
             if (!string.IsNullOrWhiteSpace(parsed.Code) && RoutineCodeNeedsRepair(language, code))
             {
+                ReportRoutineCreateProgress(
+                    progressCallback,
+                    "생성 결과를 보정하는 중입니다.",
+                    68,
+                    "implementation",
+                    "실행 구성 생성",
+                    "초안을 점검한 뒤 실행 가능하도록 보정합니다.",
+                    3
+                );
                 var repaired = await TryRepairRoutineCodeAsync(objective, merged, strategy.Models[0], request, schedule, cancellationToken);
                 language = repaired.Language;
                 code = repaired.Code;
@@ -552,6 +585,15 @@ public sealed partial class CommandService
             : EnsureRoutineShebang(singleParsed.Code, singleLanguage);
         if (!string.IsNullOrWhiteSpace(singleParsed.Code) && RoutineCodeNeedsRepair(singleLanguage, singleCode))
         {
+            ReportRoutineCreateProgress(
+                progressCallback,
+                "생성 결과를 보정하는 중입니다.",
+                68,
+                "implementation",
+                "실행 구성 생성",
+                "초안을 점검한 뒤 실행 가능하도록 보정합니다.",
+                3
+            );
             var repaired = await TryRepairRoutineCodeAsync(objective, single.Text, strategy.Models[0], request, schedule, cancellationToken);
             singleLanguage = repaired.Language;
             singleCode = repaired.Code;

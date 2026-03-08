@@ -203,6 +203,14 @@ export function renderMessagesPanel(props) {
   const isCodingScope = currentKey.startsWith("coding:");
   const elapsed = elapsedSeconds(progress);
   const percent = Math.max(0, Math.min(100, Number(progress?.percent || 0)));
+  const stageTitle = `${progress?.stageTitle || ""}`.trim();
+  const stageDetail = `${progress?.stageDetail || ""}`.trim();
+  const stageBadge = progress?.stageIndex > 0 && progress?.stageTotal > 0
+    ? `${progress.stageIndex}/${progress.stageTotal}${stageTitle ? ` ${stageTitle}` : ""}`
+    : (stageTitle || progress?.phase || "processing");
+  const iterationLabel = progress?.maxIterations > 0
+    ? `내부 반복 ${progress.iteration || 0}/${progress.maxIterations}`
+    : "";
   return e(
     "div",
     { className: "message-list", ref: messageListRef },
@@ -262,15 +270,16 @@ export function renderMessagesPanel(props) {
           isCodingScope
             ? e("div", { className: "pending-details" },
               e("div", { className: "pending-meta-row" },
-                e("span", { className: "pending-phase" }, progress?.phase || "processing"),
+                e("span", { className: "pending-phase" }, stageBadge),
                 e("span", { className: "pending-time" }, `${elapsed}s`)
               ),
+              stageDetail ? e("div", { className: "pending-message" }, stageDetail) : null,
               progress?.message ? e("div", { className: "pending-message" }, progress.message) : null,
               progress?.provider || progress?.model
                 ? e("div", { className: "pending-route" }, `${progress.provider || "-"}:${progress.model || "-"}`)
                 : null,
-              progress?.maxIterations > 0
-                ? e("div", { className: "pending-iteration" }, `${progress.iteration || 0}/${progress.maxIterations}`)
+              iterationLabel
+                ? e("div", { className: "pending-iteration" }, iterationLabel)
                 : null,
               e("div", { className: "progress-track" },
                 e("div", { className: "progress-fill", style: { width: `${percent}%` } })

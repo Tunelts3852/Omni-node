@@ -183,7 +183,12 @@ public sealed class CodexCliWrapper
         return $"codex logout failed: {Trim(string.IsNullOrWhiteSpace(merged) ? "unknown error" : merged, 700)}";
     }
 
-    public async Task<string> GenerateChatAsync(string prompt, string? modelOverride, CancellationToken cancellationToken)
+    public async Task<string> GenerateChatAsync(
+        string prompt,
+        string? modelOverride,
+        CancellationToken cancellationToken,
+        bool useChatEnvelope = true
+    )
     {
         var input = (prompt ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(input))
@@ -208,6 +213,7 @@ public sealed class CodexCliWrapper
         {
             tempDir = Directory.CreateTempSubdirectory("omninode-codex-chat-").FullName;
             var outputPath = Path.Combine(tempDir, "last-message.txt");
+            var effectivePrompt = useChatEnvelope ? BuildChatPrompt(input) : input;
             using var timeoutCts = CreateTimeoutToken(cancellationToken);
             var result = await RunProcessAsync(
                 _codexBinaryPath,
@@ -220,7 +226,7 @@ public sealed class CodexCliWrapper
                     "--color", "never",
                     "-o", outputPath,
                     "-m", model,
-                    BuildChatPrompt(input)
+                    effectivePrompt
                 },
                 timeoutCts.Token
             );

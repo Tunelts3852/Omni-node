@@ -17,6 +17,13 @@ internal sealed class WsRoutineCommandDispatcher
         CancellationToken cancellationToken
     );
 
+    internal delegate Task SendRoutineProgressDelegate(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        RoutineProgressUpdate update,
+        CancellationToken cancellationToken
+    );
+
     internal delegate Task SendRoutineRunDetailDelegate(
         WebSocket socket,
         SemaphoreSlim sendLock,
@@ -27,18 +34,21 @@ internal sealed class WsRoutineCommandDispatcher
     private readonly IRoutineApplicationService _routineService;
     private readonly SendRoutinesDelegate _sendRoutinesAsync;
     private readonly SendRoutineActionResultDelegate _sendRoutineActionResultAsync;
+    private readonly SendRoutineProgressDelegate _sendRoutineProgressAsync;
     private readonly SendRoutineRunDetailDelegate _sendRoutineRunDetailAsync;
 
     public WsRoutineCommandDispatcher(
         IRoutineApplicationService routineService,
         SendRoutinesDelegate sendRoutinesAsync,
         SendRoutineActionResultDelegate sendRoutineActionResultAsync,
+        SendRoutineProgressDelegate sendRoutineProgressAsync,
         SendRoutineRunDetailDelegate sendRoutineRunDetailAsync
     )
     {
         _routineService = routineService;
         _sendRoutinesAsync = sendRoutinesAsync;
         _sendRoutineActionResultAsync = sendRoutineActionResultAsync;
+        _sendRoutineProgressAsync = sendRoutineProgressAsync;
         _sendRoutineRunDetailAsync = sendRoutineRunDetailAsync;
     }
 
@@ -82,7 +92,8 @@ internal sealed class WsRoutineCommandDispatcher
                 message.DayOfMonth,
                 message.TimezoneId,
                 "web",
-                cancellationToken
+                cancellationToken,
+                update => _ = _sendRoutineProgressAsync(socket, sendLock, update, cancellationToken)
             );
             await _sendRoutineActionResultAsync(socket, sendLock, result, cancellationToken);
             await _sendRoutinesAsync(socket, sendLock, cancellationToken);
