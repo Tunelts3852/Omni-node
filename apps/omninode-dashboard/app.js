@@ -2113,7 +2113,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     const responsiveWorkspaceKey = rootTab === "coding" ? "coding" : "chat";
     const isPortraitMobileLayout = viewportSize.width <= 920 && viewportSize.height > viewportSize.width;
     const mobileWorkspaceHeight = isPortraitMobileLayout
-      ? Math.max(360, viewportSize.height - Math.max(0, mainShellViewportTop) - 12)
+      ? Math.max(360, viewportSize.height - Math.max(0, mainShellViewportTop))
       : 0;
     const currentWorkspacePane = mobilePaneByTab[responsiveWorkspaceKey]
       || (currentConversationId ? "thread" : "list");
@@ -5549,18 +5549,22 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       return e(
         "aside",
         { className: "global-nav" },
-        e("div", { className: "brand-wrap" },
-          e("h1", { className: "brand" }, "Omni-node"),
-          e("p", { className: "brand-sub" }, "대화/코딩 오케스트레이션")
+        e("div", { className: "global-nav-head" },
+          e("div", { className: "brand-wrap" },
+            e("h1", { className: "brand" }, "Omni-node"),
+            e("p", { className: "brand-sub" }, "대화/코딩 오케스트레이션")
+          ),
+          e("div", { className: "pill-group" },
+            e("span", { className: `pill ${authed || navStatusText.startsWith("연결") || navStatusText.startsWith("인증") ? "ok" : "idle"}` }, navStatusText)
+          )
         ),
-        e("div", { className: "pill-group" },
-          e("span", { className: `pill ${authed || navStatusText.startsWith("연결") || navStatusText.startsWith("인증") ? "ok" : "idle"}` }, navStatusText)
+        e("div", { className: "global-nav-menu" },
+          e("div", { className: "nav-title" }, "메뉴"),
+          e("button", { className: `nav-btn ${rootTab === "chat" ? "active" : ""}`, onClick: () => setRootTab("chat") }, "대화"),
+          e("button", { className: `nav-btn ${rootTab === "routine" ? "active" : ""}`, onClick: () => setRootTab("routine") }, "루틴"),
+          e("button", { className: `nav-btn ${rootTab === "coding" ? "active" : ""}`, onClick: () => setRootTab("coding") }, "코딩"),
+          e("button", { className: `nav-btn ${rootTab === "settings" ? "active" : ""}`, onClick: () => setRootTab("settings") }, "설정")
         ),
-        e("div", { className: "nav-title" }, "메뉴"),
-        e("button", { className: `nav-btn ${rootTab === "chat" ? "active" : ""}`, onClick: () => setRootTab("chat") }, "대화"),
-        e("button", { className: `nav-btn ${rootTab === "routine" ? "active" : ""}`, onClick: () => setRootTab("routine") }, "루틴"),
-        e("button", { className: `nav-btn ${rootTab === "coding" ? "active" : ""}`, onClick: () => setRootTab("coding") }, "코딩"),
-        e("button", { className: `nav-btn ${rootTab === "settings" ? "active" : ""}`, onClick: () => setRootTab("settings") }, "설정"),
         e("div", { className: "nav-meta" },
           e("div", null, `Groq: ${selectedGroqModel || "-"}`),
           e("div", null, `Gemini: ${geminiLabel}`),
@@ -5971,12 +5975,13 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       ];
 
       if (isPortraitMobileLayout) {
-        const mobileThreadPanelHeight = Math.max(300, mobileWorkspaceHeight - 58);
         return e(
           "div",
           {
             className: "workspace-mobile-shell",
-            style: mobileWorkspaceHeight > 0 ? { minHeight: `${mobileWorkspaceHeight}px` } : undefined
+            style: mobileWorkspaceHeight > 0
+              ? { minHeight: `${mobileWorkspaceHeight}px`, height: `${mobileWorkspaceHeight}px` }
+              : undefined
           },
           renderResponsiveSectionTabs(
             mobileWorkspaceSections,
@@ -5988,13 +5993,10 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
             ? renderConversationPanel()
             : e(
               "section",
-              {
-                className: "chat-panel chat-panel-mobile",
-                style: currentWorkspacePane === "thread" && mobileWorkspaceHeight > 0
-                  ? { height: `${mobileThreadPanelHeight}px`, minHeight: `${mobileThreadPanelHeight}px` }
-                  : undefined
-              },
-              renderThreadHeader({ showInfoPanel: false, showActionButtons: false, showModebar: false }),
+              { className: "chat-panel chat-panel-mobile" },
+              currentWorkspacePane === "support"
+                ? renderThreadHeader({ showInfoPanel: false, showActionButtons: false, showModebar: false })
+                : null,
               errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
               currentWorkspacePane === "thread"
                 ? e(

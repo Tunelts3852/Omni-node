@@ -97,8 +97,9 @@ function renderRoutineProgressPanel(e, progress) {
   const currentStageIndex = trackingCreate
     ? Math.max(1, Math.min(ROUTINE_CREATE_PROGRESS_STAGES.length, Number(progress.stageIndex) || 1))
     : 0;
+  const panelClassName = `routine-progress-panel ${trackingCreate ? "is-tracking" : "is-idle"} ${progress?.done ? (progress.ok ? "is-ok" : "is-error") : ""}`.trim();
 
-  return e("aside", { className: "routine-progress-panel" },
+  return e("aside", { className: panelClassName },
     e("div", { className: "routine-progress-head" },
       e("div", null,
         e("div", { className: "routine-head-kicker" }, "생성 프로그레스"),
@@ -125,33 +126,29 @@ function renderRoutineProgressPanel(e, progress) {
         style: { width: `${percent}%` }
       })
     ),
-    e("div", { className: "routine-progress-stage-list" },
-      ROUTINE_CREATE_PROGRESS_STAGES.map((stage, index) => {
-        const stageNumber = index + 1;
-        let status = "pending";
-        if (trackingCreate && currentStageIndex > 0) {
-          if (stageNumber < currentStageIndex) {
-            status = "done";
-          } else if (stageNumber === currentStageIndex) {
-            status = progress.done ? (progress.ok ? "done" : "error") : "active";
+    trackingCreate
+      ? e("div", { className: "routine-progress-stage-list" },
+        ROUTINE_CREATE_PROGRESS_STAGES.map((stage, index) => {
+          const stageNumber = index + 1;
+          let status = "pending";
+          if (currentStageIndex > 0) {
+            if (stageNumber < currentStageIndex) {
+              status = "done";
+            } else if (stageNumber === currentStageIndex) {
+              status = progress.done ? (progress.ok ? "done" : "error") : "active";
+            }
           }
-        }
 
-        const detail = trackingCreate && stageNumber === currentStageIndex && progress.stageDetail
-          ? progress.stageDetail
-          : stage.detail;
-        return e("div", {
-          key: stage.key,
-          className: `routine-progress-stage ${status}`
-        },
-          e("div", { className: "routine-progress-stage-index" }, `${stageNumber}`),
-          e("div", { className: "routine-progress-stage-copy" },
-            e("div", { className: "routine-progress-stage-title" }, stage.compactTitle || stage.title),
-            e("div", { className: "routine-progress-stage-detail" }, detail)
-          )
-        );
-      })
-    )
+          return e("div", {
+            key: stage.key,
+            className: `routine-progress-stage ${status}`
+          },
+            e("span", { className: "routine-progress-stage-index" }, `${stageNumber}`),
+            e("span", { className: "routine-progress-stage-title" }, stage.compactTitle || stage.title)
+          );
+        })
+      )
+      : null
   );
 }
 
