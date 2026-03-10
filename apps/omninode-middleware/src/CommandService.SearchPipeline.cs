@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -27,6 +28,11 @@ public sealed partial class CommandService
         LlmSingleChatResult Response,
         ChatLatencyMetrics? Latency,
         IReadOnlyList<SearchCitationReference>? Citations = null
+    );
+    private readonly record struct RepositoryContextSnapshot(
+        string RepositorySlug,
+        string Description,
+        string ReadmeText
     );
 
     private async Task<WebNeedDecisionResult> DecideNeedWebBySelectedProviderAsync(
@@ -150,25 +156,84 @@ public sealed partial class CommandService
         }
 
         var promptStopwatch = Stopwatch.StartNew();
+        var repositoryContext = await TryLoadRepositoryContextSnapshotAsync(input, urls, cancellationToken);
+        var extractiveRepositoryAnswer = repositoryContext.HasValue
+            ? TryBuildRepositoryExtractiveAnswer(input, repositoryContext.Value)
+            : string.Empty;
+        if (!string.IsNullOrWhiteSpace(extractiveRepositoryAnswer))
+        {
+            var extractiveSanitizeStopwatch = Stopwatch.StartNew();
+            var extractiveOutputText = EnsureReadableWebAnswerResponse(extractiveRepositoryAnswer, input, allowMarkdownTable);
+            var extractiveSanitizeMs = Math.Max(0L, extractiveSanitizeStopwatch.ElapsedMilliseconds);
+            ChatLatencyMetrics? extractiveLatency = null;
+            if (!string.IsNullOrWhiteSpace(decisionPath))
+            {
+                extractiveLatency = new ChatLatencyMetrics(
+                    decisionMs,
+                    Math.Max(0L, promptStopwatch.ElapsedMilliseconds),
+                    0,
+                    Math.Max(0L, promptStopwatch.ElapsedMilliseconds),
+                    extractiveSanitizeMs,
+                    decisionPath
+                );
+            }
+
+            if (deltaCallback != null)
+            {
+                deltaCallback(extractiveOutputText);
+            }
+
+            return new GeminiGroundedWebAnswerResult(
+                new LlmSingleChatResult("gemini", model, extractiveOutputText),
+                extractiveLatency,
+                Array.Empty<SearchCitationReference>()
+            );
+        }
+
         var prompt = BuildGeminiUrlContextAnswerPrompt(
             input,
             urls,
             memoryHint,
             allowMarkdownTable,
             enforceTelegramOutputStyle,
-            includeGoogleSearch
+            includeGoogleSearch,
+            repositoryContext
         );
         var maxOutputTokens = ResolveGeminiUrlContextMaxOutputTokens(input);
         var promptBuildMs = Math.Max(0L, promptStopwatch.ElapsedMilliseconds);
-        var response = await _llmRouter.GenerateGeminiUrlContextChatStreamingAsync(
-            prompt,
-            model,
-            maxOutputTokens,
-            _config.GeminiWebTimeoutMs,
-            includeGoogleSearch,
-            deltaCallback,
-            cancellationToken
-        );
+        GeminiUrlContextChatResponse response;
+        if (repositoryContext.HasValue)
+        {
+            var directStopwatch = Stopwatch.StartNew();
+            var directText = await _llmRouter.GenerateGeminiChatAsync(
+                prompt,
+                model,
+                maxOutputTokens,
+                cancellationToken
+            );
+            response = new GeminiUrlContextChatResponse(
+                directText,
+                0,
+                Math.Max(0L, directStopwatch.ElapsedMilliseconds),
+                Array.Empty<SearchCitationReference>()
+            );
+            if (deltaCallback != null && !string.IsNullOrWhiteSpace(directText))
+            {
+                deltaCallback(directText);
+            }
+        }
+        else
+        {
+            response = await _llmRouter.GenerateGeminiUrlContextChatStreamingAsync(
+                prompt,
+                model,
+                maxOutputTokens,
+                _config.GeminiWebTimeoutMs,
+                includeGoogleSearch,
+                deltaCallback,
+                cancellationToken
+            );
+        }
 
         var sanitizeStopwatch = Stopwatch.StartNew();
         string outputText;
@@ -1546,7 +1611,8 @@ public sealed partial class CommandService
         string memoryHint,
         bool allowMarkdownTable,
         bool enforceTelegramOutputStyle,
-        bool includeGoogleSearch
+        bool includeGoogleSearch,
+        RepositoryContextSnapshot? repositoryContext = null
     )
     {
         var normalizedInput = (input ?? string.Empty).Trim();
@@ -1587,6 +1653,11 @@ public sealed partial class CommandService
         builder.AppendLine("- 답변이 길어질 것 같으면 항목 수를 줄이고 요약해서 문장을 끝까지 완성해라.");
         builder.AppendLine("- 페이지의 제목, 목적, 핵심 내용, 중요한 세부사항이 무엇인지 요약하면서도 분명하게 드러내라.");
         builder.AppendLine("- 본문에서 임의의 '**' 강조를 남발하지 말고, 구조 라벨이나 항목 제목에만 제한적으로 사용해라.");
+        if (repositoryContext.HasValue)
+        {
+            builder.AppendLine("- 아래 [직접 읽은 저장소 정보] 블록이 있으면 그 내용을 URL 도구 결과보다 우선 근거로 사용해라.");
+            builder.AppendLine("- 사용자가 특정 키워드나 주제만 물으면 [직접 읽은 저장소 정보]에서 직접 확인된 내용만 답하고, 없으면 없다고 말해라.");
+        }
         if (tableMode)
         {
             builder.AppendLine("- 사용자가 표를 요청했으므로 반드시 GitHub 마크다운 표로 작성해라.");
@@ -1670,6 +1741,20 @@ public sealed partial class CommandService
             builder.AppendLine(normalizedMemoryHint);
         }
 
+        if (repositoryContext.HasValue)
+        {
+            builder.AppendLine();
+            builder.AppendLine("[직접 읽은 저장소 정보]");
+            builder.AppendLine($"저장소: {repositoryContext.Value.RepositorySlug}");
+            if (!string.IsNullOrWhiteSpace(repositoryContext.Value.Description))
+            {
+                builder.AppendLine($"설명: {repositoryContext.Value.Description}");
+            }
+
+            builder.AppendLine("README 발췌:");
+            builder.AppendLine(repositoryContext.Value.ReadmeText);
+        }
+
         builder.AppendLine();
         builder.AppendLine("참조 URL:");
         foreach (var url in urls.Take(3))
@@ -1680,6 +1765,542 @@ public sealed partial class CommandService
         builder.AppendLine("사용자 입력:");
         builder.AppendLine(effectiveInput);
         return builder.ToString().Trim();
+    }
+
+    private async Task<RepositoryContextSnapshot?> TryLoadRepositoryContextSnapshotAsync(
+        string input,
+        IReadOnlyList<string> urls,
+        CancellationToken cancellationToken
+    )
+    {
+        if (urls.Count != 1)
+        {
+            return null;
+        }
+
+        var primaryUrl = urls[0];
+        if (!TryParseGitHubRepositoryRoot(primaryUrl, out var owner, out var repo))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, primaryUrl);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Omni-node/1.0");
+            using var response = await WebFetchClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            var html = await response.Content.ReadAsStringAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return null;
+            }
+
+            var description = TryExtractHtmlMetaContent(html, "description");
+            var (refName, readmePath, readmeFallbackText) = TryExtractGitHubReadmeInfo(html);
+            var readmeText = await TryFetchGitHubReadmeRawAsync(owner, repo, refName, readmePath, cancellationToken);
+            if (string.IsNullOrWhiteSpace(readmeText))
+            {
+                readmeText = readmeFallbackText;
+            }
+
+            readmeText = BuildRelevantRepositoryExcerpt(input, readmeText);
+            if (string.IsNullOrWhiteSpace(description) && string.IsNullOrWhiteSpace(readmeText))
+            {
+                return null;
+            }
+
+            return new RepositoryContextSnapshot(
+                $"{owner}/{repo}",
+                description,
+                readmeText
+            );
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryParseGitHubRepositoryRoot(string url, out string owner, out string repo)
+    {
+        owner = string.Empty;
+        repo = string.Empty;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var host = (uri.Host ?? string.Empty).Trim().ToLowerInvariant();
+        if (!ContainsAny(host, "github.com"))
+        {
+            return false;
+        }
+
+        var segments = (uri.AbsolutePath ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2)
+        {
+            return false;
+        }
+
+        owner = segments[0];
+        repo = segments[1];
+        return owner.Length > 0 && repo.Length > 0;
+    }
+
+    private static string TryExtractHtmlMetaContent(string html, string metaName)
+    {
+        var targetName = (metaName ?? string.Empty).Trim();
+        if (targetName.Length == 0 || string.IsNullOrWhiteSpace(html))
+        {
+            return string.Empty;
+        }
+
+        var patterns = new[]
+        {
+            $"<meta\\s+name=\"{Regex.Escape(targetName)}\"\\s+content=\"(?<content>[^\"]*)\"",
+            $"<meta\\s+content=\"(?<content>[^\"]*)\"\\s+name=\"{Regex.Escape(targetName)}\"",
+            $"<meta\\s+property=\"og:{Regex.Escape(targetName)}\"\\s+content=\"(?<content>[^\"]*)\"",
+            $"<meta\\s+content=\"(?<content>[^\"]*)\"\\s+property=\"og:{Regex.Escape(targetName)}\""
+        };
+        foreach (var pattern in patterns)
+        {
+            var match = Regex.Match(html, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            return WebUtility.HtmlDecode(match.Groups["content"].Value).Trim();
+        }
+
+        return string.Empty;
+    }
+
+    private static (string RefName, string ReadmePath, string FallbackText) TryExtractGitHubReadmeInfo(string html)
+    {
+        if (string.IsNullOrWhiteSpace(html))
+        {
+            return (string.Empty, string.Empty, string.Empty);
+        }
+
+        var embeddedMatch = Regex.Match(
+            html,
+            "<script type=\"application/json\" data-target=\"react-app\\.embeddedData\">(?<json>[\\s\\S]*?)</script>",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!embeddedMatch.Success)
+        {
+            return (string.Empty, string.Empty, string.Empty);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(embeddedMatch.Groups["json"].Value);
+            if (!doc.RootElement.TryGetProperty("payload", out var payload))
+            {
+                return (string.Empty, string.Empty, string.Empty);
+            }
+
+            JsonElement overview;
+            if (payload.TryGetProperty("codeViewRepoRoute", out var codeViewRepoRoute)
+                && codeViewRepoRoute.ValueKind == JsonValueKind.Object
+                && codeViewRepoRoute.TryGetProperty("overview", out overview)
+                && overview.ValueKind == JsonValueKind.Object)
+            {
+            }
+            else if (payload.TryGetProperty("overview", out overview) && overview.ValueKind == JsonValueKind.Object)
+            {
+            }
+            else
+            {
+                return (string.Empty, string.Empty, string.Empty);
+            }
+
+            if (!overview.TryGetProperty("overviewFiles", out var overviewFiles) || overviewFiles.ValueKind != JsonValueKind.Array)
+            {
+                return (string.Empty, string.Empty, string.Empty);
+            }
+
+            foreach (var item in overviewFiles.EnumerateArray())
+            {
+                var preferredType = item.TryGetProperty("preferredFileType", out var preferredFileTypeElement)
+                    ? (preferredFileTypeElement.GetString() ?? string.Empty).Trim()
+                    : string.Empty;
+                if (!string.Equals(preferredType, "readme", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var refName = item.TryGetProperty("refName", out var refNameElement)
+                    ? (refNameElement.GetString() ?? string.Empty).Trim()
+                    : string.Empty;
+                var readmePath = item.TryGetProperty("path", out var pathElement)
+                    ? (pathElement.GetString() ?? string.Empty).Trim()
+                    : string.Empty;
+                var richText = item.TryGetProperty("richText", out var richTextElement)
+                    ? (richTextElement.GetString() ?? string.Empty)
+                    : string.Empty;
+                var fallbackText = ConvertGitHubRichTextToPlainText(richText);
+                return (refName, readmePath, fallbackText);
+            }
+        }
+        catch
+        {
+        }
+
+        return (string.Empty, string.Empty, string.Empty);
+    }
+
+    private async Task<string> TryFetchGitHubReadmeRawAsync(
+        string owner,
+        string repo,
+        string refName,
+        string readmePath,
+        CancellationToken cancellationToken
+    )
+    {
+        var normalizedOwner = (owner ?? string.Empty).Trim();
+        var normalizedRepo = (repo ?? string.Empty).Trim();
+        var normalizedRef = (refName ?? string.Empty).Trim();
+        var normalizedPath = (readmePath ?? string.Empty).Trim();
+        if (normalizedOwner.Length == 0
+            || normalizedRepo.Length == 0
+            || normalizedRef.Length == 0
+            || normalizedPath.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var escapedPath = string.Join(
+            "/",
+            normalizedPath.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Uri.EscapeDataString)
+        );
+        var rawUrl = $"https://raw.githubusercontent.com/{Uri.EscapeDataString(normalizedOwner)}/{Uri.EscapeDataString(normalizedRepo)}/{Uri.EscapeDataString(normalizedRef)}/{escapedPath}";
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, rawUrl);
+            request.Headers.TryAddWithoutValidation("User-Agent", "Omni-node/1.0");
+            using var response = await WebFetchClient.SendAsync(request, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return string.Empty;
+            }
+
+            return (await response.Content.ReadAsStringAsync(cancellationToken)).Trim();
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string ConvertGitHubRichTextToPlainText(string richText)
+    {
+        var normalized = (richText ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"<li\b[^>]*>", "- ", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"</(p|div|li|h[1-6]|tr|pre|code|table|ul|ol|blockquote)>", "\n", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        normalized = HtmlBreakTagRegex.Replace(normalized, "\n");
+        normalized = HtmlTagRegex.Replace(normalized, " ");
+        normalized = WebUtility.HtmlDecode(normalized);
+        normalized = normalized.Replace("\r", string.Empty, StringComparison.Ordinal);
+        normalized = Regex.Replace(normalized, @"[ \t]+\n", "\n");
+        normalized = Regex.Replace(normalized, @"\n{3,}", "\n\n");
+        normalized = Regex.Replace(normalized, @"[ \t]{2,}", " ");
+        return normalized.Trim();
+    }
+
+    private static string BuildRelevantRepositoryExcerpt(string input, string readmeText)
+    {
+        var normalizedText = (readmeText ?? string.Empty).Trim();
+        if (normalizedText.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = SplitRepositoryLines(normalizedText);
+        var queryTokens = ExtractRepositoryQueryTokens(input);
+        if (queryTokens.Length == 0 || lines.Length == 0)
+        {
+            return TrimForRepositoryContext(normalizedText, 9000);
+        }
+
+        var matchIndexes = FindRepositoryMatchIndexes(lines, queryTokens);
+        if (matchIndexes.Count == 0)
+        {
+            return TrimForRepositoryContext(normalizedText, 9000);
+        }
+
+        var builder = new StringBuilder();
+        foreach (var index in matchIndexes.OrderBy(value => value))
+        {
+            var line = lines[index];
+            if (builder.Length + line.Length + 1 > 9000)
+            {
+                break;
+            }
+
+            if (builder.Length > 0)
+            {
+                builder.AppendLine();
+            }
+
+            builder.Append(line);
+        }
+
+        var excerpt = builder.ToString().Trim();
+        return excerpt.Length == 0 ? TrimForRepositoryContext(normalizedText, 9000) : excerpt;
+    }
+
+    private static string TryBuildRepositoryExtractiveAnswer(string input, RepositoryContextSnapshot context)
+    {
+        var lines = SplitRepositoryLines(context.ReadmeText);
+        var queryTokens = ExtractRepositoryQueryTokens(input);
+        if (lines.Length == 0 || queryTokens.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var matchIndexes = FindExactRepositoryMatchIndexes(lines, queryTokens);
+        if (matchIndexes.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var matchedLines = matchIndexes
+            .OrderBy(value => value)
+            .Select(value => NormalizeRepositoryLineForDisplay(lines[value]))
+            .Where(line => line.Length > 0)
+            .Distinct(StringComparer.Ordinal)
+            .Take(8)
+            .ToArray();
+        if (matchedLines.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var topicLabel = BuildRepositoryTopicLabel(queryTokens);
+        var builder = new StringBuilder();
+        builder.AppendLine($"요약: README에서 {topicLabel} 관련으로 직접 확인되는 내용만 정리합니다.");
+        builder.AppendLine();
+        builder.AppendLine("확인된 내용:");
+        foreach (var line in matchedLines)
+        {
+            builder.AppendLine($"- {line}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(context.Description))
+        {
+            builder.AppendLine();
+            builder.AppendLine("중요 포인트:");
+            builder.AppendLine("- 위 항목은 저장소 README/설명에서 직접 확인된 문장만 추린 것이며, 그 밖의 해석은 덧붙이지 않았습니다.");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("출처: github.com");
+        return builder.ToString().Trim();
+    }
+
+    private static string[] ExtractRepositoryQueryTokens(string input)
+    {
+        var normalized = HttpUrlRegex.Replace((input ?? string.Empty).Trim().ToLowerInvariant(), " ");
+        normalized = Regex.Replace(normalized, @"[^\p{L}\p{Nd}\s]+", " ");
+        normalized = Regex.Replace(normalized, @"\s+", " ").Trim();
+        if (normalized.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var rawTokens = normalized
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(token => !IsRepositoryQueryFillerToken(token))
+            .ToArray();
+        if (rawTokens.Length == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var rankedTokens = new List<string>(rawTokens.Length * 2);
+        for (var index = 0; index < rawTokens.Length - 1; index += 1)
+        {
+            var current = rawTokens[index];
+            var next = rawTokens[index + 1];
+            if (current.Length == 0 || next.Length == 0)
+            {
+                continue;
+            }
+
+            rankedTokens.Add($"{current} {next}");
+        }
+
+        foreach (var token in rawTokens)
+        {
+            if (token.Length >= 2 || token.Any(char.IsDigit))
+            {
+                rankedTokens.Add(token);
+            }
+        }
+
+        return rankedTokens
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private static string[] SplitRepositoryLines(string text)
+    {
+        return (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Split('\n', StringSplitOptions.TrimEntries)
+            .Where(line => line.Length > 0)
+            .ToArray();
+    }
+
+    private static HashSet<int> FindRepositoryMatchIndexes(IReadOnlyList<string> lines, IReadOnlyList<string> queryTokens)
+    {
+        var matchIndexes = new HashSet<int>();
+        for (var index = 0; index < lines.Count; index += 1)
+        {
+            var normalizedLine = lines[index].ToLowerInvariant();
+            var score = 0;
+            foreach (var token in queryTokens)
+            {
+                if (normalizedLine.Contains(token, StringComparison.Ordinal))
+                {
+                    score += 1;
+                }
+            }
+
+            if (score <= 0)
+            {
+                continue;
+            }
+
+            matchIndexes.Add(index);
+            if (index > 0)
+            {
+                matchIndexes.Add(index - 1);
+            }
+
+            if (index + 1 < lines.Count)
+            {
+                matchIndexes.Add(index + 1);
+            }
+        }
+
+        return matchIndexes;
+    }
+
+    private static HashSet<int> FindExactRepositoryMatchIndexes(IReadOnlyList<string> lines, IReadOnlyList<string> queryTokens)
+    {
+        var matchIndexes = new HashSet<int>();
+        for (var index = 0; index < lines.Count; index += 1)
+        {
+            var normalizedLine = lines[index].ToLowerInvariant();
+            foreach (var token in queryTokens)
+            {
+                if (!normalizedLine.Contains(token, StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                matchIndexes.Add(index);
+                break;
+            }
+        }
+
+        return matchIndexes;
+    }
+
+    private static string BuildRepositoryTopicLabel(IReadOnlyList<string> queryTokens)
+    {
+        if (queryTokens.Count == 0)
+        {
+            return "요청한 주제";
+        }
+
+        var labels = new List<string>(3);
+        foreach (var token in queryTokens)
+        {
+            var normalizedToken = (token ?? string.Empty).Trim();
+            if (normalizedToken.Length == 0)
+            {
+                continue;
+            }
+
+            var overlapsExisting = labels.Any(existing =>
+                existing.Contains(normalizedToken, StringComparison.Ordinal)
+                || normalizedToken.Contains(existing, StringComparison.Ordinal));
+            if (overlapsExisting)
+            {
+                continue;
+            }
+
+            labels.Add(normalizedToken);
+            if (labels.Count >= 3)
+            {
+                break;
+            }
+        }
+
+        return labels.Count == 0 ? "요청한 주제" : string.Join(" ", labels);
+    }
+
+    private static bool IsRepositoryQueryFillerToken(string token)
+    {
+        return token is
+            "이" or "이거" or "이것" or "여기" or "해당" or "링크" or "url" or "주소"
+            or "링크에서" or "에서" or "관련" or "내용" or "내용만" or "부분" or "부분만" or "항목" or "얘기" or "말" or "말만" or "말해" or "말해봐" or "말해줘"
+            or "설명" or "설명만" or "설명해" or "설명해줘" or "요약" or "요약만" or "요약해" or "요약해줘" or "정리" or "정리해줘"
+            or "만" or "만좀" or "만요" or "좀" or "한번" or "봐" or "봐봐" or "봐줘" or "보지말고"
+            or "찾아" or "찾아줘" or "추려" or "추려줘" or "뽑아" or "뽑아줘"
+            or "what" or "about" or "only" or "from" or "tell" or "show" or "readme";
+    }
+
+    private static string TrimForRepositoryContext(string text, int maxChars)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length <= maxChars)
+        {
+            return normalized;
+        }
+
+        return normalized[..maxChars] + "\n...(truncated)";
+    }
+
+    private static string NormalizeRepositoryLineForDisplay(string line)
+    {
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (normalized.Contains("![", StringComparison.Ordinal) || normalized.Contains("<img", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"!\[[^\]]*\]\([^)]+\)", string.Empty);
+        normalized = Regex.Replace(normalized, @"\[(?<text>[^\]]+)\]\([^)]+\)", "${text}");
+        normalized = Regex.Replace(normalized, @"^\s{0,3}(?:>+\s*|[-*+]\s+|#+\s+)", string.Empty);
+        normalized = normalized.Replace("**", string.Empty, StringComparison.Ordinal)
+            .Replace("__", string.Empty, StringComparison.Ordinal)
+            .Replace("`", string.Empty, StringComparison.Ordinal);
+        normalized = Regex.Replace(normalized, @"\s{2,}", " ").Trim();
+        return normalized;
     }
 
     private static string ResolveImplicitUrlRequest(string input, IReadOnlyList<string> urls)
