@@ -1550,16 +1550,20 @@ public sealed partial class CommandService
     )
     {
         var normalizedInput = (input ?? string.Empty).Trim();
+        var effectiveInput = ResolveImplicitUrlRequest(normalizedInput, urls);
         var normalizedMemoryHint = (memoryHint ?? string.Empty).Trim();
-        var hasExplicitCount = HasExplicitRequestedCountInQuery(normalizedInput);
+        var hasExplicitCount = HasExplicitRequestedCountInQuery(effectiveInput);
         var requestedCount = hasExplicitCount
-            ? Math.Clamp(ResolveRequestedResultCountFromQuery(normalizedInput), 1, 20)
-            : ResolveWebDefaultCount(normalizedInput);
-        var listMode = LooksLikeListOutputRequest(normalizedInput);
-        var tableMode = allowMarkdownTable && LooksLikeTableRenderRequest(normalizedInput);
-        var comparisonMode = LooksLikeComparisonRequest(normalizedInput);
+            ? Math.Clamp(ResolveRequestedResultCountFromQuery(effectiveInput), 1, 20)
+            : ResolveWebDefaultCount(effectiveInput);
+        var listMode = LooksLikeListOutputRequest(effectiveInput);
+        var tableMode = allowMarkdownTable && LooksLikeTableRenderRequest(effectiveInput);
+        var comparisonMode = LooksLikeComparisonRequest(effectiveInput);
         var primaryUrl = urls.FirstOrDefault() ?? string.Empty;
-        var siteOverviewMode = urls.Count == 1 && LooksLikeSiteOverviewRequest(normalizedInput) && LooksLikeSiteRootUrl(primaryUrl);
+        var siteOverviewMode = urls.Count == 1
+            && (LooksLikeSiteOverviewRequest(effectiveInput) || LooksLikeImplicitUrlSummaryRequest(normalizedInput, urls))
+            && LooksLikeSiteRootUrl(primaryUrl);
+        var repositoryMode = urls.Count == 1 && LooksLikeRepositoryUrl(primaryUrl);
         var documentMode = urls.Count == 1 && LooksLikeDocumentationUrl(primaryUrl);
         var articleMode = urls.Count == 1 && LooksLikeArticleUrl(primaryUrl);
 
@@ -1602,6 +1606,11 @@ public sealed partial class CommandService
         {
             builder.AppendLine("- 이 요청은 사이트/서비스 소개 요청이다.");
             builder.AppendLine("- 해당 사이트가 무엇을 하는지, 핵심 제품/기능, 누구를 위한 서비스인지, 눈여겨볼 점을 정리해라.");
+        }
+        else if (repositoryMode)
+        {
+            builder.AppendLine("- 이 요청은 코드 저장소/프로젝트 소개 요청이다.");
+            builder.AppendLine("- 저장소가 무엇을 하는지, 핵심 기능, 사용 대상, 주요 구조, 눈에 띄는 포인트를 정리해라.");
         }
         else if (documentMode)
         {
@@ -1669,8 +1678,95 @@ public sealed partial class CommandService
         }
         builder.AppendLine();
         builder.AppendLine("사용자 입력:");
-        builder.AppendLine(normalizedInput);
+        builder.AppendLine(effectiveInput);
         return builder.ToString().Trim();
+    }
+
+    private static string ResolveImplicitUrlRequest(string input, IReadOnlyList<string> urls)
+    {
+        var normalizedInput = (input ?? string.Empty).Trim();
+        if (!LooksLikeImplicitUrlSummaryRequest(normalizedInput, urls))
+        {
+            return normalizedInput;
+        }
+
+        if (urls.Count > 1)
+        {
+            return "이 URL들의 내용을 요약하고 공통점과 차이를 정리해줘.";
+        }
+
+        var primaryUrl = urls.FirstOrDefault() ?? string.Empty;
+        if (LooksLikeRepositoryUrl(primaryUrl))
+        {
+            return "이 코드 저장소/프로젝트가 무엇인지 설명해줘.";
+        }
+
+        if (LooksLikeDocumentationUrl(primaryUrl))
+        {
+            return "이 문서/가이드 내용을 핵심만 요약해줘.";
+        }
+
+        if (LooksLikeArticleUrl(primaryUrl))
+        {
+            return "이 글/기사 내용을 핵심만 요약해줘.";
+        }
+
+        if (LooksLikeSiteRootUrl(primaryUrl))
+        {
+            return "이 사이트/서비스가 무엇인지 설명해줘.";
+        }
+
+        return "이 URL 내용을 설명해줘.";
+    }
+
+    private static bool LooksLikeImplicitUrlSummaryRequest(string input, IReadOnlyList<string> urls)
+    {
+        if (urls.Count == 0)
+        {
+            return false;
+        }
+
+        var normalizedInput = (input ?? string.Empty).Trim();
+        if (normalizedInput.Length == 0)
+        {
+            return true;
+        }
+
+        var withoutUrls = HttpUrlRegex.Replace(normalizedInput, " ");
+        withoutUrls = Regex.Replace(withoutUrls, @"[^\p{L}\p{Nd}\s]+", " ");
+        withoutUrls = Regex.Replace(withoutUrls, @"\s+", " ").Trim().ToLowerInvariant();
+        if (withoutUrls.Length == 0)
+        {
+            return true;
+        }
+
+        var tokens = withoutUrls
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+        {
+            return true;
+        }
+
+        foreach (var token in tokens)
+        {
+            if (!IsUrlFillerToken(token))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsUrlFillerToken(string token)
+    {
+        return token is
+            "이" or "이거" or "이곳" or "여기" or "해당"
+            or "링크" or "url" or "주소"
+            or "사이트" or "페이지" or "문서" or "글" or "기사" or "저장소" or "리포" or "repo" or "프로젝트"
+            or "설명" or "요약" or "정리" or "내용" or "소개" or "해석" or "확인"
+            or "알려" or "알려줘" or "봐" or "봐줘" or "읽어" or "읽어줘" or "보여" or "보여줘"
+            or "좀" or "한번" or "무슨" or "무엇" or "뭐야" or "뭔지";
     }
 
     private static bool LooksLikeSiteOverviewRequest(string input)
@@ -1730,6 +1826,38 @@ public sealed partial class CommandService
         var path = (uri.AbsolutePath ?? string.Empty).ToLowerInvariant();
         return ContainsAny(host, "news", "blog", "medium", "substack")
                || ContainsAny(path, "/article", "/news", "/blog", "/posts", "/post");
+    }
+
+    private static bool LooksLikeRepositoryUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        var host = (uri.Host ?? string.Empty).ToLowerInvariant();
+        if (!ContainsAny(host, "github.com", "gitlab.com", "bitbucket.org"))
+        {
+            return false;
+        }
+
+        var segments = (uri.AbsolutePath ?? string.Empty)
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2)
+        {
+            return false;
+        }
+
+        var reserved = segments.Length >= 3 ? segments[2].ToLowerInvariant() : string.Empty;
+        if (reserved.Length == 0)
+        {
+            return true;
+        }
+
+        return reserved is not (
+            "issues" or "pull" or "pulls" or "discussions" or "wiki" or "releases"
+            or "actions" or "blob" or "tree" or "commit" or "commits" or "raw"
+        );
     }
 
     private string BuildGeminiWebAnswerPrompt(

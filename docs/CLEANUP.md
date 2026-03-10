@@ -49,6 +49,7 @@
 | `~/.omninode/auth_sessions.json` | 상태 원본 | 세션 복구 상태를 보존하려면 유지 |
 | `~/.omninode/telegram_update_offset.txt` | 상태 원본 | 텔레그램 polling 재시작 지점을 보존하려면 유지 |
 | `~/.omninode/telegram_update_loop.lock` | 런타임 보호 파일 | polling 단일 인스턴스 락. 실행 중이 아니면 stale 여부 확인 후 정리 |
+| `~/.omninode/telegram_reply_outbox.json` | 상태 원본 | 텔레그램 응답 재전송 대기 큐. 미전송 답변을 보존하려면 유지 |
 | `~/.omninode/memory-notes/` | 상태 원본 | 메모리 노트를 보존하려면 유지 |
 | `~/.omninode/memory-index/main.sqlite` | 상태 원본/인덱스 | 메모리 검색 인덱스를 보존하려면 유지 |
 | `~/.omninode/doctor/last-report.json` | 상태 원본/최근 진단 | 최신 진단 결과를 보존하려면 유지 |

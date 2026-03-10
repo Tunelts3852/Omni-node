@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -8,6 +9,7 @@ namespace OmniNode.Middleware;
 public sealed class TelegramClient : IDisposable
 {
     private const int MaxAttachmentBytes = 350_000;
+    private const int TelegramApiMaxAttempts = 4;
     private static readonly IReadOnlyDictionary<string, string> SourceHomeUrlByLabel = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
         ["연합뉴스"] = "https://www.yna.co.kr",
@@ -313,9 +315,36 @@ public sealed class TelegramClient : IDisposable
         builder.Append($"\"chat_id\":\"{EscapeJson(chatId)}\",");
         builder.Append("\"action\":\"typing\"");
         builder.Append("}");
-        using var content = new StringContent(builder.ToString(), Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
-        return response.IsSuccessStatusCode;
+        for (var attempt = 1; attempt <= TelegramApiMaxAttempts; attempt += 1)
+        {
+            try
+            {
+                using var content = new StringContent(builder.ToString(), Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+
+                if (attempt >= TelegramApiMaxAttempts || !ShouldRetryTelegramRequest(response.StatusCode, body))
+                {
+                    return false;
+                }
+
+                await DelayTelegramRetryAsync(attempt, response.StatusCode, body, cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < TelegramApiMaxAttempts)
+            {
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (HttpRequestException) when (attempt < TelegramApiMaxAttempts)
+            {
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+        }
+
+        return false;
     }
 
     private async Task<(bool Success, int SentCount, int FailedIndex, int StatusCode, string ErrorBody)> SendChunksAsync(
@@ -401,13 +430,16 @@ public sealed class TelegramClient : IDisposable
         }
 
         var endpoint = $"https://api.telegram.org/bot{botToken}/getUpdates?timeout=15&offset={offset}";
-        using var response = await _httpClient.GetAsync(endpoint, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        using var response = await GetWithRetryAsync(endpoint, cancellationToken);
+        if (response == null || !response.IsSuccessStatusCode)
         {
-            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var body = response != null
+                ? await response.Content.ReadAsStringAsync(cancellationToken)
+                : "request_failed_after_retries";
             if (ShouldLogGetUpdatesError())
             {
-                Console.Error.WriteLine($"[telegram] getUpdates failed ({(int)response.StatusCode}): {body}");
+                var statusCode = response != null ? (int)response.StatusCode : 0;
+                Console.Error.WriteLine($"[telegram] getUpdates failed ({statusCode}): {body}");
             }
             await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
             return Array.Empty<TelegramUpdate>();
@@ -620,15 +652,56 @@ public sealed class TelegramClient : IDisposable
     )
     {
         var requestBody = BuildTelegramSendBody(chatId, text, parseMode, enableLinkPreview);
-        using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        string lastErrorBody = string.Empty;
+        int lastStatusCode = 0;
+        for (var attempt = 1; attempt <= TelegramApiMaxAttempts; attempt += 1)
         {
-            return (false, (int)response.StatusCode, body, 0);
+            try
+            {
+                using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return (true, (int)response.StatusCode, string.Empty, ExtractMessageId(body));
+                }
+
+                lastStatusCode = (int)response.StatusCode;
+                lastErrorBody = body;
+                if (attempt >= TelegramApiMaxAttempts || !ShouldRetryTelegramRequest(response.StatusCode, body))
+                {
+                    return (false, lastStatusCode, lastErrorBody, 0);
+                }
+
+                await DelayTelegramRetryAsync(attempt, response.StatusCode, body, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && attempt < TelegramApiMaxAttempts)
+            {
+                lastStatusCode = 408;
+                lastErrorBody = ex.Message;
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastStatusCode = 408;
+                lastErrorBody = ex.Message;
+                return (false, lastStatusCode, lastErrorBody, 0);
+            }
+            catch (HttpRequestException ex) when (attempt < TelegramApiMaxAttempts)
+            {
+                lastStatusCode = 503;
+                lastErrorBody = ex.Message;
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                lastStatusCode = 503;
+                lastErrorBody = ex.Message;
+                return (false, lastStatusCode, lastErrorBody, 0);
+            }
         }
 
-        return (true, (int)response.StatusCode, string.Empty, ExtractMessageId(body));
+        return (false, lastStatusCode, lastErrorBody, 0);
     }
 
     private async Task<(bool Ok, int StatusCode, string ErrorBody)> EditMessageCoreAsync(
@@ -642,15 +715,56 @@ public sealed class TelegramClient : IDisposable
     )
     {
         var requestBody = BuildTelegramEditBody(chatId, messageId, text, parseMode, enableLinkPreview);
-        using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
-        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
-        if (response.IsSuccessStatusCode)
+        string lastErrorBody = string.Empty;
+        int lastStatusCode = 0;
+        for (var attempt = 1; attempt <= TelegramApiMaxAttempts; attempt += 1)
         {
-            return (true, (int)response.StatusCode, string.Empty);
+            try
+            {
+                using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+                using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return (true, (int)response.StatusCode, string.Empty);
+                }
+
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                lastStatusCode = (int)response.StatusCode;
+                lastErrorBody = errorBody;
+                if (attempt >= TelegramApiMaxAttempts || !ShouldRetryTelegramRequest(response.StatusCode, errorBody))
+                {
+                    return (false, lastStatusCode, lastErrorBody);
+                }
+
+                await DelayTelegramRetryAsync(attempt, response.StatusCode, errorBody, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && attempt < TelegramApiMaxAttempts)
+            {
+                lastStatusCode = 408;
+                lastErrorBody = ex.Message;
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                lastStatusCode = 408;
+                lastErrorBody = ex.Message;
+                return (false, lastStatusCode, lastErrorBody);
+            }
+            catch (HttpRequestException ex) when (attempt < TelegramApiMaxAttempts)
+            {
+                lastStatusCode = 503;
+                lastErrorBody = ex.Message;
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (HttpRequestException ex)
+            {
+                lastStatusCode = 503;
+                lastErrorBody = ex.Message;
+                return (false, lastStatusCode, lastErrorBody);
+            }
         }
 
-        var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-        return (false, (int)response.StatusCode, errorBody);
+        return (false, lastStatusCode, lastErrorBody);
     }
 
     private static string BuildTelegramSendBody(string chatId, string text, string? parseMode, bool enableLinkPreview)
@@ -2060,6 +2174,113 @@ public sealed class TelegramClient : IDisposable
             lastLogTimeUtc = now;
             return true;
         }
+    }
+
+    private async Task<HttpResponseMessage?> GetWithRetryAsync(string endpoint, CancellationToken cancellationToken)
+    {
+        for (var attempt = 1; attempt <= TelegramApiMaxAttempts; attempt += 1)
+        {
+            try
+            {
+                var response = await _httpClient.GetAsync(endpoint, cancellationToken);
+                if (response.IsSuccessStatusCode)
+                {
+                    return response;
+                }
+
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                if (attempt >= TelegramApiMaxAttempts || !ShouldRetryTelegramRequest(response.StatusCode, body))
+                {
+                    return response;
+                }
+
+                response.Dispose();
+                await DelayTelegramRetryAsync(attempt, response.StatusCode, body, cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && attempt < TelegramApiMaxAttempts)
+            {
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                return null;
+            }
+            catch (HttpRequestException) when (attempt < TelegramApiMaxAttempts)
+            {
+                await DelayTelegramRetryAsync(attempt, null, string.Empty, cancellationToken);
+            }
+            catch (HttpRequestException)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool ShouldRetryTelegramRequest(HttpStatusCode? statusCode, string errorBody)
+    {
+        if (statusCode == null)
+        {
+            return true;
+        }
+
+        var numeric = (int)statusCode.Value;
+        return numeric == 429 || numeric >= 500;
+    }
+
+    private static async Task DelayTelegramRetryAsync(int attempt, HttpStatusCode? statusCode, string errorBody, CancellationToken cancellationToken)
+    {
+        var delay = TryGetTelegramRetryAfter(errorBody, out var retryAfter)
+            ? retryAfter
+            : TimeSpan.FromMilliseconds(Math.Min(1000 * Math.Max(1, 1 << (attempt - 1)), 8000));
+
+        if (delay <= TimeSpan.Zero)
+        {
+            delay = TimeSpan.FromMilliseconds(750);
+        }
+
+        await Task.Delay(delay, cancellationToken);
+    }
+
+    private static bool TryGetTelegramRetryAfter(string errorBody, out TimeSpan delay)
+    {
+        delay = TimeSpan.Zero;
+        var normalized = (errorBody ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(normalized);
+            if (!doc.RootElement.TryGetProperty("parameters", out var parametersElement)
+                || parametersElement.ValueKind != JsonValueKind.Object
+                || !parametersElement.TryGetProperty("retry_after", out var retryElement))
+            {
+                return false;
+            }
+
+            int seconds;
+            if (retryElement.ValueKind == JsonValueKind.Number && retryElement.TryGetInt32(out seconds))
+            {
+                delay = TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 60));
+                return true;
+            }
+
+            if (retryElement.ValueKind == JsonValueKind.String
+                && int.TryParse(retryElement.GetString(), out seconds))
+            {
+                delay = TimeSpan.FromSeconds(Math.Clamp(seconds, 1, 60));
+                return true;
+            }
+        }
+        catch
+        {
+        }
+
+        return false;
     }
 
     private async Task<InputAttachment?> DownloadAttachmentAsync(

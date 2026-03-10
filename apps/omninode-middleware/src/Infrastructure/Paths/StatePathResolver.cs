@@ -23,6 +23,7 @@ public interface IStatePathResolver
     string GetNotebookProjectRoot(string projectKey);
     string GetRefactorPreviewRoot();
     string GetRefactorPreviewPath(string previewId);
+    string GetTelegramReplyOutboxPath();
     string GetGlobalSkillsRoot();
     string GetGlobalCommandsRoot();
     string ResolveStateFilePath(string fileName);
@@ -145,6 +146,11 @@ public sealed class DefaultStatePathResolver : IStatePathResolver
     public string GetRefactorPreviewPath(string previewId)
     {
         return Path.Combine(GetRefactorPreviewRoot(), $"{previewId.Trim()}.json");
+    }
+
+    public string GetTelegramReplyOutboxPath()
+    {
+        return ResolveStateFilePath("telegram_reply_outbox.json");
     }
 
     public string GetGlobalSkillsRoot()

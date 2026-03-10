@@ -2,10 +2,12 @@ namespace OmniNode.Middleware;
 
 public sealed class TelegramUpdateLoop
 {
+    private const int TelegramOutboxFlushBatchSize = 4;
     private readonly TelegramClient _telegramClient;
     private readonly ICommandExecutionService _commandService;
     private readonly AppConfig _config;
     private readonly TelegramPollingStateStore _stateStore;
+    private readonly FileTelegramReplyOutboxStore _replyOutboxStore;
     private readonly Dictionary<string, CommandWindow> _commandWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _rateLock = new();
     private long _offset;
@@ -14,13 +16,15 @@ public sealed class TelegramUpdateLoop
         TelegramClient telegramClient,
         ICommandExecutionService commandService,
         AppConfig config,
-        TelegramPollingStateStore stateStore
+        TelegramPollingStateStore stateStore,
+        FileTelegramReplyOutboxStore replyOutboxStore
     )
     {
         _telegramClient = telegramClient;
         _commandService = commandService;
         _config = config;
         _stateStore = stateStore;
+        _replyOutboxStore = replyOutboxStore;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -35,6 +39,8 @@ public sealed class TelegramUpdateLoop
         _offset = Math.Max(0, _stateStore.LoadNextOffset());
         while (!cancellationToken.IsCancellationRequested)
         {
+            await FlushReplyOutboxAsync(cancellationToken);
+
             IReadOnlyList<TelegramUpdate> updates;
 
             try
@@ -76,8 +82,9 @@ public sealed class TelegramUpdateLoop
                     var commandKey = ResolveCommandBucket(update.Text ?? string.Empty);
                     if (!AllowCommand(commandKey))
                     {
-                        await _telegramClient.SendMessageAsync(
+                        await TrySendOrQueueStandaloneMessageAsync(
                             $"rate limit exceeded: {commandKey} 명령 요청이 너무 많습니다. 잠시 후 다시 시도하세요.",
+                            "rate_limit_message_failed",
                             cancellationToken
                         );
                         continue;
@@ -129,7 +136,7 @@ public sealed class TelegramUpdateLoop
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine($"[telegram] handle error: {ex.Message}");
-                    await _telegramClient.SendMessageAsync($"error: {ex.Message}", cancellationToken);
+                    await TrySendOrQueueStandaloneMessageAsync($"error: {ex.Message}", "error_message_failed", cancellationToken);
                 }
                 finally
                 {
@@ -144,13 +151,26 @@ public sealed class TelegramUpdateLoop
         if (progressMessageId.HasValue && progressMessageId.Value > 0)
         {
             var replaceResult = await _telegramClient.ReplaceMessageAsync(progressMessageId.Value, text, cancellationToken);
-            if (replaceResult.Success || replaceResult.FirstChunkDelivered)
+            if (replaceResult.Success)
             {
                 return;
             }
         }
 
-        await _telegramClient.SendMessageAsync(text, cancellationToken);
+        var sent = await _telegramClient.SendMessageAsync(text, cancellationToken);
+        if (!sent)
+        {
+            QueueReplyForRetry(text, progressMessageId.HasValue ? "reply_replace_and_send_failed" : "reply_send_failed");
+        }
+    }
+
+    private async Task TrySendOrQueueStandaloneMessageAsync(string text, string failureReason, CancellationToken cancellationToken)
+    {
+        var sent = await _telegramClient.SendMessageAsync(text, cancellationToken);
+        if (!sent)
+        {
+            QueueReplyForRetry(text, failureReason);
+        }
     }
 
     private Task RunTypingLoopAsync(CancellationToken cancellationToken)
@@ -214,6 +234,37 @@ public sealed class TelegramUpdateLoop
         {
             Console.Error.WriteLine($"[telegram] offset save failed: {ex.Message}");
         }
+    }
+
+    private async Task FlushReplyOutboxAsync(CancellationToken cancellationToken)
+    {
+        var nowUtc = DateTimeOffset.UtcNow;
+        var readyEntries = _replyOutboxStore.GetReadyEntries(nowUtc, TelegramOutboxFlushBatchSize);
+        foreach (var entry in readyEntries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var sent = await _telegramClient.SendMessageAsync(entry.Text, cancellationToken);
+            if (sent)
+            {
+                _replyOutboxStore.MarkDelivered(entry.Id);
+                Console.WriteLine($"[telegram-outbox] delivered id={entry.Id} attempts={entry.AttemptCount + 1}");
+                continue;
+            }
+
+            _replyOutboxStore.MarkFailed(entry.Id, "send_failed", DateTimeOffset.UtcNow);
+        }
+    }
+
+    private void QueueReplyForRetry(string text, string reason)
+    {
+        var id = _replyOutboxStore.Enqueue(text, reason, DateTimeOffset.UtcNow);
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return;
+        }
+
+        Console.Error.WriteLine($"[telegram-outbox] queued id={id} reason={reason}");
     }
 
     private bool IsAuthorizedUpdate(TelegramUpdate update)

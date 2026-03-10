@@ -259,11 +259,13 @@ internal static class Program
             pathResolver.ResolveStateFilePath("telegram_update_offset.txt"),
             pathResolver.ResolveStateFilePath("telegram_update_loop.lock")
         );
+        var telegramReplyOutboxStore = new FileTelegramReplyOutboxStore(pathResolver);
         var telegramUpdateLoop = new TelegramUpdateLoop(
             telegramClient,
             commandExecutionService,
             config,
-            telegramPollingStateStore
+            telegramPollingStateStore,
+            telegramReplyOutboxStore
         );
 
         Console.WriteLine($"[middleware] starting (ws={config.WebSocketPort}, uds={config.CoreSocketPath})");

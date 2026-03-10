@@ -1387,7 +1387,7 @@ public sealed partial class CommandService
 
     private string BuildGeminiUrlContextSummaryPrompt(string input, IReadOnlyList<string> urls)
     {
-        var normalizedInput = (input ?? string.Empty).Trim();
+        var normalizedInput = ResolveImplicitUrlRequest((input ?? string.Empty).Trim(), urls);
         var builder = new StringBuilder();
         builder.AppendLine("너는 URL 컨텍스트 전처리 요약기다.");
         builder.AppendLine("- 제공된 URL 내용만 사용해 후속 LLM이 참고할 요약 블록을 만들어라.");
@@ -1398,7 +1398,7 @@ public sealed partial class CommandService
         builder.AppendLine("- 각 줄은 독립적인 짧은 문장 또는 불릿으로 작성해라.");
         builder.AppendLine();
         builder.AppendLine("사용자 요청:");
-        builder.AppendLine(normalizedInput.Length == 0 ? "URL 내용을 요약해줘." : normalizedInput);
+        builder.AppendLine(normalizedInput.Length == 0 ? "이 URL 내용을 요약해줘." : normalizedInput);
         builder.AppendLine();
         builder.AppendLine("참조 URL:");
         foreach (var url in urls.Take(3))
