@@ -22,7 +22,9 @@ public sealed record LlmMultiChatResult(
     string RequestedSummaryProvider,
     string ResolvedSummaryProvider,
     string CodexText = "",
-    string CodexModel = ""
+    string CodexModel = "",
+    string CommonCore = "",
+    string Differences = ""
 );
 public sealed record InputAttachment(
     string Name,
@@ -153,7 +155,9 @@ public sealed record ConversationMultiResult(
     IReadOnlyList<SearchCitationSentenceMapping>? CitationMappings = null,
     SearchCitationValidationSummary? CitationValidation = null,
     string CodexText = "",
-    string CodexModel = ""
+    string CodexModel = "",
+    string CommonCore = "",
+    string Differences = ""
 );
 public sealed record CodingRunRequest(
     string Input,
@@ -185,7 +189,45 @@ public sealed record CodingWorkerResult(
     string Code,
     string RawResponse,
     CodeExecutionResult Execution,
-    IReadOnlyList<string> ChangedFiles
+    IReadOnlyList<string> ChangedFiles,
+    string Role = "",
+    string Summary = ""
+);
+public sealed record CodingWorkerResultSnapshot(
+    string Provider,
+    string Model,
+    string Language,
+    CodeExecutionResult Execution,
+    IReadOnlyList<string> ChangedFiles,
+    string Role = "",
+    string Summary = ""
+);
+public sealed record ConversationCodingResultSnapshot(
+    string Mode,
+    string ConversationId,
+    string Provider,
+    string Model,
+    string Language,
+    string Summary,
+    CodeExecutionResult Execution,
+    IReadOnlyList<CodingWorkerResultSnapshot> Workers,
+    IReadOnlyList<string> ChangedFiles,
+    string CommonSummary = "",
+    string CommonPoints = "",
+    string Differences = "",
+    string Recommendation = ""
+);
+public sealed record CodingResultExecutionResult(
+    string ConversationId,
+    string Language,
+    string RunMode,
+    bool Ok,
+    string Message,
+    string TargetProvider,
+    string TargetModel,
+    CodeExecutionResult? Execution = null,
+    string PreviewUrl = "",
+    string PreviewEntry = ""
 );
 public sealed record CodingRunResult(
     string Mode,
@@ -206,7 +248,11 @@ public sealed record CodingRunResult(
     SearchCitationValidationSummary? CitationValidation = null,
     int RetryAttempt = 0,
     int RetryMaxAttempts = 0,
-    string RetryStopReason = "-"
+    string RetryStopReason = "-",
+    string CommonSummary = "",
+    string CommonPoints = "",
+    string Differences = "",
+    string Recommendation = ""
 );
 public sealed record WorkspaceFilePreview(string FullPath, string Content);
 public sealed record CodingProgressUpdate(
@@ -571,8 +617,10 @@ internal sealed class TelegramLlmPreferences
     public string OrchestrationProvider { get; set; } = "auto";
     public string OrchestrationModel { get; set; } = string.Empty;
     public string MultiGroqModel { get; set; } = string.Empty;
+    public string MultiGeminiModel { get; set; } = string.Empty;
     public string MultiCopilotModel { get; set; } = string.Empty;
     public string MultiCerebrasModel { get; set; } = string.Empty;
+    public string MultiCodexModel { get; set; } = string.Empty;
     public string MultiSummaryProvider { get; set; } = "auto";
     public string TalkThinkingLevel { get; set; } = "low";
     public string CodeThinkingLevel { get; set; } = "high";
@@ -589,13 +637,85 @@ internal sealed class TelegramLlmPreferences
             OrchestrationProvider = OrchestrationProvider,
             OrchestrationModel = OrchestrationModel,
             MultiGroqModel = MultiGroqModel,
+            MultiGeminiModel = MultiGeminiModel,
             MultiCopilotModel = MultiCopilotModel,
             MultiCerebrasModel = MultiCerebrasModel,
+            MultiCodexModel = MultiCodexModel,
             MultiSummaryProvider = MultiSummaryProvider,
             TalkThinkingLevel = TalkThinkingLevel,
             CodeThinkingLevel = CodeThinkingLevel
             };
         }
+}
+
+internal sealed class TelegramCodingPreferences
+{
+    public string Mode { get; set; } = "orchestration";
+    public string SingleProvider { get; set; } = "copilot";
+    public string SingleModel { get; set; } = string.Empty;
+    public string SingleLanguage { get; set; } = "auto";
+    public string OrchestrationProvider { get; set; } = "auto";
+    public string OrchestrationModel { get; set; } = string.Empty;
+    public string OrchestrationLanguage { get; set; } = "auto";
+    public string OrchestrationGroqModel { get; set; } = string.Empty;
+    public string OrchestrationGeminiModel { get; set; } = string.Empty;
+    public string OrchestrationCerebrasModel { get; set; } = string.Empty;
+    public string OrchestrationCopilotModel { get; set; } = "none";
+    public string OrchestrationCodexModel { get; set; } = "none";
+    public string MultiProvider { get; set; } = "gemini";
+    public string MultiModel { get; set; } = string.Empty;
+    public string MultiLanguage { get; set; } = "auto";
+    public string MultiGroqModel { get; set; } = string.Empty;
+    public string MultiGeminiModel { get; set; } = string.Empty;
+    public string MultiCerebrasModel { get; set; } = string.Empty;
+    public string MultiCopilotModel { get; set; } = "none";
+    public string MultiCodexModel { get; set; } = "none";
+
+    public TelegramCodingPreferences Clone()
+    {
+        return new TelegramCodingPreferences
+        {
+            Mode = Mode,
+            SingleProvider = SingleProvider,
+            SingleModel = SingleModel,
+            SingleLanguage = SingleLanguage,
+            OrchestrationProvider = OrchestrationProvider,
+            OrchestrationModel = OrchestrationModel,
+            OrchestrationLanguage = OrchestrationLanguage,
+            OrchestrationGroqModel = OrchestrationGroqModel,
+            OrchestrationGeminiModel = OrchestrationGeminiModel,
+            OrchestrationCerebrasModel = OrchestrationCerebrasModel,
+            OrchestrationCopilotModel = OrchestrationCopilotModel,
+            OrchestrationCodexModel = OrchestrationCodexModel,
+            MultiProvider = MultiProvider,
+            MultiModel = MultiModel,
+            MultiLanguage = MultiLanguage,
+            MultiGroqModel = MultiGroqModel,
+            MultiGeminiModel = MultiGeminiModel,
+            MultiCerebrasModel = MultiCerebrasModel,
+            MultiCopilotModel = MultiCopilotModel,
+            MultiCodexModel = MultiCodexModel
+        };
+    }
+}
+
+internal sealed class TelegramRefactorSession
+{
+    public string Path { get; set; } = string.Empty;
+    public string PreviewId { get; set; } = string.Empty;
+    public string LastMessage { get; set; } = string.Empty;
+    public string UpdatedAtLocal { get; set; } = string.Empty;
+
+    public TelegramRefactorSession Clone()
+    {
+        return new TelegramRefactorSession
+        {
+            Path = Path,
+            PreviewId = PreviewId,
+            LastMessage = LastMessage,
+            UpdatedAtLocal = UpdatedAtLocal
+        };
+    }
 }
 
 internal sealed class WebLlmPreferences
@@ -608,8 +728,10 @@ internal sealed class WebLlmPreferences
     public string OrchestrationProvider { get; set; } = "auto";
     public string OrchestrationModel { get; set; } = string.Empty;
     public string MultiGroqModel { get; set; } = string.Empty;
+    public string MultiGeminiModel { get; set; } = string.Empty;
     public string MultiCopilotModel { get; set; } = string.Empty;
     public string MultiCerebrasModel { get; set; } = string.Empty;
+    public string MultiCodexModel { get; set; } = string.Empty;
     public string MultiSummaryProvider { get; set; } = "auto";
     public string TalkThinkingLevel { get; set; } = "low";
     public string CodeThinkingLevel { get; set; } = "high";
@@ -626,8 +748,10 @@ internal sealed class WebLlmPreferences
             OrchestrationProvider = OrchestrationProvider,
             OrchestrationModel = OrchestrationModel,
             MultiGroqModel = MultiGroqModel,
+            MultiGeminiModel = MultiGeminiModel,
             MultiCopilotModel = MultiCopilotModel,
             MultiCerebrasModel = MultiCerebrasModel,
+            MultiCodexModel = MultiCodexModel,
             MultiSummaryProvider = MultiSummaryProvider,
             TalkThinkingLevel = TalkThinkingLevel,
             CodeThinkingLevel = CodeThinkingLevel

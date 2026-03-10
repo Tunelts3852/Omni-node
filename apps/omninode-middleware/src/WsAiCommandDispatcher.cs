@@ -33,6 +33,13 @@ internal sealed class WsAiCommandDispatcher
         CancellationToken cancellationToken
     );
 
+    internal delegate Task SendCodingExecutionResultDelegate(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        CodingResultExecutionResult result,
+        CancellationToken cancellationToken
+    );
+
     internal delegate Task SendCodingProgressDelegate(
         WebSocket socket,
         SemaphoreSlim sendLock,
@@ -80,6 +87,7 @@ internal sealed class WsAiCommandDispatcher
     private readonly SendChatResultDelegate _sendChatResultAsync;
     private readonly SendChatStreamChunkDelegate _sendChatStreamChunkAsync;
     private readonly SendCodingResultDelegate _sendCodingResultAsync;
+    private readonly SendCodingExecutionResultDelegate _sendCodingExecutionResultAsync;
     private readonly SendCodingProgressDelegate _sendCodingProgressAsync;
     private readonly SendConversationsDelegate _sendConversationsAsync;
     private readonly SendModelsDelegate _sendGroqModelsAsync;
@@ -98,6 +106,7 @@ internal sealed class WsAiCommandDispatcher
         SendChatResultDelegate sendChatResultAsync,
         SendChatStreamChunkDelegate sendChatStreamChunkAsync,
         SendCodingResultDelegate sendCodingResultAsync,
+        SendCodingExecutionResultDelegate sendCodingExecutionResultAsync,
         SendCodingProgressDelegate sendCodingProgressAsync,
         SendConversationsDelegate sendConversationsAsync,
         SendModelsDelegate sendGroqModelsAsync,
@@ -116,6 +125,7 @@ internal sealed class WsAiCommandDispatcher
         _sendChatResultAsync = sendChatResultAsync;
         _sendChatStreamChunkAsync = sendChatStreamChunkAsync;
         _sendCodingResultAsync = sendCodingResultAsync;
+        _sendCodingExecutionResultAsync = sendCodingExecutionResultAsync;
         _sendCodingProgressAsync = sendCodingProgressAsync;
         _sendConversationsAsync = sendConversationsAsync;
         _sendGroqModelsAsync = sendGroqModelsAsync;
@@ -504,6 +514,46 @@ internal sealed class WsAiCommandDispatcher
                     socket,
                     sendLock,
                     "coding_multi failed: " + ex.Message,
+                    cancellationToken
+                );
+            }
+
+            return true;
+        }
+
+        if (message.Type == "coding_execute_result")
+        {
+            if (string.IsNullOrWhiteSpace(message.ConversationId))
+            {
+                await WebSocketGateway.SendTextAsync(
+                    socket,
+                    sendLock,
+                    "{\"type\":\"coding_execute_result\",\"ok\":false,\"message\":\"conversationId가 필요합니다.\"}",
+                    cancellationToken
+                );
+                return true;
+            }
+
+            try
+            {
+                var executionResult = await _codingService.ExecuteLatestCodingResultAsync(
+                    message.ConversationId,
+                    message.StandardInput,
+                    cancellationToken
+                );
+                await _sendCodingExecutionResultAsync(socket, sendLock, executionResult, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await WebSocketGateway.SendTextAsync(
+                    socket,
+                    sendLock,
+                    "{"
+                    + "\"type\":\"coding_execute_result\","
+                    + "\"ok\":false,"
+                    + $"\"conversationId\":\"{WebSocketGateway.EscapeJson(message.ConversationId ?? string.Empty)}\","
+                    + $"\"message\":\"{WebSocketGateway.EscapeJson(ex.Message)}\""
+                    + "}",
                     cancellationToken
                 );
             }

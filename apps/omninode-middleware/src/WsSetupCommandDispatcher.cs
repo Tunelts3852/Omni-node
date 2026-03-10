@@ -1,5 +1,4 @@
 using System.Net.WebSockets;
-
 namespace OmniNode.Middleware;
 
 internal sealed class WsSetupCommandDispatcher
@@ -11,6 +10,8 @@ internal sealed class WsSetupCommandDispatcher
     private readonly Func<WebSocket, SemaphoreSlim, CancellationToken, Task> _sendGroqModelsAsync;
     private readonly Func<WebSocket, SemaphoreSlim, CancellationToken, Task> _sendCopilotModelsAsync;
     private readonly Func<WebSocket, SemaphoreSlim, CancellationToken, bool, Task> _sendUsageStatsAsync;
+    private readonly Func<WebSocket, SemaphoreSlim, string, RoutingPolicyActionResult, CancellationToken, Task> _sendRoutingPolicyResultAsync;
+    private readonly Func<WebSocket, SemaphoreSlim, RoutingDecision?, CancellationToken, Task> _sendRoutingDecisionAsync;
 
     public WsSetupCommandDispatcher(
         ISettingsApplicationService settingsService,
@@ -19,7 +20,9 @@ internal sealed class WsSetupCommandDispatcher
         Func<WebSocket, SemaphoreSlim, CancellationToken, Task> sendSettingsStateAsync,
         Func<WebSocket, SemaphoreSlim, CancellationToken, Task> sendGroqModelsAsync,
         Func<WebSocket, SemaphoreSlim, CancellationToken, Task> sendCopilotModelsAsync,
-        Func<WebSocket, SemaphoreSlim, CancellationToken, bool, Task> sendUsageStatsAsync
+        Func<WebSocket, SemaphoreSlim, CancellationToken, bool, Task> sendUsageStatsAsync,
+        Func<WebSocket, SemaphoreSlim, string, RoutingPolicyActionResult, CancellationToken, Task> sendRoutingPolicyResultAsync,
+        Func<WebSocket, SemaphoreSlim, RoutingDecision?, CancellationToken, Task> sendRoutingDecisionAsync
     )
     {
         _settingsService = settingsService;
@@ -29,6 +32,8 @@ internal sealed class WsSetupCommandDispatcher
         _sendGroqModelsAsync = sendGroqModelsAsync;
         _sendCopilotModelsAsync = sendCopilotModelsAsync;
         _sendUsageStatsAsync = sendUsageStatsAsync;
+        _sendRoutingPolicyResultAsync = sendRoutingPolicyResultAsync;
+        _sendRoutingDecisionAsync = sendRoutingDecisionAsync;
     }
 
     public async Task<bool> TryHandleAsync(
@@ -41,6 +46,59 @@ internal sealed class WsSetupCommandDispatcher
         if (message.Type == "get_settings" || message.Type == "get_setup_state")
         {
             await _sendSettingsStateAsync(socket, sendLock, cancellationToken);
+            return true;
+        }
+
+        if (message.Type == "routing_policy_get")
+        {
+            await _sendRoutingPolicyResultAsync(
+                socket,
+                sendLock,
+                "get",
+                _settingsService.GetRoutingPolicySnapshot(),
+                cancellationToken
+            );
+            return true;
+        }
+
+        if (message.Type == "routing_policy_save")
+        {
+            RoutingPolicy? policy = null;
+            if (!string.IsNullOrWhiteSpace(message.RoutingPolicyJson))
+            {
+                policy = RoutingPolicyJson.DeserializePolicy(message.RoutingPolicyJson);
+            }
+
+            await _sendRoutingPolicyResultAsync(
+                socket,
+                sendLock,
+                "save",
+                _settingsService.SaveRoutingPolicy(policy),
+                cancellationToken
+            );
+            return true;
+        }
+
+        if (message.Type == "routing_policy_reset")
+        {
+            await _sendRoutingPolicyResultAsync(
+                socket,
+                sendLock,
+                "reset",
+                _settingsService.ResetRoutingPolicy(),
+                cancellationToken
+            );
+            return true;
+        }
+
+        if (message.Type == "routing_decision_get_last")
+        {
+            await _sendRoutingDecisionAsync(
+                socket,
+                sendLock,
+                _settingsService.GetLastRoutingDecision(),
+                cancellationToken
+            );
             return true;
         }
 

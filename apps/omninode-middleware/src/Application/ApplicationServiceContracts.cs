@@ -17,6 +17,10 @@ public interface ICommandExecutionService
 public interface ISettingsApplicationService
 {
     SettingsSnapshot GetSettingsSnapshot();
+    RoutingPolicyActionResult GetRoutingPolicySnapshot();
+    RoutingPolicyActionResult SaveRoutingPolicy(RoutingPolicy? policy);
+    RoutingPolicyActionResult ResetRoutingPolicy();
+    RoutingDecision? GetLastRoutingDecision();
     string UpdateTelegramCredentials(string? botToken, string? chatId, bool persist);
     string UpdateLlmCredentials(
         string? groqApiKey,
@@ -45,6 +49,82 @@ public interface ISettingsApplicationService
     bool TrySetSelectedCopilotModel(string modelId);
 }
 
+public interface IDoctorApplicationService
+{
+    Task<DoctorReport> RunDoctorAsync(CancellationToken cancellationToken);
+    Task<DoctorReport?> GetLastDoctorReportAsync(CancellationToken cancellationToken);
+}
+
+public interface IPlanningApplicationService
+{
+    Task<PlanActionResult> CreatePlanAsync(
+        string objective,
+        IReadOnlyList<string>? constraints,
+        string? mode,
+        string? sourceConversationId,
+        CancellationToken cancellationToken
+    );
+    Task<PlanActionResult> ReviewPlanAsync(string planId, CancellationToken cancellationToken);
+    PlanActionResult ApprovePlan(string planId);
+    PlanListResult ListPlans();
+    PlanSnapshot? GetPlan(string planId);
+    Task<PlanActionResult> RunPlanAsync(string planId, string source, CancellationToken cancellationToken);
+}
+
+public interface ITaskGraphApplicationService
+{
+    TaskGraphActionResult CreateTaskGraph(string planId);
+    TaskGraphListResult ListTaskGraphs();
+    TaskGraphSnapshot? GetTaskGraph(string graphId);
+    Task<TaskGraphActionResult> RunTaskGraphAsync(
+        string graphId,
+        string source,
+        TaskGraphEventSink? eventSink,
+        CancellationToken cancellationToken
+    );
+    TaskGraphActionResult CancelTask(string graphId, string taskId);
+    TaskOutputResult? GetTaskOutput(string graphId, string taskId);
+}
+
+public interface IRefactorApplicationService
+{
+    Task<RefactorActionResult> ReadWithAnchorsAsync(string path, CancellationToken cancellationToken);
+    Task<RefactorActionResult> PreviewRefactorAsync(
+        string path,
+        IReadOnlyList<AnchorEditRequest>? edits,
+        CancellationToken cancellationToken
+    );
+    Task<RefactorActionResult> ApplyRefactorAsync(string previewId, CancellationToken cancellationToken);
+    Task<RefactorActionResult> RunLspRenameAsync(
+        string path,
+        string symbol,
+        string newName,
+        CancellationToken cancellationToken
+    );
+    Task<RefactorActionResult> RunAstReplaceAsync(
+        string path,
+        string pattern,
+        string replacement,
+        CancellationToken cancellationToken
+    );
+}
+
+public interface IContextApplicationService
+{
+    Task<ProjectContextSnapshot> ScanProjectContextAsync(CancellationToken cancellationToken);
+    Task<SkillManifestListResult> ListSkillsAsync(CancellationToken cancellationToken);
+    Task<CommandTemplateListResult> ListCommandsAsync(CancellationToken cancellationToken);
+}
+
+public interface INotebookApplicationService
+{
+    Task<NotebookActionResult> GetNotebookAsync(string? projectKey, CancellationToken cancellationToken);
+    Task<NotebookActionResult> AppendLearningAsync(string? projectKey, string content, CancellationToken cancellationToken);
+    Task<NotebookActionResult> AppendDecisionAsync(string? projectKey, string content, CancellationToken cancellationToken);
+    Task<NotebookActionResult> AppendVerificationAsync(string? projectKey, string content, CancellationToken cancellationToken);
+    Task<NotebookActionResult> CreateHandoffAsync(string? projectKey, CancellationToken cancellationToken);
+}
+
 public interface IConversationApplicationService
 {
     IReadOnlyList<ConversationThreadSummary> ListConversations(string scope, string mode);
@@ -66,6 +146,7 @@ public interface IConversationApplicationService
         IReadOnlyList<string>? tags
     );
     WorkspaceFilePreview? ReadWorkspaceFile(string filePath, int maxChars = 120_000);
+    WorkspaceFilePreview? ReadWorkspaceFile(string filePath, string? conversationId, int maxChars = 120_000);
 }
 
 public interface IMemoryApplicationService
@@ -282,6 +363,11 @@ public interface ICodingApplicationService
         CancellationToken cancellationToken,
         Action<CodingProgressUpdate>? progressCallback = null
     );
+    Task<CodingResultExecutionResult> ExecuteLatestCodingResultAsync(
+        string conversationId,
+        string? standardInput,
+        CancellationToken cancellationToken
+    );
 }
 
 public interface IGatewayApplicationService :
@@ -290,6 +376,10 @@ public interface IGatewayApplicationService :
     IConversationApplicationService,
     IMemoryApplicationService,
     IToolApplicationService,
+    ITaskGraphApplicationService,
+    IRefactorApplicationService,
+    IContextApplicationService,
+    INotebookApplicationService,
     IRoutineApplicationService,
     IChatApplicationService,
     ICodingApplicationService

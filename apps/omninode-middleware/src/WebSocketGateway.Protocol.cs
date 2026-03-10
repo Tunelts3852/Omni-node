@@ -332,10 +332,20 @@ public sealed partial class WebSocketGateway
         public string? Profile { get; set; }
         public string? OutputFormat { get; set; }
         public string? ConversationId { get; set; }
+        public string? StandardInput { get; set; }
         public string? ConversationTitle { get; set; }
         public string? Project { get; set; }
+        public string? ProjectKey { get; set; }
         public string? Category { get; set; }
+        public string? Kind { get; set; }
+        public string? PlanId { get; set; }
+        public string? GraphId { get; set; }
+        public string? TaskId { get; set; }
+        public string? PreviewId { get; set; }
         public string? Language { get; set; }
+        public string? Symbol { get; set; }
+        public string? Pattern { get; set; }
+        public string? Replacement { get; set; }
         public string? NoteName { get; set; }
         public string? NewName { get; set; }
         public string? FilePath { get; set; }
@@ -355,6 +365,8 @@ public sealed partial class WebSocketGateway
         public string? GeminiApiKey { get; set; }
         public string? CerebrasApiKey { get; set; }
         public string? CodexApiKey { get; set; }
+        public string? RoutingPolicyJson { get; set; }
+        public string? RefactorEditsJson { get; set; }
         public int? AuthTtlHours { get; set; }
         public int? TimeoutSeconds { get; set; }
         public int? RunTimeoutSeconds { get; set; }
@@ -381,6 +393,7 @@ public sealed partial class WebSocketGateway
         public bool? IncludeTools { get; set; }
         public bool? Thread { get; set; }
         public IReadOnlyList<string> Tags { get; set; } = Array.Empty<string>();
+        public IReadOnlyList<string> Constraints { get; set; } = Array.Empty<string>();
         public IReadOnlyList<string> Kinds { get; set; } = Array.Empty<string>();
         public IReadOnlyList<int> Weekdays { get; set; } = Array.Empty<int>();
         public IReadOnlyList<string> MemoryNotes { get; set; } = Array.Empty<string>();

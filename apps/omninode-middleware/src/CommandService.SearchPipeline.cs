@@ -37,8 +37,17 @@ public sealed partial class CommandService
     )
     {
         var normalizedInput = (input ?? string.Empty).Trim();
-        var normalizedProvider = NormalizeProvider(provider, allowAuto: false);
-        var resolvedModel = ResolveModel(normalizedProvider, model);
+        var requestedProvider = NormalizeProvider(provider, allowAuto: true);
+        var normalizedProvider = requestedProvider == "auto"
+            ? await ResolveCategoryProviderAsync(
+                TaskCategory.SearchTimeSensitive,
+                requestedProvider,
+                null,
+                cancellationToken,
+                "search_need_web"
+            )
+            : NormalizeProvider(provider, allowAuto: false);
+        var resolvedModel = ResolveModelForCategory(TaskCategory.SearchTimeSensitive, normalizedProvider, model);
         if (normalizedInput.Length == 0)
         {
             return new WebNeedDecisionResult(false, true, "empty_input", normalizedProvider, resolvedModel);
@@ -629,9 +638,7 @@ public sealed partial class CommandService
 
     private static bool IsGeminiWebListSourceBlock(string value)
     {
-        var trimmed = (value ?? string.Empty).Trim();
-        return trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("**출처:**", StringComparison.OrdinalIgnoreCase);
+        return IsDisplaySourceLine(value);
     }
 
     private static string NormalizeCollapsedWebBulletRuns(string text)
@@ -681,7 +688,7 @@ public sealed partial class CommandService
                 continue;
             }
 
-            if (trimmed.StartsWith("출처 링크:", StringComparison.OrdinalIgnoreCase))
+            if (Regex.IsMatch(trimmed, @"^\s*출처\s*링크\s*[:：]", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
             {
                 skipImmediateUrl = true;
                 continue;
@@ -697,11 +704,12 @@ public sealed partial class CommandService
 
             skipImmediateUrl = false;
 
-            if (trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractDisplaySourceLineValue(trimmed, out var sourceLineValue))
             {
-                var cleanedSource = Regex.Replace(trimmed["출처:".Length..].Trim(), @"https?://\S+", string.Empty);
+                var cleanedSource = Regex.Replace(sourceLineValue, @"https?://\S+", string.Empty);
                 cleanedSource = cleanedSource.Replace("**", string.Empty, StringComparison.Ordinal);
                 cleanedSource = Regex.Replace(cleanedSource, @"\s{2,}", " ").Trim().Trim(',', ';', '|', '/');
+                cleanedSource = FilterVisibleDisplaySourceLine(cleanedSource);
                 if (cleanedSource.Length == 0)
                 {
                     continue;
@@ -713,7 +721,7 @@ public sealed partial class CommandService
 
             if (isRawUrlLine
                 && output.Count > 0
-                && output[^1].StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+                && IsDisplaySourceLine(output[^1]))
             {
                 continue;
             }
@@ -826,7 +834,7 @@ public sealed partial class CommandService
             || trimmed.StartsWith("요약:", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("핵심:", StringComparison.OrdinalIgnoreCase)
             || trimmed.StartsWith("**핵심:**", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            || IsDisplaySourceLine(trimmed))
         {
             return false;
         }
@@ -1113,10 +1121,7 @@ public sealed partial class CommandService
             output.Add($"| {row.Key} | {row.Value} |");
         }
 
-        var distinctSources = sourceNames
-            .Select(value => value.Trim())
-            .Where(value => value.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var distinctSources = FilterVisibleDisplaySources(sourceNames)
             .ToList();
         if (distinctSources.Count > 0)
         {
@@ -1508,10 +1513,7 @@ public sealed partial class CommandService
 
         rebuilt.AddRange(afterLines);
 
-        var distinctSources = sourceNames
-            .Select(value => value.Trim())
-            .Where(value => value.Length > 0)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var distinctSources = FilterVisibleDisplaySources(sourceNames)
             .ToList();
 
         if (distinctSources.Count > 0)
@@ -2481,10 +2483,14 @@ public sealed partial class CommandService
             );
         }
 
-        var provider = _llmRouter.HasGeminiApiKey()
-            ? "gemini"
-            : string.Empty;
-        if (provider.Length == 0)
+        var provider = await ResolveCategoryProviderAsync(
+            TaskCategory.SearchTimeSensitive,
+            "auto",
+            null,
+            cancellationToken,
+            "search_requirement"
+        );
+        if (provider.Length == 0 || provider == "none")
         {
             var fallbackDecision = LooksLikeExplicitWebLookupQuestion(normalized) || LooksLikeRealtimeQuestion(normalized);
             return new SearchRequirementDecision(
@@ -2495,7 +2501,7 @@ public sealed partial class CommandService
             );
         }
 
-        var model = ResolveSearchLlmModel();
+        var model = ResolveModelForCategory(TaskCategory.SearchTimeSensitive, provider, null);
         var prompt = $"""
                       사용자의 입력을 보고 웹 검색 필요 여부와 소스 제약 의도를 JSON으로 판단하세요.
                       기준:
@@ -2528,7 +2534,7 @@ public sealed partial class CommandService
         {
             return new SearchRequirementDecision(
                 parsedNeedWeb,
-                parsedNeedWeb ? $"llm:true:{provider}:{decision.Model}" : $"llm:false:{provider}:{decision.Model}",
+                parsedNeedWeb ? $"llm:true:{decision.Provider}:{decision.Model}" : $"llm:false:{decision.Provider}:{decision.Model}",
                 parsedSourceFocus,
                 parsedSourceDomain
             );

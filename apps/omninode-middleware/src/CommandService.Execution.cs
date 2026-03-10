@@ -63,6 +63,21 @@ public sealed partial class CommandService
                 return """
                        Omni-node commands
                        /metrics
+                       /doctor
+                       /doctor json
+                       /plan list
+                       /plan create <요청>
+                       /plan review <plan-id>
+                       /plan approve <plan-id>
+                       /plan run <plan-id>
+                       /task list
+                       /task create <plan-id>
+                       /task status <graph-id>
+                       /task run <graph-id>
+                       /task cancel <graph-id> <task-id>
+                       /notebook show [project-key]
+                       /notebook append <learning|decision|verification> <내용>
+                       /handoff [project-key]
                        /kill <pid>
                        /code <instruction>
                        /profile <talk|code> [low|high]
@@ -86,6 +101,18 @@ public sealed partial class CommandService
 
             if (source.Equals("telegram", StringComparison.OrdinalIgnoreCase))
             {
+                var codingCommandResult = await TryHandleTelegramCodingCommandAsync(text, attachments, webUrls, webSearchEnabled, cancellationToken);
+                if (codingCommandResult != null)
+                {
+                    return codingCommandResult;
+                }
+
+                var refactorCommandResult = await TryHandleTelegramRefactorCommandAsync(text, cancellationToken);
+                if (refactorCommandResult != null)
+                {
+                    return refactorCommandResult;
+                }
+
                 var profileResult = await TryHandleTelegramProfileCommandAsync(text, cancellationToken);
                 if (profileResult != null)
                 {
@@ -104,6 +131,30 @@ public sealed partial class CommandService
                     return llmCommandResult;
                 }
 
+                var doctorCommandResult = await TryHandleTelegramDoctorCommandAsync(text, cancellationToken);
+                if (doctorCommandResult != null)
+                {
+                    return doctorCommandResult;
+                }
+
+                var planCommandResult = await TryHandleTelegramPlanCommandAsync(text, cancellationToken);
+                if (planCommandResult != null)
+                {
+                    return planCommandResult;
+                }
+
+                var taskCommandResult = await TryHandleTelegramTaskCommandAsync(text, cancellationToken);
+                if (taskCommandResult != null)
+                {
+                    return taskCommandResult;
+                }
+
+                var notebookCommandResult = await TryHandleTelegramNotebookCommandAsync(text, cancellationToken);
+                if (notebookCommandResult != null)
+                {
+                    return notebookCommandResult;
+                }
+
                 var memoryCommandResult = await TryHandleTelegramMemoryCommandAsync(text, cancellationToken);
                 if (memoryCommandResult != null)
                 {
@@ -119,7 +170,14 @@ public sealed partial class CommandService
 
             if (!text.StartsWith("/", StringComparison.Ordinal))
             {
-                var naturalByLlmResult = await TryHandleNaturalCommandByLlmAsync(source, text, cancellationToken);
+                var naturalByLlmResult = await TryHandleNaturalCommandByLlmAsync(
+                    source,
+                    text,
+                    attachments,
+                    webUrls,
+                    webSearchEnabled,
+                    cancellationToken
+                );
                 if (naturalByLlmResult != null)
                 {
                     return naturalByLlmResult;
@@ -127,7 +185,13 @@ public sealed partial class CommandService
 
                 if (source.Equals("telegram", StringComparison.OrdinalIgnoreCase))
                 {
-                    var legacyNaturalControlResult = await TryHandleTelegramNaturalControlCommandAsync(text, cancellationToken);
+                    var legacyNaturalControlResult = await TryHandleTelegramNaturalControlCommandAsync(
+                        text,
+                        attachments,
+                        webUrls,
+                        webSearchEnabled,
+                        cancellationToken
+                    );
                     if (legacyNaturalControlResult != null)
                     {
                         return legacyNaturalControlResult;

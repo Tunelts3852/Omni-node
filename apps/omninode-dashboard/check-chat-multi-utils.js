@@ -2,12 +2,15 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
+  MULTI_COMPARE_PREFIX,
   normalizeChatMultiResultMessage,
   buildChatMultiDisplayLabels,
+  normalizeSummarySections,
+  parseChatMultiComparisonMessage,
   buildChatMultiRenderSnapshot
 } = require("./chat-multi-utils.js");
 
-const gatewaySourcePath = path.resolve(__dirname, "../omninode-middleware/src/WebSocketGateway.cs");
+const gatewaySourcePath = path.resolve(__dirname, "../omninode-middleware/src/WebSocketGateway.Serialization.cs");
 const expectedGatewayKeys = [
   "type",
   "conversationId",
@@ -15,11 +18,16 @@ const expectedGatewayKeys = [
   "gemini",
   "cerebras",
   "copilot",
+  "codex",
   "summary",
+  "commonSummary",
+  "commonCore",
+  "differences",
   "groqModel",
   "geminiModel",
   "cerebrasModel",
   "copilotModel",
+  "codexModel",
   "requestedSummaryProvider",
   "resolvedSummaryProvider",
   "conversation",
@@ -68,11 +76,16 @@ function run() {
     gemini: "ge",
     cerebras: "c",
     copilot: "co",
+    codex: "cx",
     summary: "sum",
+    commonSummary: "sum",
+    commonCore: "- 공통 1",
+    differences: "- 차이 1",
     groqModel: " openai/gpt-oss-120b ",
     geminiModel: " gemini-3-flash-preview ",
     cerebrasModel: " zai-glm-4.7 ",
     copilotModel: " gpt-5 ",
+    codexModel: " codex-mini ",
     requestedSummaryProvider: " auto ",
     resolvedSummaryProvider: " gemini ",
     conversation: { id: "conv-001", scope: "chat", mode: "multi", messages: [] },
@@ -85,56 +98,85 @@ function run() {
   assert.equal(normalized.geminiModel, "gemini-3-flash-preview");
   assert.equal(normalized.cerebrasModel, "zai-glm-4.7");
   assert.equal(normalized.copilotModel, "gpt-5");
+  assert.equal(normalized.codexModel, "codex-mini");
   assert.equal(normalized.requestedSummaryProvider, "auto");
   assert.equal(normalized.resolvedSummaryProvider, "gemini");
+  assert.equal(normalized.commonSummary, "sum");
+  assert.equal(normalized.commonCore, "- 공통 1");
+  assert.equal(normalized.differences, "- 차이 1");
 
   const labels = buildChatMultiDisplayLabels(normalized);
   assert.equal(labels.groqLabel, "Groq (openai/gpt-oss-120b)");
   assert.equal(labels.geminiLabel, "Gemini (gemini-3-flash-preview)");
   assert.equal(labels.cerebrasLabel, "Cerebras (zai-glm-4.7)");
   assert.equal(labels.copilotLabel, "Copilot (gpt-5)");
+  assert.equal(labels.codexLabel, "Codex (codex-mini)");
   assert.equal(labels.summaryLabel, "요약 (요청=auto, 실제=gemini)");
+
+  const summarySections = normalizeSummarySections(payload);
+  assert.deepEqual(
+    summarySections.map((section) => section.title),
+    ["공통 요약", "공통 핵심", "부분 차이"]
+  );
+  assert.deepEqual(
+    summarySections.map((section) => section.body),
+    ["sum", "- 공통 1", "- 차이 1"]
+  );
+
+  const comparisonPayload = `${MULTI_COMPARE_PREFIX}${JSON.stringify({
+    entries: [
+      { provider: "groq", model: "openai/gpt-oss-120b", text: "g" },
+      { provider: "codex", model: "codex-mini", text: "cx" }
+    ]
+  })}`;
+  const comparison = parseChatMultiComparisonMessage(comparisonPayload);
+  assert.ok(comparison, "비교 payload 파싱 결과가 null이면 안 됩니다.");
+  assert.deepEqual(
+    comparison.entries.map((entry) => entry.heading),
+    ["Groq (openai/gpt-oss-120b)", "Codex (codex-mini)"]
+  );
 
   const snapshot = buildChatMultiRenderSnapshot(payload);
   assert.deepEqual(
-    snapshot.sections.map((section) => section.provider),
-    ["groq", "gemini", "cerebras", "copilot", "summary"]
+    snapshot.entries.map((section) => section.provider),
+    ["groq", "gemini", "cerebras", "copilot", "codex"]
   );
   assert.deepEqual(
-    snapshot.sections.map((section) => section.heading),
+    snapshot.entries.map((section) => section.heading),
     [
       "Groq (openai/gpt-oss-120b)",
       "Gemini (gemini-3-flash-preview)",
       "Cerebras (zai-glm-4.7)",
       "Copilot (gpt-5)",
-      "요약 (요청=auto, 실제=gemini)"
+      "Codex (codex-mini)"
     ]
   );
   assert.deepEqual(
-    snapshot.sections.map((section) => section.body),
-    ["g", "ge", "c", "co", "sum"]
+    snapshot.summarySections.map((section) => section.body),
+    ["sum", "- 공통 1", "- 차이 1"]
   );
 
   const fallbackSnapshot = buildChatMultiRenderSnapshot({});
   assert.deepEqual(
-    fallbackSnapshot.sections.map((section) => section.heading),
-    ["Groq", "Gemini", "Cerebras", "Copilot", "요약"]
+    fallbackSnapshot.summarySections.map((section) => section.title),
+    ["공통 요약", "공통 핵심", "부분 차이"]
   );
   assert.deepEqual(
-    fallbackSnapshot.sections.map((section) => section.body),
-    ["-", "-", "-", "-", "-"]
+    fallbackSnapshot.summarySections.map((section) => section.body),
+    ["공통 요약이 없습니다.", "공통점 없음", "의미 있는 차이 없음"]
   );
 
   console.log(
     JSON.stringify(
       {
         ok: true,
-        cases: 4,
+        cases: 6,
         gatewaySourcePath,
         gatewayKeys: gatewayContract.keys,
         gatewayExtraKeys: gatewayContract.extraKeys,
         summaryLabel: labels.summaryLabel,
-        fallbackSummaryLabel: fallbackSnapshot.labels.summaryLabel
+        fallbackSummaryLabel: fallbackSnapshot.labels.summaryLabel,
+        comparisonPrefix: MULTI_COMPARE_PREFIX
       },
       null,
       2

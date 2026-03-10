@@ -17,6 +17,40 @@ public sealed partial class CommandService
     private static readonly Regex PythonFromImportRegex = new("^\\s*from\\s+(?<mod>[A-Za-z0-9_.]+)\\s+import\\s+", RegexOptions.Compiled | RegexOptions.Multiline);
     private static readonly Regex NodeImportRegex = new("from\\s+['\\\"](?<mod>[^'\\\"]+)['\\\"]|require\\(\\s*['\\\"](?<mod2>[^'\\\"]+)['\\\"]\\s*\\)|import\\(\\s*['\\\"](?<mod3>[^'\\\"]+)['\\\"]\\s*\\)", RegexOptions.Compiled);
     private static readonly Regex ShellTokenRegex = new("'(?<sq>[^']*)'|\"(?<dq>[^\"]*)\"|(?<bare>[^\\s]+)", RegexOptions.Compiled);
+    private static readonly Dictionary<string, string> PythonCliPackageMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["black"] = "black",
+        ["django-admin"] = "django",
+        ["flask"] = "flask",
+        ["gradio"] = "gradio",
+        ["gunicorn"] = "gunicorn",
+        ["jupyter"] = "jupyterlab",
+        ["pytest"] = "pytest",
+        ["ruff"] = "ruff",
+        ["streamlit"] = "streamlit",
+        ["uvicorn"] = "uvicorn"
+    };
+    private static readonly Dictionary<string, string> NodeCliPackageMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["next"] = "next",
+        ["nodemon"] = "nodemon",
+        ["parcel"] = "parcel",
+        ["react-scripts"] = "react-scripts",
+        ["serve"] = "serve",
+        ["ts-node"] = "ts-node",
+        ["tsx"] = "tsx",
+        ["vite"] = "vite",
+        ["webpack"] = "webpack",
+        ["webpack-dev-server"] = "webpack-dev-server"
+    };
+    private static readonly HashSet<string> PythonCommandPrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "black","flask","gradio","gunicorn","jupyter","pip","pip3","py","py.test","pytest","python","python3","ruff","streamlit","uvicorn"
+    };
+    private static readonly HashSet<string> NodeCommandPrefixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "next","node","nodemon","npm","npx","parcel","pnpm","react-scripts","serve","ts-node","tsx","vite","webpack","webpack-dev-server","yarn"
+    };
     private static readonly Dictionary<string, string> PythonModulePackageMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["cv2"] = "opencv-python",
@@ -30,12 +64,12 @@ public sealed partial class CommandService
     private static readonly HashSet<string> PythonStdlibModules = new(StringComparer.OrdinalIgnoreCase)
     {
         "abc","argparse","array","asyncio","base64","binascii","bisect","calendar","cmath","collections","concurrent","contextlib",
-        "copy","csv","ctypes","dataclasses","datetime","decimal","difflib","dis","email","enum","errno","faulthandler","fnmatch",
+        "copy","csv","ctypes","curses","dataclasses","datetime","decimal","difflib","dis","email","enum","errno","faulthandler","fnmatch",
         "fractions","functools","gc","getopt","getpass","gettext","glob","gzip","hashlib","heapq","hmac","html","http","imaplib",
         "importlib","inspect","io","ipaddress","itertools","json","linecache","locale","logging","lzma","math","mimetypes","multiprocessing",
         "numbers","operator","os","pathlib","pickle","pkgutil","platform","plistlib","pprint","queue","random","re","sched","secrets","select",
         "selectors","shelve","shlex","shutil","signal","site","socket","sqlite3","ssl","stat","statistics","string","stringprep","struct",
-        "subprocess","sys","sysconfig","tarfile","tempfile","textwrap","threading","time","timeit","tkinter","_tkinter","tokenize","traceback","types","typing",
+        "subprocess","sys","sysconfig","tarfile","tempfile","textwrap","threading","time","timeit","tkinter","_tkinter","tokenize","traceback","turtle","types","typing",
         "unittest","urllib","uuid","venv","warnings","wave","weakref","webbrowser","xml","xmlrpc","zipfile","zoneinfo","zlib"
     };
     private static readonly HashSet<string> NodeBuiltinModules = new(StringComparer.OrdinalIgnoreCase)
@@ -46,7 +80,7 @@ public sealed partial class CommandService
     };
     private static readonly HashSet<string> ProgramInstallDenyList = new(StringComparer.OrdinalIgnoreCase)
     {
-        "bash","sh","zsh","sudo","env","python","python3","node","npm","npx","dotnet","java","javac","kotlinc","cc","c++","gcc","g++","git","ls","cat","echo","pwd"
+        "bash","sh","zsh","sudo","env","python","python3","pip","pip3","node","npm","npx","pnpm","yarn","dotnet","java","javac","kotlinc","cc","c++","gcc","g++","git","ls","cat","echo","pwd"
     };
     private static readonly Regex MarkdownTableSeparatorCandidateRegex = new(
         @"^\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]+\s*(\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]+\s*)+\|$",
@@ -56,6 +90,42 @@ public sealed partial class CommandService
         @"^:?-+:?$",
         RegexOptions.Compiled
     );
+    private static readonly Regex RequestedCodingPathRegex = new(
+        @"(?<path>(?:(?:[A-Za-z]:)?[\\/])?(?:[\w.-]+[\\/])*(?:[\w.-]+\.)+(?:json|html|java|tsx|jsx|mjs|cjs|cpp|cxx|hpp|htm|css|txt|md|py|ts|js|cs|kt|sh|cc|hh|h|c))(?![\w.-])",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private static readonly Regex ExpectedOutputAfterQuotedRegex = new(
+        "['\\\"`](?<value>[^'\\\"`\\r\\n]{1,160})['\\\"`]\\s*(?:를|을)?\\s*(?:출력|print|echo|표시)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private static readonly Regex ExpectedOutputBeforeQuotedRegex = new(
+        "(?:출력|print|echo|표시)[^'\\\"`\\r\\n]{0,32}['\\\"`](?<value>[^'\\\"`\\r\\n]{1,160})['\\\"`]",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private static readonly Regex GenericQuotedTextRegex = new(
+        "['\\\"`](?<value>[^'\\\"`\\r\\n]{1,160})['\\\"`]",
+        RegexOptions.Compiled
+    );
+    private static readonly Regex ExplicitShellExecutionCommandRegex = new(
+        "(?<cmd>node|python3?|bash)\\s+(?<path>(?:\\.{0,2}[\\\\/])?(?:[\\w.-]+[\\\\/])*(?:[\\w.-]+\\.)+(?:py|js|mjs|cjs|sh))",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private static readonly Regex ExplicitExecutionTargetRegex = new(
+        "(?<path>(?:\\.{0,2}[\\\\/])?(?:[\\w.-]+[\\\\/])*(?:[\\w.-]+\\.)+(?:py|js|mjs|cjs|sh))\\s*(?:를|을)?\\s*(?:직접\\s*)?(?:실행(?:\\s*시|\\s*해서|\\s*해|\\s*결과|\\s*후)?|run\\b)",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase
+    );
+    private static readonly HashSet<string> GenericCodingFallbackFileNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "main.py",
+        "main.js",
+        "main.c",
+        "main.cpp",
+        "Program.cs",
+        "Main.java",
+        "Main.kt",
+        "run.sh",
+        "index.html"
+    };
 
     private void RecordEvent(string message)
     {
@@ -443,9 +513,30 @@ public sealed partial class CommandService
         });
     }
 
+    private static bool IsPinnedCopilotProvider(string? provider)
+    {
+        return string.Equals((provider ?? string.Empty).Trim(), "copilot", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string? NormalizePinnedProviderModelSelection(string provider, string? modelOverride)
+    {
+        if (IsPinnedCopilotProvider(provider))
+        {
+            return DefaultCopilotModel;
+        }
+
+        return NormalizeModelSelection(modelOverride);
+    }
+
+    private static bool IsPinnedCopilotModel(string provider, string model)
+    {
+        return IsPinnedCopilotProvider(provider)
+            && string.Equals((model ?? string.Empty).Trim(), DefaultCopilotModel, StringComparison.OrdinalIgnoreCase);
+    }
+
     private string ResolveModel(string provider, string? modelOverride)
     {
-        var normalizedOverride = NormalizeModelSelection(modelOverride);
+        var normalizedOverride = NormalizePinnedProviderModelSelection(provider, modelOverride);
         if (!string.IsNullOrWhiteSpace(normalizedOverride))
         {
             return normalizedOverride;
@@ -455,7 +546,7 @@ public sealed partial class CommandService
         {
             "gemini" => _config.GeminiModel,
             "cerebras" => _config.CerebrasModel,
-            "copilot" => _copilotWrapper.GetSelectedModel(),
+            "copilot" => DefaultCopilotModel,
             "codex" => _config.CodexModel,
             _ => _llmRouter.GetSelectedGroqModel()
         };
@@ -971,9 +1062,14 @@ public sealed partial class CommandService
                 continue;
             }
 
-            var distinctNames = sourceNames
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var distinctNames = FilterVisibleDisplaySources(sourceNames)
                 .ToArray();
+            if (distinctNames.Length == 0)
+            {
+                index = cursor - 1;
+                continue;
+            }
+
             output.Add($"출처: {string.Join(", ", distinctNames)}");
             index = cursor - 1;
         }
@@ -1866,22 +1962,191 @@ public sealed partial class CommandService
         return builder.Length == 0 ? text : builder.ToString();
     }
 
-    private static string BuildMultiAssistantText(LlmMultiChatResult result)
+    private static bool ShouldIncludeMultiComparisonEntry(string model, string text)
     {
-        var blocks = new List<string>
+        var normalizedModel = (model ?? string.Empty).Trim();
+        var normalizedText = (text ?? string.Empty).Trim();
+        if (normalizedModel.Equals("none", StringComparison.OrdinalIgnoreCase)
+            && (normalizedText.Length == 0 || normalizedText.Equals("선택 안함", StringComparison.OrdinalIgnoreCase)))
         {
-            $"[Groq]\n{result.GroqText}",
-            $"[Gemini]\n{result.GeminiText}",
-            $"[Cerebras]\n{result.CerebrasText}",
-            $"[Copilot]\n{result.CopilotText}"
-        };
-        if (!string.IsNullOrWhiteSpace(result.CodexText))
-        {
-            blocks.Add($"[Codex]\n{result.CodexText}");
+            return false;
         }
 
-        blocks.Add($"[공통 요약]\n{result.Summary}");
-        return string.Join("\n\n", blocks);
+        return normalizedModel.Length > 0 || normalizedText.Length > 0;
+    }
+
+    private static string BuildMultiComparisonAssistantText(LlmMultiChatResult result)
+    {
+        var entries = new List<(string Provider, string Model, string Text)>();
+
+        void AddEntry(string provider, string model, string text)
+        {
+            if (!ShouldIncludeMultiComparisonEntry(model, text))
+            {
+                return;
+            }
+
+            entries.Add((provider, model ?? string.Empty, text ?? string.Empty));
+        }
+
+        AddEntry("groq", result.GroqModel, result.GroqText);
+        AddEntry("gemini", result.GeminiModel, result.GeminiText);
+        AddEntry("cerebras", result.CerebrasModel, result.CerebrasText);
+        AddEntry("copilot", result.CopilotModel, result.CopilotText);
+        AddEntry("codex", result.CodexModel, result.CodexText);
+
+        var builder = new StringBuilder();
+        builder.Append("[[OMNI_MULTI_COMPARE_JSON]]{\"entries\":[");
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(",");
+            }
+
+            var entry = entries[i];
+            builder.Append("{");
+            builder.Append($"\"provider\":\"{WebSocketGateway.EscapeJson(entry.Provider)}\",");
+            builder.Append($"\"model\":\"{WebSocketGateway.EscapeJson(entry.Model)}\",");
+            builder.Append($"\"text\":\"{WebSocketGateway.EscapeJson(entry.Text)}\"");
+            builder.Append("}");
+        }
+
+        builder.Append("]}");
+        return builder.ToString();
+    }
+
+    private static (string CommonSummary, string CommonPoints, string Differences, string Recommendation) ParseComparisonSummarySections(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return ("공통 요약을 생성하지 못했습니다.", "공통점 없음", "부분 차이 정리가 없습니다.", "추천 정리가 없습니다.");
+        }
+
+        var sections = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        string currentKey = "summary";
+
+        static string DetectSectionKey(string line)
+        {
+            var normalized = (line ?? string.Empty).Trim();
+            if (normalized.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            normalized = normalized.TrimStart('#', '-', '*', ' ').Trim();
+            if (normalized.StartsWith("[", StringComparison.Ordinal) && normalized.EndsWith("]", StringComparison.Ordinal))
+            {
+                normalized = normalized[1..^1].Trim();
+            }
+
+            if (normalized.EndsWith(":", StringComparison.Ordinal))
+            {
+                normalized = normalized[..^1].Trim();
+            }
+
+            return normalized switch
+            {
+                "공통 요약" => "summary",
+                "요약" => "summary",
+                "공통점" => "common_points",
+                "공통 핵심" => "core",
+                "핵심" => "core",
+                "공통" => "common_points",
+                "추천" => "recommendation",
+                "부분 차이" => "differences",
+                "차이" => "differences",
+                _ => string.Empty
+            };
+        }
+
+        foreach (var rawLine in normalized.Split('\n'))
+        {
+            var line = rawLine.TrimEnd();
+            var trimmed = line.Trim();
+            if (trimmed.Length == 0)
+            {
+                if (!sections.ContainsKey(currentKey))
+                {
+                    sections[currentKey] = new List<string>();
+                }
+
+                if (sections[currentKey].Count > 0 && sections[currentKey][^1].Length > 0)
+                {
+                    sections[currentKey].Add(string.Empty);
+                }
+
+                continue;
+            }
+
+            var sectionKey = DetectSectionKey(trimmed);
+            if (sectionKey.Length > 0)
+            {
+                currentKey = sectionKey;
+                sections.TryAdd(currentKey, new List<string>());
+                continue;
+            }
+
+            if (!sections.ContainsKey(currentKey))
+            {
+                sections[currentKey] = new List<string>();
+            }
+
+            sections[currentKey].Add(line);
+        }
+
+        static string JoinSection(Dictionary<string, List<string>> source, string key, string fallback)
+        {
+            if (!source.TryGetValue(key, out var lines))
+            {
+                return fallback;
+            }
+
+            var text = string.Join("\n", lines).Trim();
+            return text.Length == 0 ? fallback : text;
+        }
+
+        var commonSummary = JoinSection(sections, "summary", normalized);
+        var commonPoints = JoinSection(
+            sections,
+            sections.ContainsKey("common_points") ? "common_points" : "core",
+            "공통점 없음"
+        );
+        var differences = JoinSection(sections, "differences", "부분 차이 정리가 없습니다.");
+        var recommendation = JoinSection(sections, "recommendation", "추천 정리가 없습니다.");
+        return (commonSummary, commonPoints, differences, recommendation);
+    }
+
+    private static (string CommonSummary, string CommonCore, string Differences) ParseMultiSummarySections(string text)
+    {
+        var parsed = ParseComparisonSummarySections(text);
+        return (parsed.CommonSummary, parsed.CommonPoints, parsed.Differences);
+    }
+
+    private static (string CommonSummary, string CommonPoints, string Differences, string Recommendation) ParseCodingMultiSummarySections(string text)
+    {
+        return ParseComparisonSummarySections(text);
+    }
+
+    private static string BuildMultiSummaryAssistantText(string commonSummary, string commonCore, string differences)
+    {
+        var summary = string.IsNullOrWhiteSpace(commonSummary) ? "공통 요약을 생성하지 못했습니다." : commonSummary.Trim();
+        var core = string.IsNullOrWhiteSpace(commonCore) ? "공통점 없음" : commonCore.Trim();
+        var diff = string.IsNullOrWhiteSpace(differences) ? "부분 차이 정리가 없습니다." : differences.Trim();
+        return $"""
+                ### 공통 요약
+                {summary}
+
+                ### 공통 핵심
+                {core}
+
+                ### 부분 차이
+                {diff}
+                """;
     }
 
     private static string BuildCodeGenerationPrompt(string input, string languageHint, string modeLabel)
@@ -1951,7 +2216,9 @@ public sealed partial class CommandService
         CancellationToken cancellationToken,
         Action<CodingProgressUpdate>? progressCallback = null,
         string progressMode = "worker",
-        bool allowRunActions = true
+        bool allowRunActions = true,
+        string role = "",
+        string? workspaceRootOverride = null
     )
     {
         if (!allowRunActions)
@@ -1961,7 +2228,8 @@ public sealed partial class CommandService
                 model,
                 prompt,
                 languageHint,
-                cancellationToken
+                cancellationToken,
+                role
             );
         }
 
@@ -1974,7 +2242,8 @@ public sealed partial class CommandService
             cancellationToken,
             progressCallback,
             progressMode,
-            allowRunActions
+            allowRunActions,
+            workspaceRootOverride: workspaceRootOverride
         );
         return new CodingWorkerResult(
             provider,
@@ -1983,7 +2252,9 @@ public sealed partial class CommandService
             outcome.Code,
             outcome.RawResponse + "\n\n[loop]\n" + outcome.Summary,
             outcome.Execution,
-            outcome.ChangedFiles
+            outcome.ChangedFiles,
+            role,
+            outcome.Summary
         );
     }
 
@@ -1992,17 +2263,22 @@ public sealed partial class CommandService
         string model,
         string objective,
         string languageHint,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        string role = ""
     )
     {
+        var requestedPaths = ExtractRequestedCodingPaths(objective, languageHint);
+        var profile = ResolveCodingExecutionProfile(provider, model, objective, languageHint, requestedPaths);
         var draftPrompt = BuildDraftCodingWorkerPrompt(objective, languageHint);
         var generated = await GenerateByProviderSafeAsync(
             provider,
             model,
             draftPrompt,
             cancellationToken,
-            Math.Min(Math.Max(1400, _config.CodingMaxOutputTokens), 3200),
-            useRawCodexPrompt: true
+            ResolveDraftGenerationMaxOutputTokens(profile),
+            useRawCodexPrompt: true,
+            optimizeCodexForCoding: profile.OptimizeCodexCli,
+            timeoutOverrideSeconds: profile.RequestTimeoutSeconds
         );
 
         var rawResponse = (generated.Text ?? string.Empty).Trim();
@@ -2015,8 +2291,10 @@ public sealed partial class CommandService
                 model,
                 codeOnlyPrompt,
                 cancellationToken,
-                Math.Min(Math.Max(1400, _config.CodingMaxOutputTokens), 3200),
-                useRawCodexPrompt: true
+                ResolveDraftGenerationMaxOutputTokens(profile),
+                useRawCodexPrompt: true,
+                optimizeCodexForCoding: profile.OptimizeCodexCli,
+                timeoutOverrideSeconds: profile.RequestTimeoutSeconds
             );
             var fallbackRaw = (fallback.Text ?? string.Empty).Trim();
             var fallbackParsed = ExtractFallbackCode(fallbackRaw, languageHint, objective);
@@ -2048,7 +2326,9 @@ public sealed partial class CommandService
             parsed.Code,
             string.IsNullOrWhiteSpace(rawResponse) ? "초안 생성 결과가 비어 있습니다." : rawResponse,
             execution,
-            Array.Empty<string>()
+            Array.Empty<string>(),
+            role,
+            string.IsNullOrWhiteSpace(rawResponse) ? "초안 생성 결과가 비어 있습니다." : TrimForOutput(rawResponse, 1800)
         );
     }
 
@@ -2061,17 +2341,22 @@ public sealed partial class CommandService
         CancellationToken cancellationToken,
         Action<CodingProgressUpdate>? progressCallback = null,
         string? progressModeOverride = null,
-        bool allowRunActions = true
+        bool allowRunActions = true,
+        string? workspaceRootOverride = null,
+        int repairAttempt = 0
     )
     {
-        var workspaceRoot = ResolveWorkspaceRoot();
-        var oneShotMode = ShouldUseOneShotMode(provider, objective, languageHint);
-        var maxIterations = ResolveMaxIterations(provider, oneShotMode);
-        var maxActions = ResolveMaxActions(provider, oneShotMode);
+        var workspaceRoot = ResolveCodingWorkspaceRoot(workspaceRootOverride);
+        var requestedPaths = ExtractRequestedCodingPaths(objective, languageHint);
+        var profile = ResolveCodingExecutionProfile(provider, model, objective, languageHint, requestedPaths);
+        var oneShotMode = ShouldUseOneShotMode(profile, objective, languageHint);
+        var maxIterations = ResolveMaxIterations(profile, oneShotMode);
+        var maxActions = ResolveMaxActions(profile, oneShotMode);
         var iterations = new List<string>();
         var progressMode = string.IsNullOrWhiteSpace(progressModeOverride) ? modeLabel : progressModeOverride;
 
         var currentLanguage = ResolveInitialCodingLanguage(languageHint, objective);
+        var expectedOutput = ExtractExpectedConsoleOutput(objective);
         var lastCode = string.Empty;
         var lastWritePath = "-";
         var lastRawResponse = string.Empty;
@@ -2080,6 +2365,7 @@ public sealed partial class CommandService
         var hasDeferredRunAction = false;
         var consecutivePlanParseFailures = 0;
         var consecutiveNoActionPlans = 0;
+        var attemptedDirectRecovery = ShouldAttemptEarlyDirectRecovery(profile, objective, languageHint, requestedPaths);
         var lastExecution = new CodeExecutionResult(
             currentLanguage,
             workspaceRoot,
@@ -2108,7 +2394,7 @@ public sealed partial class CommandService
             VisibleCodingStageTotal
         ));
 
-        var initialSnapshot = BuildWorkspaceSnapshot(workspaceRoot, provider);
+        var initialSnapshot = BuildWorkspaceSnapshot(workspaceRoot, profile);
         progressCallback?.Invoke(BuildCodingProgressUpdate(
             progressMode,
             provider,
@@ -2126,19 +2412,120 @@ public sealed partial class CommandService
             VisibleCodingStageTotal
         ));
 
+        var directRecovery = attemptedDirectRecovery
+            ? await TryApplyProviderDirectRecoveryAsync(
+                profile,
+                provider,
+                model,
+                objective,
+                languageHint,
+                workspaceRoot,
+                requestedPaths,
+                cancellationToken,
+                progressCallback,
+                progressMode,
+                maxIterations
+            )
+            : null;
+        if (directRecovery != null)
+        {
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
+                progressMode,
+                provider,
+                model,
+                "done",
+                "코딩 작업이 완료되었습니다.",
+                maxIterations,
+                maxIterations,
+                100,
+                true,
+                "verification",
+                "최종 실행 및 검증",
+                $"직생성 복구 적용 · 상태: {directRecovery.Execution.Status}",
+                6,
+                VisibleCodingStageTotal
+            ));
+            return directRecovery;
+        }
+
+        if (profile.AllowDeterministicStdoutFastPath
+            && ShouldTryDeterministicSingleFileOutputRepair(objective, currentLanguage, requestedPaths, expectedOutput))
+        {
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
+                progressMode,
+                provider,
+                model,
+                "planning",
+                "단순 단일 파일 출력 요청이라 빠른 결정론적 경로를 적용합니다.",
+                1,
+                maxIterations,
+                28,
+                false,
+                "planning",
+                "구현 계획",
+                "요청 파일을 직접 생성하고 stdout까지 바로 검증합니다.",
+                3,
+                VisibleCodingStageTotal
+            ));
+
+            var deterministicOutcome = await TryApplyDeterministicSingleFileOutputRepairAsync(
+                objective,
+                currentLanguage,
+                workspaceRoot,
+                requestedPaths,
+                expectedOutput,
+                cancellationToken
+            );
+            if (deterministicOutcome.Applied)
+            {
+                var changedPaths = new[] { deterministicOutcome.ChangedPath };
+                var fastPathSummary = BuildAutonomousCodingSummary(
+                    new[] { "deterministic_fast_path=single_file_output" },
+                    changedPaths,
+                    deterministicOutcome.Execution,
+                    maxIterations
+                );
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
+                    progressMode,
+                    provider,
+                    model,
+                    "done",
+                    "코딩 작업이 완료되었습니다.",
+                    maxIterations,
+                    maxIterations,
+                    100,
+                    true,
+                    "verification",
+                    "최종 실행 및 검증",
+                    $"최종 상태: {deterministicOutcome.Execution.Status} (exit={deterministicOutcome.Execution.ExitCode})",
+                    6,
+                    VisibleCodingStageTotal
+                ));
+                return new AutonomousCodingOutcome(
+                    currentLanguage,
+                    deterministicOutcome.Code,
+                    "[deterministic-fast-path]",
+                    deterministicOutcome.Execution,
+                    changedPaths,
+                    fastPathSummary
+                );
+            }
+        }
+
         for (var i = 1; i <= maxIterations; i++)
         {
-            var snapshot = i == 1 ? initialSnapshot : BuildWorkspaceSnapshot(workspaceRoot, provider);
-            var recent = BuildRecentLoopLogs(iterations, provider);
+            var snapshot = i == 1 ? initialSnapshot : BuildWorkspaceSnapshot(workspaceRoot, profile);
+            var recent = BuildRecentLoopLogs(iterations, profile);
             var loopPrompt = BuildCodingLoopPrompt(
                 objective,
                 languageHint,
                 modeLabel,
                 workspaceRoot,
-                provider,
+                profile,
                 oneShotMode,
                 i,
                 maxIterations,
+                maxActions,
                 snapshot,
                 recent,
                 lastExecution
@@ -2149,8 +2536,11 @@ public sealed partial class CommandService
                 model,
                 loopPrompt,
                 cancellationToken,
-                GetCodingPlanMaxOutputTokens(provider),
-                useRawCodexPrompt: true
+                GetCodingPlanMaxOutputTokens(profile),
+                useRawCodexPrompt: true,
+                codexWorkingDirectoryOverride: workspaceRoot,
+                optimizeCodexForCoding: profile.OptimizeCodexCli,
+                timeoutOverrideSeconds: profile.RequestTimeoutSeconds
             );
             lastRawResponse = generated.Text;
             var plan = ParseCodingLoopPlan(generated.Text);
@@ -2244,7 +2634,7 @@ public sealed partial class CommandService
             {
                 if (string.Equals(action.Type, "run", StringComparison.OrdinalIgnoreCase))
                 {
-                    var candidateCommand = (action.Command ?? string.Empty).Trim();
+                    var candidateCommand = NormalizeGeneratedRunCommand(action.Command);
                     if (!string.IsNullOrWhiteSpace(candidateCommand))
                     {
                         deferredRunCommand = candidateCommand;
@@ -2259,7 +2649,7 @@ public sealed partial class CommandService
                     continue;
                 }
 
-                var exec = await ExecuteCodingLoopActionAsync(action, workspaceRoot, cancellationToken);
+                var exec = await ExecuteCodingLoopActionAsync(action, workspaceRoot, requestedPaths, provider, cancellationToken);
                 actionResults.Add(exec.Message);
                 if (exec.Execution != null)
                 {
@@ -2326,43 +2716,185 @@ public sealed partial class CommandService
                 VisibleCodingStageTotal
             ));
 
-            var fallbackPrompt = BuildFallbackCodeOnlyPrompt(objective, currentLanguage);
-            var fallbackGenerated = await GenerateByProviderSafeAsync(
-                provider,
-                model,
-                fallbackPrompt,
-                cancellationToken,
-                Math.Min(_config.CodingMaxOutputTokens, 4096),
-                useRawCodexPrompt: true
-            );
-            lastRawResponse = fallbackGenerated.Text;
-            var fallbackCode = ExtractFallbackCode(fallbackGenerated.Text, currentLanguage, objective);
-            if (!string.IsNullOrWhiteSpace(fallbackCode.Code))
+            var preferBundleFallback = !attemptedDirectRecovery && ShouldPreferFileBundleFallback(profile, objective, requestedPaths);
+            var appliedBundleFallback = false;
+            if (preferBundleFallback)
             {
-                var fallbackPath = SuggestFallbackEntryPath(fallbackCode.Language, objective);
-                var writeAction = new CodingLoopAction("write_file", fallbackPath, fallbackCode.Code, string.Empty);
-                var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, cancellationToken);
-                iterations.Add($"fallback=write:{writeResult.LastWrittenFile}");
-
-                if (!string.IsNullOrWhiteSpace(writeResult.LastWrittenFile))
+                var bundlePrompt = BuildFallbackFileBundlePrompt(objective, currentLanguage, requestedPaths);
+                var bundleGenerated = await GenerateByProviderSafeAsync(
+                    provider,
+                    model,
+                    bundlePrompt,
+                    cancellationToken,
+                    ResolveDirectGenerationMaxOutputTokens(profile, bundleMode: true),
+                    useRawCodexPrompt: true,
+                    codexWorkingDirectoryOverride: workspaceRoot,
+                    optimizeCodexForCoding: profile.OptimizeCodexCli,
+                    timeoutOverrideSeconds: profile.RequestTimeoutSeconds
+                );
+                lastRawResponse = bundleGenerated.Text;
+                var fallbackBundle = ExtractFallbackFileBundle(bundleGenerated.Text, currentLanguage, objective);
+                if (fallbackBundle.Files.Count > 0)
                 {
-                    lastWritePath = writeResult.LastWrittenFile;
-                }
+                    currentLanguage = fallbackBundle.Language;
+                    foreach (var file in fallbackBundle.Files)
+                    {
+                        var normalizedContent = NormalizeProviderGeneratedFileContent(provider, file.Path, file.Content);
+                        var writeAction = new CodingLoopAction("write_file", file.Path, normalizedContent, string.Empty);
+                        var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, requestedPaths, provider, cancellationToken);
+                        if (!string.IsNullOrWhiteSpace(writeResult.LastWrittenFile))
+                        {
+                            lastWritePath = writeResult.LastWrittenFile;
+                        }
 
-                if (!string.IsNullOrWhiteSpace(writeResult.CodePreview))
+                        if (!string.IsNullOrWhiteSpace(writeResult.CodePreview))
+                        {
+                            lastCode = writeResult.CodePreview;
+                        }
+
+                        if (writeResult.Changed && !string.IsNullOrWhiteSpace(writeResult.ChangedPath))
+                        {
+                            changedFiles.Add(writeResult.ChangedPath);
+                        }
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(fallbackBundle.RunCommand))
+                    {
+                        deferredRunCommand = fallbackBundle.RunCommand;
+                        hasDeferredRunAction = true;
+                    }
+
+                    iterations.Add($"fallback=bundle:{fallbackBundle.Files.Count}");
+                    appliedBundleFallback = true;
+                }
+            }
+
+            if (!appliedBundleFallback && !attemptedDirectRecovery)
+            {
+                var fallbackPrompt = BuildFallbackCodeOnlyPrompt(objective, currentLanguage);
+                var fallbackGenerated = await GenerateByProviderSafeAsync(
+                    provider,
+                    model,
+                    fallbackPrompt,
+                    cancellationToken,
+                    ResolveDirectGenerationMaxOutputTokens(profile, bundleMode: false),
+                    useRawCodexPrompt: true,
+                    codexWorkingDirectoryOverride: workspaceRoot,
+                    optimizeCodexForCoding: profile.OptimizeCodexCli,
+                    timeoutOverrideSeconds: profile.RequestTimeoutSeconds
+                );
+                lastRawResponse = fallbackGenerated.Text;
+                var fallbackCode = ExtractFallbackCode(fallbackGenerated.Text, currentLanguage, objective);
+                if (!string.IsNullOrWhiteSpace(fallbackCode.Code))
                 {
-                    lastCode = writeResult.CodePreview;
-                }
+                    var fallbackPath = SuggestFallbackEntryPath(fallbackCode.Language, objective, requestedPaths);
+                    var normalizedCode = NormalizeProviderGeneratedFileContent(provider, fallbackPath, fallbackCode.Code);
+                    var writeAction = new CodingLoopAction("write_file", fallbackPath, normalizedCode, string.Empty);
+                    var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, requestedPaths, provider, cancellationToken);
+                    iterations.Add($"fallback=write:{writeResult.LastWrittenFile}");
 
-                currentLanguage = fallbackCode.Language;
+                    if (!string.IsNullOrWhiteSpace(writeResult.LastWrittenFile))
+                    {
+                        lastWritePath = writeResult.LastWrittenFile;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(writeResult.CodePreview))
+                    {
+                        lastCode = writeResult.CodePreview;
+                    }
+
+                    currentLanguage = fallbackCode.Language;
+                    if (writeResult.Changed && !string.IsNullOrWhiteSpace(writeResult.ChangedPath))
+                    {
+                        changedFiles.Add(writeResult.ChangedPath);
+                    }
+                }
+                else if (!preferBundleFallback)
+                {
+                    var bundlePrompt = BuildFallbackFileBundlePrompt(objective, currentLanguage, requestedPaths);
+                    var bundleGenerated = await GenerateByProviderSafeAsync(
+                        provider,
+                        model,
+                        bundlePrompt,
+                        cancellationToken,
+                        ResolveDirectGenerationMaxOutputTokens(profile, bundleMode: true),
+                        useRawCodexPrompt: true,
+                        codexWorkingDirectoryOverride: workspaceRoot,
+                        optimizeCodexForCoding: profile.OptimizeCodexCli,
+                        timeoutOverrideSeconds: profile.RequestTimeoutSeconds
+                    );
+                    lastRawResponse = string.IsNullOrWhiteSpace(bundleGenerated.Text)
+                        ? fallbackGenerated.Text
+                        : bundleGenerated.Text;
+                    var fallbackBundle = ExtractFallbackFileBundle(bundleGenerated.Text, currentLanguage, objective);
+                    if (fallbackBundle.Files.Count > 0)
+                    {
+                        currentLanguage = fallbackBundle.Language;
+                        foreach (var file in fallbackBundle.Files)
+                        {
+                            var normalizedContent = NormalizeProviderGeneratedFileContent(provider, file.Path, file.Content);
+                            var writeAction = new CodingLoopAction("write_file", file.Path, normalizedContent, string.Empty);
+                            var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, requestedPaths, provider, cancellationToken);
+                            if (!string.IsNullOrWhiteSpace(writeResult.LastWrittenFile))
+                            {
+                                lastWritePath = writeResult.LastWrittenFile;
+                            }
+
+                            if (!string.IsNullOrWhiteSpace(writeResult.CodePreview))
+                            {
+                                lastCode = writeResult.CodePreview;
+                            }
+
+                            if (writeResult.Changed && !string.IsNullOrWhiteSpace(writeResult.ChangedPath))
+                            {
+                                changedFiles.Add(writeResult.ChangedPath);
+                            }
+                        }
+
+                        if (!string.IsNullOrWhiteSpace(fallbackBundle.RunCommand))
+                        {
+                            deferredRunCommand = fallbackBundle.RunCommand;
+                            hasDeferredRunAction = true;
+                        }
+
+                        iterations.Add($"fallback=bundle:{fallbackBundle.Files.Count}");
+                    }
+                    else
+                    {
+                        iterations.Add("fallback=no_code");
+                    }
+                }
+                else
+                {
+                    iterations.Add("fallback=no_code");
+                }
+            }
+            else if (!appliedBundleFallback && attemptedDirectRecovery)
+            {
+                iterations.Add("fallback=direct_recovery_already_attempted");
+            }
+        }
+
+        if (changedFiles.Count == 0
+            && profile.EnableGameScaffoldFallback
+            && TryGenerateDeterministicWebShooterScaffold(objective, currentLanguage, out var shooterFiles))
+        {
+            foreach (var scaffold in shooterFiles)
+            {
+                var writeAction = new CodingLoopAction("write_file", scaffold.Path, scaffold.Content, string.Empty);
+                var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, requestedPaths, provider, cancellationToken);
                 if (writeResult.Changed && !string.IsNullOrWhiteSpace(writeResult.ChangedPath))
                 {
                     changedFiles.Add(writeResult.ChangedPath);
+                    lastWritePath = writeResult.LastWrittenFile;
+                    lastCode = writeResult.CodePreview;
                 }
             }
-            else
+
+            if (changedFiles.Count > 0)
             {
-                iterations.Add("fallback=no_code");
+                iterations.Add("fallback=scaffold:web_shooter");
+                currentLanguage = "html";
             }
         }
 
@@ -2371,7 +2903,7 @@ public sealed partial class CommandService
             foreach (var scaffold in scaffoldFiles)
             {
                 var writeAction = new CodingLoopAction("write_file", scaffold.Path, scaffold.Content, string.Empty);
-                var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, cancellationToken);
+                var writeResult = await ExecuteCodingLoopActionAsync(writeAction, workspaceRoot, requestedPaths, provider, cancellationToken);
                 if (writeResult.Changed && !string.IsNullOrWhiteSpace(writeResult.ChangedPath))
                 {
                     changedFiles.Add(writeResult.ChangedPath);
@@ -2384,8 +2916,28 @@ public sealed partial class CommandService
             currentLanguage = "html";
         }
 
+        var workspaceRecoveredCount = MergeWorkspaceMaterializedFiles(workspaceRoot, changedFiles);
+        if (workspaceRecoveredCount > 0)
+        {
+            var preferredRecoveredPath = requestedPaths
+                .Select(path => ResolveWorkspacePath(workspaceRoot, path))
+                .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                ?? changedFiles.FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                ?? lastWritePath;
+            if (!string.IsNullOrWhiteSpace(preferredRecoveredPath))
+            {
+                lastWritePath = preferredRecoveredPath;
+                currentLanguage = GuessLanguageFromPath(lastWritePath, currentLanguage);
+            }
+
+            iterations.Add(changedFiles.Count == workspaceRecoveredCount
+                ? $"workspace_scan_recovered={workspaceRecoveredCount}"
+                : $"workspace_scan_merged={workspaceRecoveredCount}");
+        }
+
         if (changedFiles.Count > 0)
         {
+            currentLanguage = ResolveFinalCodingResultLanguage(currentLanguage, languageHint, objective, changedFiles);
             progressCallback?.Invoke(BuildCodingProgressUpdate(
                 progressMode,
                 provider,
@@ -2406,9 +2958,14 @@ public sealed partial class CommandService
 
         if (allowRunActions)
         {
-            var finalCommand = string.IsNullOrWhiteSpace(deferredRunCommand)
-                ? BuildVerificationCommand(currentLanguage, changedFiles, workspaceRoot)
-                : deferredRunCommand;
+            var shouldUseDeferredRunCommand = ShouldTrustDeferredVerificationCommand(currentLanguage, objective, deferredRunCommand);
+            var expectedOutputLines = ExtractExpectedConsoleOutputLines(objective);
+            var finalDisplayCommand = !shouldUseDeferredRunCommand
+                ? BuildVerificationDisplayCommand(currentLanguage, changedFiles, workspaceRoot, objective, requestedPaths, expectedOutput)
+                : DescribeCommandWithExpectedOutput(NormalizeGeneratedRunCommand(deferredRunCommand), expectedOutput, expectedOutputLines);
+            var finalCommand = !shouldUseDeferredRunCommand
+                ? BuildVerificationCommand(currentLanguage, changedFiles, workspaceRoot, objective, requestedPaths, expectedOutput)
+                : WrapCommandWithExpectedOutputAssertion(deferredRunCommand, expectedOutput, expectedOutputLines);
             if (!string.IsNullOrWhiteSpace(finalCommand))
             {
                 progressCallback?.Invoke(BuildCodingProgressUpdate(
@@ -2423,7 +2980,7 @@ public sealed partial class CommandService
                     false,
                     "verification",
                     "최종 실행 및 검증",
-                    $"실행 명령: {TrimForOutput(finalCommand, 180)}",
+                    $"실행 명령: {TrimForOutput(finalDisplayCommand, 180)}",
                     6,
                     VisibleCodingStageTotal
                 ));
@@ -2432,13 +2989,172 @@ public sealed partial class CommandService
                     "bash",
                     workspaceRoot,
                     "-",
-                    finalCommand,
+                    finalDisplayCommand,
                     shell.ExitCode,
                     shell.StdOut,
                     shell.StdErr,
                     shell.TimedOut ? "timeout" : (shell.ExitCode == 0 ? "ok" : "error")
                 );
             }
+        }
+
+        if (allowRunActions
+            && (changedFiles.Count == 0
+                || !string.Equals(lastExecution.Status, "ok", StringComparison.OrdinalIgnoreCase)))
+        {
+            var structuredRepair = await TryApplyDeterministicStructuredMultiFileRepairAsync(
+                objective,
+                currentLanguage,
+                workspaceRoot,
+                requestedPaths,
+                cancellationToken
+            );
+            if (structuredRepair.Applied)
+            {
+                foreach (var path in structuredRepair.ChangedPaths)
+                {
+                    changedFiles.Add(path);
+                }
+
+                lastWritePath = structuredRepair.ChangedPaths.FirstOrDefault() ?? lastWritePath;
+                lastCode = structuredRepair.Code;
+                currentLanguage = structuredRepair.Language;
+                lastExecution = structuredRepair.Execution;
+                iterations.Add("deterministic_repair=structured_multi_file");
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
+                    progressMode,
+                    provider,
+                    model,
+                    "repair",
+                    string.Equals(lastExecution.Status, "ok", StringComparison.OrdinalIgnoreCase)
+                        ? "다중 파일 실패를 결정론적으로 복구했습니다."
+                        : changedFiles.Count == 0
+                            ? "생성 파일이 없어 다중 파일 결정론적 복구를 시도했지만 아직 실패 상태입니다."
+                            : "다중 파일 결정론적 복구를 시도했지만 아직 실패 상태입니다.",
+                    maxIterations,
+                    maxIterations,
+                    99,
+                    false,
+                    "verification",
+                    "최종 실행 및 검증",
+                    TrimForOutput($"실행 명령: {lastExecution.Command}", 220),
+                    6,
+                    VisibleCodingStageTotal
+                ));
+            }
+        }
+
+        if (allowRunActions
+            && !string.Equals(lastExecution.Status, "ok", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(lastExecution.Status, "skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            var deterministicRepair = await TryApplyDeterministicSingleFileOutputRepairAsync(
+                objective,
+                currentLanguage,
+                workspaceRoot,
+                requestedPaths,
+                expectedOutput,
+                cancellationToken
+            );
+            if (deterministicRepair.Applied)
+            {
+                changedFiles.Add(deterministicRepair.ChangedPath);
+                lastWritePath = deterministicRepair.ChangedPath;
+                lastCode = deterministicRepair.Code;
+                currentLanguage = GuessLanguageFromPath(deterministicRepair.ChangedPath, currentLanguage);
+                lastExecution = deterministicRepair.Execution;
+                iterations.Add("deterministic_repair=single_file_output");
+                progressCallback?.Invoke(BuildCodingProgressUpdate(
+                    progressMode,
+                    provider,
+                    model,
+                    "repair",
+                    string.Equals(lastExecution.Status, "ok", StringComparison.OrdinalIgnoreCase)
+                        ? "단순 출력 파일 실패를 결정론적으로 복구했습니다."
+                        : "단순 출력 파일 결정론적 복구를 시도했지만 아직 실패 상태입니다.",
+                    maxIterations,
+                    maxIterations,
+                    99,
+                    false,
+                    "verification",
+                    "최종 실행 및 검증",
+                    TrimForOutput($"실행 명령: {lastExecution.Command}", 220),
+                    6,
+                    VisibleCodingStageTotal
+                ));
+            }
+        }
+
+        var orderedChangedFiles = changedFiles
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        orderedChangedFiles = CleanupRedundantSingleFileArtifacts(workspaceRoot, objective, requestedPaths, orderedChangedFiles);
+        var summary = BuildAutonomousCodingSummary(iterations, orderedChangedFiles, lastExecution, maxIterations);
+
+        if (allowRunActions
+            && repairAttempt < MaxCodingRepairPasses
+            && orderedChangedFiles.Length > 0
+            && !string.Equals(lastExecution.Status, "ok", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(lastExecution.Status, "skipped", StringComparison.OrdinalIgnoreCase))
+        {
+            progressCallback?.Invoke(BuildCodingProgressUpdate(
+                progressMode,
+                provider,
+                model,
+                "repair",
+                "최종 검증 실패로 수정 반복을 한 번 더 수행합니다.",
+                maxIterations,
+                maxIterations,
+                98,
+                false,
+                "verification",
+                "최종 실행 및 검증",
+                TrimForOutput($"실패 원인: {lastExecution.StdErr}", 220),
+                6,
+                VisibleCodingStageTotal
+            ));
+
+            var repairObjective = BuildCodingRepairObjectivePrompt(objective, currentLanguage, workspaceRoot, lastExecution, orderedChangedFiles);
+            var repairOutcome = await RunAutonomousCodingLoopAsync(
+                provider,
+                model,
+                repairObjective,
+                currentLanguage,
+                modeLabel,
+                cancellationToken,
+                progressCallback,
+                progressModeOverride,
+                allowRunActions,
+                workspaceRoot,
+                repairAttempt + 1
+            );
+            var mergedChangedFiles = orderedChangedFiles
+                .Concat(repairOutcome.ChangedFiles ?? Array.Empty<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            mergedChangedFiles = CleanupRedundantSingleFileArtifacts(workspaceRoot, objective, requestedPaths, mergedChangedFiles);
+            var mergedRawResponse = string.IsNullOrWhiteSpace(lastRawResponse)
+                ? repairOutcome.RawResponse
+                : string.IsNullOrWhiteSpace(repairOutcome.RawResponse)
+                    ? lastRawResponse
+                    : $"{lastRawResponse}\n\n[repair-pass]\n{repairOutcome.RawResponse}";
+            var mergedSummary = string.IsNullOrWhiteSpace(repairOutcome.Summary)
+                ? summary
+                : string.Equals(repairOutcome.Execution.Status, "ok", StringComparison.OrdinalIgnoreCase)
+                    ? $"{repairOutcome.Summary}\n\n[repair-note]\n초기 최종 검증 실패를 1회 복구한 뒤 성공했습니다."
+                    : $"{summary}\n\n[repair-pass]\n{repairOutcome.Summary}";
+            return new AutonomousCodingOutcome(
+                string.IsNullOrWhiteSpace(repairOutcome.Language) ? currentLanguage : repairOutcome.Language,
+                string.IsNullOrWhiteSpace(repairOutcome.Code) ? lastCode : repairOutcome.Code,
+                mergedRawResponse,
+                repairOutcome.Execution,
+                mergedChangedFiles,
+                mergedSummary
+            );
         }
 
         if (File.Exists(lastWritePath))
@@ -2451,13 +3167,6 @@ public sealed partial class CommandService
             {
             }
         }
-
-        var orderedChangedFiles = changedFiles
-            .Where(x => !string.IsNullOrWhiteSpace(x))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        var summary = BuildAutonomousCodingSummary(iterations, orderedChangedFiles, lastExecution, maxIterations);
         progressCallback?.Invoke(BuildCodingProgressUpdate(
             progressMode,
             provider,
@@ -2477,14 +3186,132 @@ public sealed partial class CommandService
         return new AutonomousCodingOutcome(currentLanguage, lastCode, lastRawResponse, lastExecution, orderedChangedFiles, summary);
     }
 
+    private static bool ShouldTrustDeferredVerificationCommand(string language, string objective, string command)
+    {
+        var normalizedLanguage = NormalizeLanguageForCode(language);
+        if (string.IsNullOrWhiteSpace(command))
+        {
+            return false;
+        }
+
+        if (normalizedLanguage is "html" or "css" or "java" or "c" or "cpp")
+        {
+            return false;
+        }
+
+        if (normalizedLanguage == "javascript" && IsFrontendLikeCodingTask(objective, normalizedLanguage))
+        {
+            return false;
+        }
+
+        if (IsInteractiveProgramObjective(objective, normalizedLanguage))
+        {
+            return false;
+        }
+
+        return normalizedLanguage is "python" or "javascript" or "bash";
+    }
+
+    private static bool IsInteractiveProgramObjective(string objective, string normalizedLanguage)
+    {
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        if (normalizedLanguage == "python")
+        {
+            return ContainsAny(
+                text,
+                "게임",
+                "game",
+                "슈팅",
+                "shooter",
+                "shooting",
+                "tetris",
+                "pong",
+                "snake",
+                "비행기",
+                "tkinter",
+                "pygame",
+                "arcade",
+                "sprite",
+                "animation",
+                "애니메이션",
+                "그래픽",
+                "graphic",
+                "gui",
+                "window",
+                "창",
+                "mainloop",
+                "canvas",
+                "keyboard",
+                "키보드",
+                "마우스"
+            );
+        }
+
+        if (normalizedLanguage == "javascript")
+        {
+            return IsFrontendLikeCodingTask(objective ?? string.Empty, normalizedLanguage)
+                   || ContainsAny(text, "canvas", "animation", "sprite", "dom", "browser", "브라우저");
+        }
+
+        if (normalizedLanguage == "bash")
+        {
+            return ContainsAny(text, "watch", "tail -f", "server", "serve", "dev server", "실시간", "대기");
+        }
+
+        return false;
+    }
+
+    private static bool ShouldRequireDependencyFreePythonGame(string objective, string languageHint)
+    {
+        var normalizedLanguage = NormalizeLanguageForCode(languageHint);
+        if (normalizedLanguage != "python")
+        {
+            return false;
+        }
+
+        if (!IsInteractiveProgramObjective(objective, normalizedLanguage))
+        {
+            return false;
+        }
+
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        return !ContainsAny(
+            text,
+            "pygame",
+            "pyglet",
+            "arcade",
+            "panda3d",
+            "kivy",
+            "sdl",
+            "외부 패키지 사용",
+            "외부 패키지 허용",
+            "third-party",
+            "third party",
+            "requirements.txt",
+            "pip install"
+        );
+    }
+
     private async Task<CodingLoopActionResult> ExecuteCodingLoopActionAsync(
         CodingLoopAction action,
         string workspaceRoot,
+        IReadOnlyList<string> requestedPaths,
+        string provider,
         CancellationToken cancellationToken
     )
     {
         var type = NormalizeCodingActionType(action.Type, action.Path, action.Content, action.Command);
-        var resolvedPath = ResolveActionPathOrFallback(type, action.Path, action.Content);
+        var resolvedPath = ResolveActionPathOrFallback(type, action.Path, action.Content, requestedPaths, workspaceRoot);
         if (type != "run" && string.IsNullOrWhiteSpace(resolvedPath))
         {
             return new CodingLoopActionResult($"{type}:missing_path", null, string.Empty, string.Empty, string.Empty, false);
@@ -2492,6 +3319,11 @@ public sealed partial class CommandService
 
         if (type == "mkdir")
         {
+            if (LooksLikeFilePathForDirectoryAction(resolvedPath, requestedPaths))
+            {
+                return new CodingLoopActionResult($"mkdir_skipped_file_like:{resolvedPath}", null, string.Empty, resolvedPath ?? string.Empty, resolvedPath ?? string.Empty, false);
+            }
+
             var dir = ResolveWorkspacePath(workspaceRoot, resolvedPath);
             Directory.CreateDirectory(dir);
             return new CodingLoopActionResult($"mkdir:{dir}", null, string.Empty, dir, dir, false);
@@ -2506,8 +3338,9 @@ public sealed partial class CommandService
                 Directory.CreateDirectory(parent);
             }
 
-            await File.WriteAllTextAsync(filePath, action.Content ?? string.Empty, cancellationToken);
-            var preview = (action.Content ?? string.Empty);
+            var normalizedContent = NormalizeProviderGeneratedFileContent(provider, resolvedPath ?? string.Empty, action.Content ?? string.Empty);
+            await File.WriteAllTextAsync(filePath, normalizedContent, cancellationToken);
+            var preview = normalizedContent;
             if (preview.Length > 12000)
             {
                 preview = preview[..12000] + "\n...(truncated)";
@@ -2525,7 +3358,8 @@ public sealed partial class CommandService
                 Directory.CreateDirectory(parent);
             }
 
-            await File.AppendAllTextAsync(filePath, action.Content ?? string.Empty, cancellationToken);
+            var normalizedContent = NormalizeProviderGeneratedFileContent(provider, resolvedPath ?? string.Empty, action.Content ?? string.Empty);
+            await File.AppendAllTextAsync(filePath, normalizedContent, cancellationToken);
             string preview;
             try
             {
@@ -2534,7 +3368,7 @@ public sealed partial class CommandService
             }
             catch
             {
-                preview = action.Content ?? string.Empty;
+                preview = normalizedContent;
             }
 
             return new CodingLoopActionResult($"append:{filePath}", null, preview, filePath, filePath, true);
@@ -2567,7 +3401,7 @@ public sealed partial class CommandService
 
         if (type == "run")
         {
-            var command = (action.Command ?? string.Empty).Trim();
+            var command = NormalizeGeneratedRunCommand(action.Command);
             if (string.IsNullOrWhiteSpace(command))
             {
                 return new CodingLoopActionResult("run:empty_command", null, string.Empty, string.Empty, string.Empty, false);
@@ -2588,6 +3422,24 @@ public sealed partial class CommandService
         }
 
         return new CodingLoopActionResult($"unsupported_action:{type}", null, string.Empty, string.Empty, string.Empty, false);
+    }
+
+    private static bool LooksLikeFilePathForDirectoryAction(string? resolvedPath, IReadOnlyList<string>? requestedPaths)
+    {
+        var normalized = NormalizeRequestedCodingPath(resolvedPath);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (requestedPaths != null
+            && requestedPaths.Any(path => string.Equals(NormalizeRequestedCodingPath(path), normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        var extension = Path.GetExtension(normalized);
+        return !string.IsNullOrWhiteSpace(extension);
     }
 
     private static CodingLoopPlan? ParseCodingLoopPlan(string rawText)
@@ -2818,18 +3670,64 @@ public sealed partial class CommandService
 
     private static string BuildFallbackCodeOnlyPrompt(string objective, string languageHint)
     {
-        return $"""
-                아래 요구사항을 만족하는 실행 가능한 코드만 반환하세요.
-                규칙:
-                - 반드시 첫 줄: LANGUAGE=<언어>
-                - 반드시 단 하나의 코드블록만 출력
-                - 설명/해설/JSON/HTML 태그 금지
-                - 코드블록 안에는 순수 코드만 작성
+        var resolvedLanguage = ResolveInitialCodingLanguage(languageHint, objective);
+        var builder = new StringBuilder();
+        builder.AppendLine("아래 요구사항을 만족하는 실행 가능한 코드만 반환하세요.");
+        builder.AppendLine("규칙:");
+        builder.AppendLine("- 반드시 첫 줄: LANGUAGE=<언어>");
+        builder.AppendLine("- 반드시 단 하나의 코드블록만 출력");
+        builder.AppendLine("- 설명/해설/JSON/HTML 태그 금지");
+        builder.AppendLine("- 코드블록 안에는 순수 코드만 작성");
+        builder.AppendLine("- 더미 구현, TODO, 의사코드 금지");
+        builder.AppendLine("- 요청에 실행/출력 조건이 있으면 실제로 그 조건을 만족하는 코드만 작성");
+        foreach (var rule in BuildLanguagePromptRuleLines(string.Empty, string.Empty, resolvedLanguage, objective))
+        {
+            builder.AppendLine(rule);
+        }
 
-                언어 힌트: {languageHint}
-                요구사항:
-                {objective}
-                """;
+        builder.AppendLine();
+        builder.AppendLine($"언어 힌트: {resolvedLanguage}");
+        builder.AppendLine("요구사항:");
+        builder.AppendLine(objective ?? string.Empty);
+        return builder.ToString().Trim();
+    }
+
+    private static string BuildFallbackFileBundlePrompt(
+        string objective,
+        string languageHint,
+        IReadOnlyList<string>? requestedPaths = null
+    )
+    {
+        var resolvedLanguage = ResolveInitialCodingLanguage(languageHint, objective);
+        var builder = new StringBuilder();
+        builder.AppendLine("아래 요구사항을 만족하는 파일 번들을 JSON으로만 반환하세요.");
+        builder.AppendLine("규칙:");
+        builder.AppendLine("- 반드시 JSON 객체만 출력");
+        builder.AppendLine("- 설명, 해설, 마크다운, 코드펜스 금지");
+        builder.AppendLine("- files 배열에는 필요한 파일만 넣기");
+        builder.AppendLine("- path 는 상대경로만 사용");
+        builder.AppendLine("- content 는 실제 파일 내용 전체를 문자열로 넣기");
+        builder.AppendLine("- run 은 최종 실행 명령이 있으면 넣고, 없으면 빈 문자열");
+        builder.AppendLine("- 미사용 파일, 설명용 더미 파일, TODO 전용 파일 금지");
+        foreach (var rule in BuildLanguagePromptRuleLines(string.Empty, string.Empty, resolvedLanguage, objective, requestedPaths))
+        {
+            builder.AppendLine(rule);
+        }
+        builder.AppendLine("스키마:");
+        builder.AppendLine("{\"language\":\"python\",\"files\":[{\"path\":\"calculator.py\",\"content\":\"...\"}],\"run\":\"python3 calculator.py\"}");
+        builder.AppendLine($"언어 힌트: {resolvedLanguage}");
+        if (requestedPaths != null && requestedPaths.Count > 0)
+        {
+            builder.AppendLine("우선 파일 후보:");
+            foreach (var path in requestedPaths.Take(6))
+            {
+                builder.AppendLine($"- {path}");
+            }
+        }
+
+        builder.AppendLine("요구사항:");
+        builder.AppendLine(objective);
+        return builder.ToString().Trim();
     }
 
     private static ParsedCode ExtractFallbackCode(string rawText, string languageHint, string objective)
@@ -2855,7 +3753,7 @@ public sealed partial class CommandService
             var resolved = string.IsNullOrWhiteSpace(fenceLanguage)
                 ? initialLanguage
                 : NormalizeLanguageForCode(fenceLanguage);
-            return new ParsedCode(resolved, code);
+            return new ParsedCode(resolved, NormalizeGeneratedFileContent(code));
         }
 
         foreach (var variant in variants)
@@ -2863,7 +3761,7 @@ public sealed partial class CommandService
             var prefixed = ExtractLanguagePrefixedPlainCode(variant, initialLanguage);
             if (!string.IsNullOrWhiteSpace(prefixed.Code))
             {
-                return prefixed;
+                return new ParsedCode(prefixed.Language, NormalizeGeneratedFileContent(prefixed.Code));
             }
         }
 
@@ -2904,10 +3802,155 @@ public sealed partial class CommandService
                 detectedLanguage = GuessLanguageFromPath(closestPath.Value, detectedLanguage);
             }
 
-            return new ParsedCode(detectedLanguage, extractedContent);
+            return new ParsedCode(detectedLanguage, NormalizeGeneratedFileContent(extractedContent));
         }
 
         return new ParsedCode(initialLanguage, string.Empty);
+    }
+
+    private static FallbackFileBundle ExtractFallbackFileBundle(string rawText, string languageHint, string objective)
+    {
+        var initialLanguage = ResolveInitialCodingLanguage(languageHint, objective);
+        var explicitLanguage = ResolveExplicitObjectiveLanguage(objective);
+        var text = (rawText ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return new FallbackFileBundle(initialLanguage, string.Empty, Array.Empty<FallbackGeneratedFile>());
+        }
+
+        var variants = BuildCodingPlanTextVariants(text);
+        var candidates = new List<string>();
+        foreach (var variant in variants)
+        {
+            if (variant.StartsWith("{", StringComparison.Ordinal))
+            {
+                candidates.Add(variant);
+            }
+
+            var firstBrace = variant.IndexOf('{');
+            var lastBrace = variant.LastIndexOf('}');
+            if (firstBrace >= 0 && lastBrace > firstBrace)
+            {
+                candidates.Add(variant[firstBrace..(lastBrace + 1)]);
+            }
+
+            var codeFence = CodeFenceRegex.Match(variant);
+            if (codeFence.Success)
+            {
+                candidates.Add(codeFence.Groups[2].Value.Trim());
+            }
+        }
+
+        foreach (var candidate in candidates.Distinct(StringComparer.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(NormalizeJsonCandidate(candidate));
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                var language = NormalizeLanguageForCode(GetStringProperty(doc.RootElement, "language") ?? initialLanguage);
+                var runCommand = GetStringProperty(doc.RootElement, "run")
+                    ?? GetStringProperty(doc.RootElement, "command")
+                    ?? string.Empty;
+                var files = new List<FallbackGeneratedFile>();
+                if (doc.RootElement.TryGetProperty("files", out var filesElement)
+                    && filesElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var fileElement in filesElement.EnumerateArray())
+                    {
+                        if (fileElement.ValueKind != JsonValueKind.Object)
+                        {
+                            continue;
+                        }
+
+                        var rawPath = GetStringProperty(fileElement, "path")
+                            ?? GetStringProperty(fileElement, "file")
+                            ?? string.Empty;
+                        var content = GetStringProperty(fileElement, "content")
+                            ?? GetStringProperty(fileElement, "code")
+                            ?? GetStringProperty(fileElement, "text")
+                            ?? string.Empty;
+                        var normalizedPath = NormalizeRequestedCodingPath(rawPath);
+                        if (string.IsNullOrWhiteSpace(normalizedPath) || string.IsNullOrWhiteSpace(content))
+                        {
+                            continue;
+                        }
+
+                        files.Add(new FallbackGeneratedFile(normalizedPath, NormalizeGeneratedFileContent(content)));
+                    }
+                }
+
+                if (files.Count > 0)
+                {
+                    if (!string.IsNullOrWhiteSpace(explicitLanguage)
+                        && explicitLanguage is not ("html" or "css" or "javascript")
+                        && language is "html" or "css" or "javascript")
+                    {
+                        continue;
+                    }
+
+                    return new FallbackFileBundle(language, NormalizeGeneratedRunCommand(runCommand), files);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return new FallbackFileBundle(initialLanguage, string.Empty, Array.Empty<FallbackGeneratedFile>());
+    }
+
+    private sealed record FallbackGeneratedFile(string Path, string Content);
+    private sealed record FallbackFileBundle(string Language, string RunCommand, IReadOnlyList<FallbackGeneratedFile> Files);
+
+    private static string NormalizeGeneratedFileContent(string content)
+    {
+        var normalized = (content ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n');
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized.Trim();
+        }
+
+        var lines = normalized.Split('\n');
+        var minIndent = lines
+            .Where(line => !string.IsNullOrWhiteSpace(line))
+            .Select(GetLeadingIndentWidth)
+            .DefaultIfEmpty(0)
+            .Min();
+        if (minIndent <= 0)
+        {
+            return normalized.Trim('\n');
+        }
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (string.IsNullOrWhiteSpace(lines[i]))
+            {
+                lines[i] = string.Empty;
+                continue;
+            }
+
+            var trimCount = Math.Min(minIndent, GetLeadingIndentWidth(lines[i]));
+            lines[i] = lines[i][trimCount..];
+        }
+
+        return string.Join('\n', lines).Trim('\n');
+    }
+
+    private static int GetLeadingIndentWidth(string line)
+    {
+        var width = 0;
+        while (width < line.Length && (line[width] == ' ' || line[width] == '\t'))
+        {
+            width++;
+        }
+
+        return width;
     }
 
     private static ParsedCode ExtractLanguagePrefixedPlainCode(string text, string fallbackLanguage)
@@ -2963,10 +4006,16 @@ public sealed partial class CommandService
         return new ParsedCode(resolvedLanguage, code);
     }
 
-    private static string SuggestFallbackEntryPath(string language, string objective)
+    private static string SuggestFallbackEntryPath(string language, string objective, IReadOnlyList<string>? requestedPaths = null)
     {
+        var requestedPath = SelectRequestedCodingPath(requestedPaths, language, null);
+        if (!string.IsNullOrWhiteSpace(requestedPath))
+        {
+            return requestedPath;
+        }
+
         var normalizedLanguage = NormalizeLanguageForCode(language);
-        var objectiveText = (objective ?? string.Empty).ToLowerInvariant();
+        var objectiveText = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
         var domainMatch = DomainRegex.Match(objectiveText);
         var projectFolder = domainMatch.Success
             ? SanitizePathSegment(domainMatch.Groups[1].Value)
@@ -2996,6 +4045,524 @@ public sealed partial class CommandService
         };
     }
 
+    private static string BuildCodingRepairObjectivePrompt(
+        string objective,
+        string languageHint,
+        string workspaceRoot,
+        CodeExecutionResult lastExecution,
+        IReadOnlyCollection<string> changedFiles
+    )
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine(objective?.Trim() ?? string.Empty);
+        builder.AppendLine();
+        builder.AppendLine("[최종 검증 실패]");
+        builder.AppendLine($"언어 힌트: {languageHint}");
+        builder.AppendLine($"실패 명령: {CompactWorkspaceCommandForPrompt(lastExecution.Command, workspaceRoot)}");
+        builder.AppendLine($"stderr: {TrimForOutput(lastExecution.StdErr, 1200)}");
+        builder.AppendLine($"stdout: {TrimForOutput(lastExecution.StdOut, 600)}");
+        builder.AppendLine("수정 규칙:");
+        builder.AppendLine("- 방금 생성한 파일을 우선 수정");
+        builder.AppendLine("- 파일 경로 문자열에 줄바꿈이나 탭을 넣지 말 것");
+        builder.AppendLine("- 문자열 리터럴을 불필요한 줄바꿈으로 끊지 말 것");
+        builder.AppendLine("- 실패 원인을 실제로 해결한 뒤 최종 검증까지 끝낼 것");
+        builder.AppendLine("- 최종 검증에서 생성 파일 존재와 stdout 조건까지 다시 만족할 것");
+        if (ShouldRequireDependencyFreePythonGame(objective ?? string.Empty, languageHint))
+        {
+            builder.AppendLine("- 이번 수정에서는 pygame, pyglet, arcade 같은 외부 패키지와 pip install 시도를 금지한다");
+            builder.AppendLine("- curses를 우선 사용하고, tkinter가 꼭 필요할 때만 선택하라");
+            builder.AppendLine("- print 문만 반복하는 텍스트 시뮬레이션은 금지하고 실제 입력 처리와 화면 갱신이 있는 게임 루프를 구현하라");
+            var stderr = lastExecution.StdErr ?? string.Empty;
+            if (stderr.Contains("_tkinter", StringComparison.OrdinalIgnoreCase)
+                || stderr.Contains("tkinter", StringComparison.OrdinalIgnoreCase))
+            {
+                builder.AppendLine("- 현재 환경에서는 tkinter 계열 import가 실패했으므로 이번 수정에서는 tkinter를 제거하고 curses 기반으로 바꿔라");
+            }
+        }
+        foreach (var rule in BuildLanguagePromptRuleLines(string.Empty, string.Empty, languageHint, objective ?? string.Empty))
+        {
+            builder.AppendLine(rule);
+        }
+        if (changedFiles.Count > 0)
+        {
+            builder.AppendLine("현재 변경 파일:");
+            foreach (var path in changedFiles.Take(8))
+            {
+                builder.AppendLine($"- {ToWorkspaceRelativePathForPrompt(workspaceRoot, path)}");
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string ResolveFinalCodingResultLanguage(
+        string currentLanguage,
+        string languageHint,
+        string objective,
+        IReadOnlyCollection<string> changedFiles
+    )
+    {
+        var normalizedCurrent = NormalizeLanguageForCode(currentLanguage);
+        var normalizedInitial = ResolveInitialCodingLanguage(languageHint, objective);
+        if (normalizedInitial == "html")
+        {
+            return "html";
+        }
+
+        if (normalizedCurrent is "javascript" or "css")
+        {
+            var hasHtmlFile = (changedFiles ?? Array.Empty<string>())
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Any(path =>
+                {
+                    var extension = Path.GetExtension(path).ToLowerInvariant();
+                    return extension is ".html" or ".htm";
+                });
+            if (hasHtmlFile)
+            {
+                return "html";
+            }
+        }
+
+        return normalizedCurrent;
+    }
+
+    private static string CompactWorkspaceCommandForPrompt(string command, string workspaceRoot)
+    {
+        var normalized = (command ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return normalized;
+        }
+
+        if (!string.IsNullOrWhiteSpace(workspaceRoot))
+        {
+            normalized = normalized.Replace(workspaceRoot, ".", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return TrimForOutput(normalized, 500);
+    }
+
+    private static string ToWorkspaceRelativePathForPrompt(string workspaceRoot, string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var relative = Path.GetRelativePath(workspaceRoot, path).Replace('\\', '/');
+            return string.IsNullOrWhiteSpace(relative) ? Path.GetFileName(path) : relative;
+        }
+        catch
+        {
+            return Path.GetFileName(path);
+        }
+    }
+
+    private static IReadOnlyList<string> ExtractRequestedCodingPaths(string objective, string languageHint)
+    {
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty));
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return Array.Empty<string>();
+        }
+
+        var normalizedLanguage = NormalizeLanguageForCode(languageHint);
+        return RequestedCodingPathRegex.Matches(text)
+            .Select(match => NormalizeRequestedCodingPath(match.Groups["path"].Value.Replace('\\', '/')))
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Where(path => !path.Contains("://", StringComparison.Ordinal))
+            .Where(path => !path.Contains("..", StringComparison.Ordinal))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(path => string.Equals(GuessLanguageFromPath(path, normalizedLanguage), normalizedLanguage, StringComparison.OrdinalIgnoreCase))
+            .ThenBy(path => path.Count(ch => ch == '/'))
+            .ToArray();
+    }
+
+    private static string SelectRequestedCodingPath(
+        IReadOnlyList<string>? requestedPaths,
+        string? languageHint,
+        string? content
+    )
+    {
+        if (requestedPaths == null || requestedPaths.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        if (requestedPaths.Count == 1)
+        {
+            var onlyPath = requestedPaths[0];
+            var singlePathLanguage = NormalizeCodingLanguageHintPreservingAuto(languageHint);
+            if (singlePathLanguage == "auto" && !string.IsNullOrWhiteSpace(content))
+            {
+                singlePathLanguage = GuessLanguageFromPath(InferFallbackPathForGeneratedCode(content), singlePathLanguage);
+            }
+
+            if (singlePathLanguage == "auto")
+            {
+                return onlyPath;
+            }
+
+            var pathLanguage = GuessLanguageFromPath(onlyPath, "auto");
+            return string.Equals(pathLanguage, singlePathLanguage, StringComparison.OrdinalIgnoreCase)
+                ? onlyPath
+                : string.Empty;
+        }
+
+        var normalizedLanguage = NormalizeCodingLanguageHintPreservingAuto(languageHint);
+        if (normalizedLanguage == "auto" && !string.IsNullOrWhiteSpace(content))
+        {
+            normalizedLanguage = GuessLanguageFromPath(InferFallbackPathForGeneratedCode(content), normalizedLanguage);
+        }
+
+        if (normalizedLanguage == "auto")
+        {
+            return string.Empty;
+        }
+
+        return requestedPaths.FirstOrDefault(path =>
+            string.Equals(GuessLanguageFromPath(path, normalizedLanguage), normalizedLanguage, StringComparison.OrdinalIgnoreCase))
+            ?? string.Empty;
+    }
+
+    private static bool HasSingleFileIntent(string objective)
+    {
+        var text = (objective ?? string.Empty).ToLowerInvariant();
+        return ContainsAny(
+            text,
+            "파일 하나",
+            "파일 한개",
+            "파일 1개",
+            "한 파일",
+            "single file",
+            "single-file",
+            "one file",
+            "하나만"
+        );
+    }
+
+    private static string[] CleanupRedundantSingleFileArtifacts(
+        string workspaceRoot,
+        string objective,
+        IReadOnlyList<string> requestedPaths,
+        IReadOnlyList<string> changedFiles
+    )
+    {
+        if (requestedPaths.Count != 1 || !HasSingleFileIntent(objective) || changedFiles.Count == 0)
+        {
+            return changedFiles
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        string requestedFullPath;
+        try
+        {
+            requestedFullPath = ResolveWorkspacePath(workspaceRoot, requestedPaths[0]);
+        }
+        catch
+        {
+            return changedFiles
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        if (!File.Exists(requestedFullPath))
+        {
+            return changedFiles
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+        }
+
+        var requestedExtension = Path.GetExtension(requestedFullPath);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        var normalizedWorkspaceRoot = Path.GetFullPath(workspaceRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var cleaned = new List<string>();
+        foreach (var path in changedFiles)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(path);
+            if (string.Equals(fullPath, requestedFullPath, comparison))
+            {
+                cleaned.Add(fullPath);
+                continue;
+            }
+
+            var parent = (Path.GetDirectoryName(fullPath) ?? string.Empty)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var fileName = Path.GetFileName(fullPath);
+            var shouldDelete =
+                string.Equals(parent, normalizedWorkspaceRoot, comparison)
+                && GenericCodingFallbackFileNames.Contains(fileName)
+                && string.Equals(Path.GetExtension(fullPath), requestedExtension, StringComparison.OrdinalIgnoreCase)
+                && File.Exists(fullPath);
+
+            if (!shouldDelete)
+            {
+                cleaned.Add(fullPath);
+                continue;
+            }
+
+            try
+            {
+                File.Delete(fullPath);
+            }
+            catch
+            {
+                cleaned.Add(fullPath);
+            }
+        }
+
+        return cleaned
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static string ExtractExpectedConsoleOutput(string objective)
+    {
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty));
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        foreach (var regex in new[] { ExpectedOutputAfterQuotedRegex, ExpectedOutputBeforeQuotedRegex })
+        {
+            foreach (Match match in regex.Matches(text))
+            {
+                var value = match.Groups["value"].Value.Trim();
+                if (string.IsNullOrWhiteSpace(value))
+                {
+                    continue;
+                }
+
+                if (RequestedCodingPathRegex.IsMatch(value) || !IsLikelyExpectedOutputLiteral(value))
+                {
+                    continue;
+                }
+
+                return value;
+            }
+        }
+
+        if (ContainsAny(text.ToLowerInvariant(), "출력", "print", "echo", "표시"))
+        {
+            var fallbackCandidate = GenericQuotedTextRegex.Matches(text)
+                .Select(match => match.Groups["value"].Value.Trim())
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Where(value => !RequestedCodingPathRegex.IsMatch(value))
+                .Where(IsLikelyExpectedOutputLiteral)
+                .LastOrDefault();
+            if (!string.IsNullOrWhiteSpace(fallbackCandidate))
+            {
+                return fallbackCandidate;
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ExtractLatestCodingRequestText(string objective)
+    {
+        var text = (objective ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        var lastNewRequestMarker = text.LastIndexOf("[새 요청]", StringComparison.Ordinal);
+        if (lastNewRequestMarker >= 0)
+        {
+            var requestText = text[(lastNewRequestMarker + "[새 요청]".Length)..].Trim();
+            if (string.IsNullOrWhiteSpace(requestText))
+            {
+                return string.Empty;
+            }
+
+            var lines = requestText
+                .Replace("\r\n", "\n", StringComparison.Ordinal)
+                .Replace('\r', '\n')
+                .Split('\n', StringSplitOptions.None);
+            var collected = new List<string>(lines.Length);
+            foreach (var rawLine in lines)
+            {
+                var line = rawLine ?? string.Empty;
+                var trimmed = line.Trim();
+                if (collected.Count > 0
+                    && trimmed.Length > 0
+                    && Regex.IsMatch(trimmed, @"^\[[^\]\r\n]{1,80}\]$", RegexOptions.CultureInvariant))
+                {
+                    break;
+                }
+
+                collected.Add(line);
+            }
+
+            return string.Join('\n', collected).Trim();
+        }
+
+        return text;
+    }
+
+    private static bool IsLikelyExpectedOutputLiteral(string value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (normalized.Length > 120)
+        {
+            return false;
+        }
+
+        return !normalized.Equals("새 요청", StringComparison.OrdinalIgnoreCase)
+               && !normalized.Equals("사용자 요청", StringComparison.OrdinalIgnoreCase)
+               && !normalized.Equals("컨텍스트 사용 규칙", StringComparison.OrdinalIgnoreCase)
+               && !normalized.Equals("최근 대화", StringComparison.OrdinalIgnoreCase)
+               && !normalized.Equals("최종 검증 실패", StringComparison.OrdinalIgnoreCase)
+               && !Regex.IsMatch(normalized, @"^(?:user|assistant|system)\s*=\s*(?:true|false)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+    }
+
+    private static bool ShouldTryDeterministicSingleFileOutputRepair(
+        string objective,
+        string languageHint,
+        IReadOnlyList<string> requestedPaths,
+        string expectedOutput
+    )
+    {
+        if (requestedPaths.Count != 1 || string.IsNullOrWhiteSpace(expectedOutput))
+        {
+            return false;
+        }
+
+        var normalizedLanguage = NormalizeLanguageForCode(languageHint);
+        if (normalizedLanguage == "auto")
+        {
+            normalizedLanguage = GuessLanguageFromPath(requestedPaths[0], normalizedLanguage);
+        }
+
+        return string.Equals(normalizedLanguage, "python", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldPreferFileBundleFallback(string objective, IReadOnlyList<string>? requestedPaths)
+    {
+        if (requestedPaths != null && requestedPaths.Count > 1)
+        {
+            return true;
+        }
+
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        return ContainsAny(
+            text,
+            "두 파일",
+            "2개 파일",
+            "여러 파일",
+            "multi-file",
+            "multiple files"
+        );
+    }
+
+    private static string BuildPythonStringLiteral(string value)
+    {
+        var builder = new StringBuilder();
+        builder.Append('"');
+        foreach (var ch in value ?? string.Empty)
+        {
+            switch (ch)
+            {
+                case '\\':
+                    builder.Append("\\\\");
+                    break;
+                case '"':
+                    builder.Append("\\\"");
+                    break;
+                case '\n':
+                    builder.Append("\\n");
+                    break;
+                case '\r':
+                    builder.Append("\\r");
+                    break;
+                case '\t':
+                    builder.Append("\\t");
+                    break;
+                default:
+                    if (char.IsControl(ch))
+                    {
+                        builder.Append($"\\u{(int)ch:x4}");
+                    }
+                    else
+                    {
+                        builder.Append(ch);
+                    }
+                    break;
+            }
+        }
+
+        builder.Append('"');
+        return builder.ToString();
+    }
+
+    private async Task<(bool Applied, string ChangedPath, string Code, CodeExecutionResult Execution)> TryApplyDeterministicSingleFileOutputRepairAsync(
+        string objective,
+        string languageHint,
+        string workspaceRoot,
+        IReadOnlyList<string> requestedPaths,
+        string expectedOutput,
+        CancellationToken cancellationToken
+    )
+    {
+        if (!ShouldTryDeterministicSingleFileOutputRepair(objective, languageHint, requestedPaths, expectedOutput))
+        {
+            return (false, string.Empty, string.Empty, new CodeExecutionResult("bash", workspaceRoot, "-", "(skipped)", 0, string.Empty, string.Empty, "skipped"));
+        }
+
+        var requestedPath = requestedPaths[0];
+        var fullPath = ResolveWorkspacePath(workspaceRoot, requestedPath);
+        var directory = Path.GetDirectoryName(fullPath);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        var code = $"print({BuildPythonStringLiteral(expectedOutput)})\n";
+        await File.WriteAllTextAsync(fullPath, code, cancellationToken);
+
+        var baseCommand = $"python3 {EscapeShellArg(requestedPath)}";
+        var shell = await RunWorkspaceCommandWithAutoInstallAsync(
+            WrapCommandWithVerificationAssertions(baseCommand, expectedOutput, new[] { fullPath }),
+            workspaceRoot,
+            cancellationToken
+        );
+        var execution = new CodeExecutionResult(
+            "bash",
+            workspaceRoot,
+            "-",
+            DescribeVerificationCommand(baseCommand, expectedOutput, new[] { fullPath }),
+            shell.ExitCode,
+            shell.StdOut,
+            shell.StdErr,
+            shell.TimedOut ? "timeout" : (shell.ExitCode == 0 ? "ok" : "error")
+        );
+        return (true, fullPath, code, execution);
+    }
+
     private static bool TryGenerateDeterministicUiCloneScaffold(
         string objective,
         string workspaceRoot,
@@ -3003,7 +4570,14 @@ public sealed partial class CommandService
     )
     {
         files = Array.Empty<ScaffoldFileSpec>();
-        var text = (objective ?? string.Empty).ToLowerInvariant();
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        var explicitLanguage = ResolveExplicitObjectiveLanguage(objective);
+        if (!string.IsNullOrWhiteSpace(explicitLanguage)
+            && explicitLanguage is not ("html" or "css" or "javascript"))
+        {
+            return false;
+        }
+
         var isUiClone = ContainsAny(
             text,
             "클론",
@@ -3015,7 +4589,7 @@ public sealed partial class CommandService
             "landing",
             "페이지"
         );
-        if (!isUiClone)
+        if (!isUiClone || ContainsAny(text, "게임", "game", "테트리스", "tetris", "슈팅", "shooter", "비행기", "1942"))
         {
             return false;
         }
@@ -3088,6 +4662,569 @@ public sealed partial class CommandService
             new ScaffoldFileSpec(indexPath, indexContent),
             new ScaffoldFileSpec(cssPath, cssContent),
             new ScaffoldFileSpec(jsPath, jsContent)
+        };
+        return true;
+    }
+
+    private static bool TryGenerateDeterministicWebShooterScaffold(
+        string objective,
+        string languageHint,
+        out IReadOnlyList<ScaffoldFileSpec> files
+    )
+    {
+        files = Array.Empty<ScaffoldFileSpec>();
+        var lang = NormalizeCodingLanguageHintPreservingAuto(languageHint);
+        var explicitLanguage = ResolveExplicitObjectiveLanguage(objective);
+        if (!string.IsNullOrWhiteSpace(explicitLanguage)
+            && explicitLanguage is not ("html" or "javascript" or "css"))
+        {
+            return false;
+        }
+
+        if (lang != "auto" && lang != "html" && lang != "javascript" && lang != "css")
+        {
+            return false;
+        }
+
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var webSignals = ContainsAny(text, "웹", "web", "브라우저", "html", "canvas");
+        var shooterSignals = ContainsAny(text, "슈팅", "shooter", "shooting", "비행기", "fighter", "flight", "arcade", "종스크롤", "scroll");
+        var gameSignals = ContainsAny(text, "게임", "game");
+        var frontendRequested = lang is "html" or "javascript" or "css"
+            || explicitLanguage is "html" or "javascript" or "css";
+        if (!(shooterSignals && gameSignals && (webSignals || frontendRequested)))
+        {
+            return false;
+        }
+
+        var indexContent = """
+                           <!doctype html>
+                           <html lang="ko">
+                           <head>
+                             <meta charset="utf-8" />
+                             <meta name="viewport" content="width=device-width, initial-scale=1" />
+                             <title>Sky Patrol</title>
+                             <style>
+                               :root {
+                                 color-scheme: dark;
+                                 --bg-top: #07111f;
+                                 --bg-bottom: #10345a;
+                                 --panel: rgba(7, 15, 28, 0.82);
+                                 --line: rgba(255, 255, 255, 0.12);
+                                 --text: #f4f7fb;
+                                 --accent: #ffd166;
+                                 --danger: #ff5d5d;
+                                 --ok: #67e8b1;
+                               }
+                               * { box-sizing: border-box; }
+                               body {
+                                 margin: 0;
+                                 min-height: 100vh;
+                                 display: grid;
+                                 place-items: center;
+                                 background:
+                                   radial-gradient(circle at top, rgba(255,255,255,0.08), transparent 30%),
+                                   linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+                                 color: var(--text);
+                                 font-family: "Trebuchet MS", "Noto Sans KR", sans-serif;
+                               }
+                               .shell {
+                                 width: min(100vw, 1024px);
+                                 padding: 16px;
+                               }
+                               .hud {
+                                 display: flex;
+                                 justify-content: space-between;
+                                 gap: 12px;
+                                 padding: 12px 14px;
+                                 margin-bottom: 12px;
+                                 border: 1px solid var(--line);
+                                 border-radius: 16px;
+                                 background: var(--panel);
+                                 backdrop-filter: blur(10px);
+                                 text-transform: uppercase;
+                                 letter-spacing: 0.08em;
+                                 font-size: 13px;
+                               }
+                               .hud strong {
+                                 color: var(--accent);
+                                 font-size: 18px;
+                                 margin-left: 8px;
+                               }
+                               .frame {
+                                 position: relative;
+                                 border-radius: 18px;
+                                 overflow: hidden;
+                                 border: 1px solid rgba(255,255,255,0.14);
+                                 box-shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+                               }
+                               canvas {
+                                 display: block;
+                                 width: 100%;
+                                 height: auto;
+                                 background: linear-gradient(180deg, rgba(7,17,31,0.98), rgba(11,31,54,0.98));
+                               }
+                               .overlay {
+                                 position: absolute;
+                                 inset: 0;
+                                 display: grid;
+                                 place-items: center;
+                                 background: linear-gradient(180deg, rgba(4, 10, 18, 0.25), rgba(4, 10, 18, 0.82));
+                                 text-align: center;
+                                 padding: 24px;
+                               }
+                               .panel {
+                                 width: min(92%, 520px);
+                                 padding: 28px 24px;
+                                 border-radius: 20px;
+                                 border: 1px solid var(--line);
+                                 background: rgba(5, 12, 22, 0.88);
+                                 box-shadow: 0 24px 70px rgba(0, 0, 0, 0.28);
+                               }
+                               .eyebrow {
+                                 color: var(--ok);
+                                 letter-spacing: 0.3em;
+                                 font-size: 12px;
+                                 text-transform: uppercase;
+                               }
+                               h1 {
+                                 margin: 12px 0 8px;
+                                 font-size: clamp(34px, 6vw, 58px);
+                                 line-height: 0.95;
+                               }
+                               p {
+                                 margin: 0;
+                                 color: rgba(244, 247, 251, 0.82);
+                                 line-height: 1.6;
+                               }
+                               .controls {
+                                 margin-top: 18px;
+                                 padding-top: 18px;
+                                 border-top: 1px solid var(--line);
+                                 display: grid;
+                                 gap: 6px;
+                                 font-size: 14px;
+                               }
+                               .cta {
+                                 margin-top: 20px;
+                                 display: inline-flex;
+                                 align-items: center;
+                                 justify-content: center;
+                                 min-width: 180px;
+                                 min-height: 48px;
+                                 padding: 0 18px;
+                                 border-radius: 999px;
+                                 border: 1px solid rgba(255, 209, 102, 0.4);
+                                 background: linear-gradient(180deg, rgba(255, 209, 102, 0.28), rgba(255, 209, 102, 0.1));
+                                 color: #fff7df;
+                                 font-weight: 700;
+                               }
+                               .hidden { display: none; }
+                               @media (max-width: 640px) {
+                                 .hud {
+                                   flex-wrap: wrap;
+                                   font-size: 12px;
+                                 }
+                               }
+                             </style>
+                           </head>
+                           <body>
+                             <div class="shell">
+                               <div class="hud">
+                                 <div>Score <strong id="score">0</strong></div>
+                                 <div>Lives <strong id="lives">3</strong></div>
+                                 <div>Wave <strong id="wave">1</strong></div>
+                               </div>
+                               <div class="frame">
+                                 <canvas id="game" width="960" height="640"></canvas>
+                                 <div id="overlay" class="overlay">
+                                   <div class="panel">
+                                     <div class="eyebrow">Arcade Shooter</div>
+                                     <h1>Sky Patrol</h1>
+                                     <p>브라우저에서 바로 실행되는 종스크롤 아케이드 슈팅 게임입니다. 적 편대를 피하고 격추해 최고 점수를 노리세요.</p>
+                                     <div class="controls">
+                                       <div>이동: 화살표 또는 WASD</div>
+                                       <div>사격: Space 또는 J</div>
+                                       <div>시작/재시작: Enter</div>
+                                     </div>
+                                     <div class="cta" id="overlayButton">Enter 키로 출격</div>
+                                   </div>
+                                 </div>
+                               </div>
+                             </div>
+                             <script>
+                               const canvas = document.getElementById("game");
+                               const ctx = canvas.getContext("2d");
+                               const overlay = document.getElementById("overlay");
+                               const overlayButton = document.getElementById("overlayButton");
+                               const scoreEl = document.getElementById("score");
+                               const livesEl = document.getElementById("lives");
+                               const waveEl = document.getElementById("wave");
+
+                               const state = {
+                                 running: false,
+                                 gameOver: false,
+                                 score: 0,
+                                 wave: 1,
+                                 spawnTimer: 0,
+                                 stars: Array.from({ length: 90 }, () => ({
+                                   x: Math.random() * canvas.width,
+                                   y: Math.random() * canvas.height,
+                                   size: Math.random() * 2 + 1,
+                                   speed: Math.random() * 90 + 25
+                                 })),
+                                 player: null,
+                                 bullets: [],
+                                 enemyBullets: [],
+                                 enemies: [],
+                                 particles: [],
+                                 keys: new Set(),
+                                 lastTick: 0
+                               };
+
+                               function resetGame() {
+                                 state.running = true;
+                                 state.gameOver = false;
+                                 state.score = 0;
+                                 state.wave = 1;
+                                 state.spawnTimer = 0;
+                                 state.bullets = [];
+                                 state.enemyBullets = [];
+                                 state.enemies = [];
+                                 state.particles = [];
+                                 state.player = {
+                                   x: canvas.width / 2 - 24,
+                                   y: canvas.height - 92,
+                                   w: 48,
+                                   h: 54,
+                                   speed: 340,
+                                   cooldown: 0,
+                                   lives: 3,
+                                   fireRate: 0.16
+                                 };
+                                 syncHud();
+                                 overlay.classList.add("hidden");
+                               }
+
+                               function syncHud() {
+                                 scoreEl.textContent = String(state.score);
+                                 livesEl.textContent = String(Math.max(0, state.player ? state.player.lives : 0));
+                                 waveEl.textContent = String(state.wave);
+                               }
+
+                               function setOverlay(title, message, action) {
+                                 overlay.classList.remove("hidden");
+                                 overlay.querySelector("h1").textContent = title;
+                                 overlay.querySelector("p").textContent = message;
+                                 overlayButton.textContent = action;
+                               }
+
+                               function spawnEnemy() {
+                                 const width = 34 + Math.random() * 18;
+                                 const type = Math.random() > 0.72 ? "ace" : "scout";
+                                 const speed = type === "ace" ? 130 + state.wave * 10 : 90 + state.wave * 8;
+                                 state.enemies.push({
+                                   x: 40 + Math.random() * (canvas.width - 80 - width),
+                                   y: -70,
+                                   w: width,
+                                   h: type === "ace" ? 44 : 34,
+                                   speed,
+                                   hp: type === "ace" ? 3 : 1,
+                                   fireTimer: 0.8 + Math.random() * 1.8,
+                                   drift: (Math.random() * 2 - 1) * (type === "ace" ? 70 : 35),
+                                   seed: Math.random() * Math.PI * 2,
+                                   type
+                                 });
+                               }
+
+                               function firePlayerBullet() {
+                                 const p = state.player;
+                                 state.bullets.push(
+                                   { x: p.x + 9, y: p.y - 6, w: 8, h: 20, speed: 520 },
+                                   { x: p.x + p.w - 17, y: p.y - 6, w: 8, h: 20, speed: 520 }
+                                 );
+                               }
+
+                               function fireEnemyBullet(enemy) {
+                                 state.enemyBullets.push({
+                                   x: enemy.x + enemy.w / 2 - 3,
+                                   y: enemy.y + enemy.h,
+                                   w: 6,
+                                   h: 16,
+                                   speed: 220 + state.wave * 10
+                                 });
+                               }
+
+                               function explode(x, y, color) {
+                                 for (let i = 0; i < 18; i += 1) {
+                                   const angle = (Math.PI * 2 * i) / 18;
+                                   const speed = 60 + Math.random() * 140;
+                                   state.particles.push({
+                                     x,
+                                     y,
+                                     vx: Math.cos(angle) * speed,
+                                     vy: Math.sin(angle) * speed,
+                                     life: 0.55 + Math.random() * 0.35,
+                                     maxLife: 0.9,
+                                     size: 2 + Math.random() * 3,
+                                     color
+                                   });
+                                 }
+                               }
+
+                               function hitPlayer() {
+                                 if (!state.player || state.gameOver) {
+                                   return;
+                                 }
+                                 state.player.lives -= 1;
+                                 explode(state.player.x + state.player.w / 2, state.player.y + state.player.h / 2, "#ff9f68");
+                                 syncHud();
+                                 if (state.player.lives <= 0) {
+                                   state.running = false;
+                                   state.gameOver = true;
+                                   setOverlay("Mission Failed", `최종 점수 ${state.score}점. Enter 키로 다시 출격하세요.`, "Enter 키로 재도전");
+                                   return;
+                                 }
+                                 state.player.x = canvas.width / 2 - state.player.w / 2;
+                                 state.player.y = canvas.height - 92;
+                               }
+
+                               function rectsIntersect(a, b) {
+                                 return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+                               }
+
+                               function update(dt) {
+                                 state.stars.forEach((star) => {
+                                   star.y += star.speed * dt;
+                                   if (star.y > canvas.height + 4) {
+                                     star.y = -4;
+                                     star.x = Math.random() * canvas.width;
+                                   }
+                                 });
+
+                                 state.particles = state.particles.filter((particle) => {
+                                   particle.life -= dt;
+                                   particle.x += particle.vx * dt;
+                                   particle.y += particle.vy * dt;
+                                   particle.vx *= 0.98;
+                                   particle.vy *= 0.98;
+                                   return particle.life > 0;
+                                 });
+
+                                 if (!state.running || !state.player) {
+                                   return;
+                                 }
+
+                                 const p = state.player;
+                                 if (state.keys.has("ArrowLeft") || state.keys.has("a")) p.x -= p.speed * dt;
+                                 if (state.keys.has("ArrowRight") || state.keys.has("d")) p.x += p.speed * dt;
+                                 if (state.keys.has("ArrowUp") || state.keys.has("w")) p.y -= p.speed * dt;
+                                 if (state.keys.has("ArrowDown") || state.keys.has("s")) p.y += p.speed * dt;
+                                 p.x = Math.max(18, Math.min(canvas.width - p.w - 18, p.x));
+                                 p.y = Math.max(24, Math.min(canvas.height - p.h - 16, p.y));
+
+                                 p.cooldown -= dt;
+                                 if ((state.keys.has(" ") || state.keys.has("j")) && p.cooldown <= 0) {
+                                   firePlayerBullet();
+                                   p.cooldown = p.fireRate;
+                                 }
+
+                                 state.spawnTimer -= dt;
+                                 if (state.spawnTimer <= 0) {
+                                   spawnEnemy();
+                                   const density = Math.max(0.28, 1.05 - state.wave * 0.05);
+                                   state.spawnTimer = density;
+                                 }
+
+                                 state.bullets.forEach((bullet) => { bullet.y -= bullet.speed * dt; });
+                                 state.enemyBullets.forEach((bullet) => { bullet.y += bullet.speed * dt; });
+                                 state.bullets = state.bullets.filter((bullet) => bullet.y + bullet.h > -10);
+                                 state.enemyBullets = state.enemyBullets.filter((bullet) => bullet.y < canvas.height + 20);
+
+                                 for (const enemy of state.enemies) {
+                                   enemy.y += enemy.speed * dt;
+                                   enemy.x += Math.sin((performance.now() / 1000) * 2.4 + enemy.seed) * enemy.drift * dt;
+                                   enemy.x = Math.max(10, Math.min(canvas.width - enemy.w - 10, enemy.x));
+                                   enemy.fireTimer -= dt;
+                                   if (enemy.fireTimer <= 0) {
+                                     fireEnemyBullet(enemy);
+                                     enemy.fireTimer = enemy.type === "ace" ? 0.75 : 1.6 + Math.random() * 0.8;
+                                   }
+                                 }
+
+                                 for (let i = state.enemies.length - 1; i >= 0; i -= 1) {
+                                   const enemy = state.enemies[i];
+                                   if (enemy.y > canvas.height + 30) {
+                                     state.enemies.splice(i, 1);
+                                     continue;
+                                   }
+
+                                   if (rectsIntersect(enemy, p)) {
+                                     state.enemies.splice(i, 1);
+                                     hitPlayer();
+                                   }
+                                 }
+
+                                 for (let i = state.bullets.length - 1; i >= 0; i -= 1) {
+                                   const bullet = state.bullets[i];
+                                   let consumed = false;
+                                   for (let j = state.enemies.length - 1; j >= 0; j -= 1) {
+                                     const enemy = state.enemies[j];
+                                     if (!rectsIntersect(bullet, enemy)) {
+                                       continue;
+                                     }
+                                     enemy.hp -= 1;
+                                     consumed = true;
+                                     if (enemy.hp <= 0) {
+                                       state.enemies.splice(j, 1);
+                                       state.score += enemy.type === "ace" ? 180 : 60;
+                                       if (state.score > 0 && state.score % 900 === 0) {
+                                         state.wave += 1;
+                                       }
+                                       explode(enemy.x + enemy.w / 2, enemy.y + enemy.h / 2, enemy.type === "ace" ? "#ffd166" : "#9ad1ff");
+                                       syncHud();
+                                     }
+                                     break;
+                                   }
+                                   if (consumed) {
+                                     state.bullets.splice(i, 1);
+                                   }
+                                 }
+
+                                 for (let i = state.enemyBullets.length - 1; i >= 0; i -= 1) {
+                                   if (rectsIntersect(state.enemyBullets[i], p)) {
+                                     state.enemyBullets.splice(i, 1);
+                                     hitPlayer();
+                                   }
+                                 }
+                               }
+
+                               function drawBackground() {
+                                 const sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+                                 sky.addColorStop(0, "#07111f");
+                                 sky.addColorStop(1, "#0d3153");
+                                 ctx.fillStyle = sky;
+                                 ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+                                 state.stars.forEach((star) => {
+                                   ctx.fillStyle = `rgba(255,255,255,${0.35 + star.size * 0.12})`;
+                                   ctx.fillRect(star.x, star.y, star.size, star.size * 1.6);
+                                 });
+                               }
+
+                               function drawPlayer(player) {
+                                 ctx.save();
+                                 ctx.translate(player.x, player.y);
+                                 ctx.fillStyle = "#d9f5ff";
+                                 ctx.beginPath();
+                                 ctx.moveTo(player.w / 2, 0);
+                                 ctx.lineTo(player.w, player.h - 8);
+                                 ctx.lineTo(player.w / 2 + 8, player.h - 12);
+                                 ctx.lineTo(player.w / 2 + 3, player.h);
+                                 ctx.lineTo(player.w / 2 - 3, player.h);
+                                 ctx.lineTo(player.w / 2 - 8, player.h - 12);
+                                 ctx.lineTo(0, player.h - 8);
+                                 ctx.closePath();
+                                 ctx.fill();
+                                 ctx.fillStyle = "#ff6b6b";
+                                 ctx.fillRect(player.w / 2 - 4, 10, 8, 18);
+                                 ctx.restore();
+                               }
+
+                               function drawEnemy(enemy) {
+                                 ctx.save();
+                                 ctx.translate(enemy.x, enemy.y);
+                                 ctx.fillStyle = enemy.type === "ace" ? "#ff9d5c" : "#ff5d7a";
+                                 ctx.beginPath();
+                                 ctx.moveTo(enemy.w / 2, enemy.h);
+                                 ctx.lineTo(enemy.w, enemy.h * 0.2);
+                                 ctx.lineTo(enemy.w * 0.68, 0);
+                                 ctx.lineTo(enemy.w * 0.5, enemy.h * 0.28);
+                                 ctx.lineTo(enemy.w * 0.32, 0);
+                                 ctx.lineTo(0, enemy.h * 0.2);
+                                 ctx.closePath();
+                                 ctx.fill();
+                                 ctx.fillStyle = "rgba(255,255,255,0.5)";
+                                 ctx.fillRect(enemy.w / 2 - 3, enemy.h * 0.24, 6, 12);
+                                 ctx.restore();
+                               }
+
+                               function drawProjectiles() {
+                                 ctx.fillStyle = "#ffe08a";
+                                 state.bullets.forEach((bullet) => ctx.fillRect(bullet.x, bullet.y, bullet.w, bullet.h));
+                                 ctx.fillStyle = "#ff8269";
+                                 state.enemyBullets.forEach((bullet) => ctx.fillRect(bullet.x, bullet.y, bullet.w, bullet.h));
+                               }
+
+                               function drawParticles() {
+                                 state.particles.forEach((particle) => {
+                                   const alpha = Math.max(0, particle.life / particle.maxLife);
+                                   ctx.fillStyle = particle.color.replace(")", `, ${alpha})`).replace("rgb", "rgba");
+                                   if (!ctx.fillStyle.includes("rgba")) {
+                                     ctx.fillStyle = particle.color;
+                                     ctx.globalAlpha = alpha;
+                                   } else {
+                                     ctx.globalAlpha = 1;
+                                   }
+                                   ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
+                                 });
+                                 ctx.globalAlpha = 1;
+                               }
+
+                               function draw() {
+                                 drawBackground();
+                                 drawProjectiles();
+                                 state.enemies.forEach(drawEnemy);
+                                 if (state.player) {
+                                   drawPlayer(state.player);
+                                 }
+                                 drawParticles();
+                               }
+
+                               function loop(timestamp) {
+                                 if (!state.lastTick) {
+                                   state.lastTick = timestamp;
+                                 }
+                                 const dt = Math.min(0.033, (timestamp - state.lastTick) / 1000);
+                                 state.lastTick = timestamp;
+                                 update(dt);
+                                 draw();
+                                 requestAnimationFrame(loop);
+                               }
+
+                               window.addEventListener("keydown", (event) => {
+                                 const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+                                 if (key === "Enter") {
+                                   resetGame();
+                                   return;
+                                 }
+                                 if (key === " ") {
+                                   event.preventDefault();
+                                 }
+                                 state.keys.add(key);
+                               });
+
+                               window.addEventListener("keyup", (event) => {
+                                 const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+                                 state.keys.delete(key);
+                               });
+
+                               setOverlay("Sky Patrol", "Enter 키를 눌러 출격하세요. 적 편대를 격추하고 생존 시간을 늘리세요.", "Enter 키로 출격");
+                               syncHud();
+                               requestAnimationFrame(loop);
+                             </script>
+                           </body>
+                           </html>
+                           """;
+
+        files = new[]
+        {
+            new ScaffoldFileSpec("index.html", indexContent)
         };
         return true;
     }
@@ -3238,6 +5375,7 @@ public sealed partial class CommandService
     }
 
     private const int VisibleCodingStageTotal = 6;
+    private const int MaxCodingRepairPasses = 1;
 
     private static CodingProgressUpdate BuildCodingProgressUpdate(
         string progressMode,
@@ -3363,7 +5501,8 @@ public sealed partial class CommandService
             return false;
         }
 
-        if (!string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(provider, "codex", StringComparison.OrdinalIgnoreCase))
         {
             return false;
         }
@@ -3393,6 +5532,12 @@ public sealed partial class CommandService
             "frontend",
             "html",
             "css",
+            "웹",
+            "web",
+            "게임",
+            "game",
+            "슈팅",
+            "shooter",
             "화면",
             "레이아웃"
         );
@@ -3439,21 +5584,25 @@ public sealed partial class CommandService
         string modeLabel,
         string workspaceRoot,
         string provider,
+        string model,
         bool oneShotMode,
         int iteration,
         int maxIterations,
+        int maxActions,
         string workspaceSnapshot,
         string recentLogs,
         CodeExecutionResult lastExecution
     )
     {
+        var resolvedLanguage = ResolveInitialCodingLanguage(languageHint, objective);
         var builder = new StringBuilder();
         builder.AppendLine("너는 로컬 코딩 실행 에이전트다.");
         builder.AppendLine($"모드: {modeLabel}");
         builder.AppendLine($"모델 제공자: {provider}");
+        builder.AppendLine($"모델: {provider}:{model}");
         builder.AppendLine($"반복: {iteration}/{maxIterations}");
         builder.AppendLine($"기준 작업 디렉터리: {workspaceRoot}");
-        builder.AppendLine($"언어 힌트: {languageHint}");
+        builder.AppendLine($"언어 힌트: {resolvedLanguage}");
         builder.AppendLine($"one-shot: {(oneShotMode ? "true" : "false")}");
         builder.AppendLine();
         builder.AppendLine("[목표]");
@@ -3476,13 +5625,33 @@ public sealed partial class CommandService
         builder.AppendLine("{\"analysis\":\"...\",\"done\":false,\"final_message\":\"...\",\"actions\":[{\"type\":\"mkdir\",\"path\":\"상대경로\",\"content\":\"...\",\"command\":\"...\"}]}");
         builder.AppendLine("type 허용값: mkdir, write_file, append_file, read_file, delete_file, run");
         builder.AppendLine("주의: type을 `mkdir|write_file`처럼 합치지 말고 반드시 단일 값만 사용");
-        builder.AppendLine($"제약: actions 최대 {_config.CodingAgentMaxActionsPerIteration}개");
+        builder.AppendLine($"제약: actions 최대 {Math.Max(1, maxActions)}개");
+        builder.AppendLine("제공자/모델 힌트:");
+        foreach (var rule in BuildProviderModelPromptRuleLines(provider, model))
+        {
+            builder.AppendLine(rule);
+        }
+
+        builder.AppendLine("언어별 힌트:");
+        foreach (var rule in BuildLanguagePromptRuleLines(provider, model, resolvedLanguage, objective))
+        {
+            builder.AppendLine(rule);
+        }
+
+        builder.AppendLine("검증 규칙:");
+        foreach (var rule in BuildCodingVerificationRuleLines())
+        {
+            builder.AppendLine(rule);
+        }
+
         builder.AppendLine("규칙:");
         builder.AppendLine("- analysis에는 이번 반복에서 무엇을 만들고 어떤 파일을 건드릴지 짧게 적는다");
         builder.AppendLine("- done=false 이면 actions에 최소 1개의 실질 액션(mkdir/write_file/append_file/read_file/delete_file/run)을 반드시 넣는다");
         builder.AppendLine("- 경로는 가능하면 상대경로 사용");
         builder.AppendLine("- run은 마지막 검증 단계에서 1회만 수행되므로 중간 반복에서는 가능한 한 넣지 말고 파일 생성/수정에 집중");
         builder.AppendLine("- JSON 문자열 내부 줄바꿈은 반드시 \\n 으로 이스케이프");
+        builder.AppendLine("- path 값에는 줄바꿈, 탭, 마크다운 bullet, 따옴표 래핑을 넣지 말고 순수 상대경로만 넣는다");
+        builder.AppendLine("- content는 실제 파일 내용 그대로 넣고, 문자열 리터럴이나 파일명 중간에 임의 줄바꿈을 넣지 않는다");
         builder.AppendLine("- 가능한 한 한 번에 필요한 파일을 모두 생성하고, 마지막 검증(run) 1회만 수행");
         builder.AppendLine("- 실행 성공 및 요구사항 충족 시 즉시 done=true, actions=[]");
         builder.AppendLine("- 오류가 있으면 원인 수정 액션을 포함");
@@ -3492,1073 +5661,75 @@ public sealed partial class CommandService
 
     private static string BuildCodingAgentObjectivePrompt(string input, string languageHint, string modeLabel)
     {
-        return $"""
-                목표: 사용자의 코딩 요청을 로컬 프로젝트에서 실제로 완성하세요.
-                모드: {modeLabel}
-                언어 힌트: {languageHint}
-                요구사항:
-                - 기존 파일 구조를 우선 존중하고 필요한 최소 범위만 수정
-                - 필요한 폴더/파일 생성 및 수정
-                - 빌드/컴파일/실행/테스트 수행
-                - 오류 발생 시 원인 분석 후 수정 반복
-                - 더미 구현, TODO만 남기는 미완성 결과, 가짜 성공 보고 금지
-                - 실패한 명령을 같은 형태로 반복하지 말고 원인을 바꿔 수정
-                - 최종 요약에는 실제 변경 내용과 검증 결과만 반영
-                - 최종적으로 실행 가능한 상태를 목표로 진행
+        var resolvedLanguage = ResolveInitialCodingLanguage(languageHint, input);
+        var languageRules = BuildLanguagePromptRuleLines(string.Empty, string.Empty, resolvedLanguage, input);
+        var builder = new StringBuilder();
+        builder.AppendLine("목표: 사용자의 코딩 요청을 로컬 프로젝트에서 실제로 완성하세요.");
+        builder.AppendLine($"모드: {modeLabel}");
+        builder.AppendLine($"언어 힌트: {resolvedLanguage}");
+        builder.AppendLine("요구사항:");
+        builder.AppendLine("- 기존 파일 구조를 우선 존중하고 필요한 최소 범위만 수정");
+        builder.AppendLine("- 필요한 폴더/파일 생성 및 수정");
+        builder.AppendLine("- 빌드/컴파일/실행/테스트 수행");
+        builder.AppendLine("- 오류 발생 시 원인 분석 후 수정 반복");
+        builder.AppendLine("- 더미 구현, TODO만 남기는 미완성 결과, 가짜 성공 보고 금지");
+        builder.AppendLine("- 실패한 명령을 같은 형태로 반복하지 말고 원인을 바꿔 수정");
+        builder.AppendLine("- 완료 보고 전에 최종 실행 1회와 생성/수정 파일 존재 여부를 확인");
+        builder.AppendLine("- 요청에 출력값이 있으면 stdout도 실제 결과로 확인");
+        builder.AppendLine("- 최종 요약에는 실제 변경 내용과 검증 결과만 반영");
+        builder.AppendLine("- 최종적으로 실행 가능한 상태를 목표로 진행");
+        if (languageRules.Count > 0)
+        {
+            builder.AppendLine("- 아래 언어별 제약을 같이 만족");
+            foreach (var rule in languageRules)
+            {
+                builder.AppendLine(rule);
+            }
+        }
 
-                사용자 요청:
-                {input}
-                """;
+        builder.AppendLine();
+        builder.AppendLine("사용자 요청:");
+        builder.AppendLine(input ?? string.Empty);
+        return builder.ToString().Trim();
     }
 
     private static string BuildDraftCodingWorkerPrompt(string objective, string languageHint)
     {
-        return $"""
-                너는 병렬 코딩 워커 초안 생성기다.
-                실제 파일 수정/삭제/실행은 하지 말고 최종 통합용 초안만 작성하라.
-                언어 힌트: {languageHint}
-
-                [작업 목표]
-                {objective}
-
-                규칙:
-                - 가장 가능성 높은 구현안 1개만 제시
-                - 불필요한 서론, 사과, 메타 설명 금지
-                - 필요한 파일은 상대경로로 적기
-                - 더미 코드, TODO, 의사코드 금지
-                - 마지막에는 반드시 LANGUAGE=<언어> 줄과 최소 1개의 코드블록 포함
-                - 여러 파일이 필요하면 `FILE: 상대경로` 줄 다음에 코드블록을 이어서 작성
-
-                출력 형식:
-                [요약]
-                - 핵심 구현 전략
-                [파일]
-                - 상대경로: 역할
-                [리스크]
-                - 남는 위험 또는 검증 포인트
-                LANGUAGE=<언어>
-                FILE: <핵심 파일 상대경로>
-                ```<언어>
-                // 핵심 코드
-                ```
-                """;
-    }
-
-    private string BuildWorkspaceSnapshot(string workspaceRoot, string provider)
-    {
-        try
-        {
-            if (!Directory.Exists(workspaceRoot))
-            {
-                return "(workspace not found)";
-            }
-
-            var maxEntries = Math.Max(
-                20,
-                string.Equals(provider, "copilot", StringComparison.OrdinalIgnoreCase)
-                    ? Math.Min(_config.CodingWorkspaceSnapshotMaxEntries, 60)
-                    : _config.CodingWorkspaceSnapshotMaxEntries
-            );
-            var files = Directory.EnumerateFiles(workspaceRoot, "*", SearchOption.AllDirectories)
-                .Select(path => Path.GetRelativePath(workspaceRoot, path))
-                .Where(path => !path.StartsWith(".git", StringComparison.OrdinalIgnoreCase))
-                .Where(path => !path.StartsWith("node_modules", StringComparison.OrdinalIgnoreCase))
-                .Where(path => !path.StartsWith("bin/", StringComparison.OrdinalIgnoreCase))
-                .Where(path => !path.StartsWith("obj/", StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-            if (files.Length == 0)
-            {
-                return "(empty)";
-            }
-
-            var lines = new List<string>();
-            lines.Add($"total_files={files.Length}");
-            foreach (var relative in files.Take(maxEntries))
-            {
-                var fullPath = Path.Combine(workspaceRoot, relative);
-                long size = 0;
-                try
-                {
-                    size = new FileInfo(fullPath).Length;
-                }
-                catch
-                {
-                }
-
-                lines.Add($"{relative} ({size}B)");
-            }
-
-            if (files.Length > maxEntries)
-            {
-                lines.Add($"... +{files.Length - maxEntries} files");
-            }
-
-            return string.Join("\n", lines);
-        }
-        catch (Exception ex)
-        {
-            return $"(snapshot error: {ex.Message})";
-        }
-    }
-
-    private string ResolveWorkspaceRoot()
-    {
-        var configured = string.IsNullOrWhiteSpace(_config.WorkspaceRootDir)
-            ? Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), ".."))
-            : _config.WorkspaceRootDir;
-        var fullPath = Path.GetFullPath(configured);
-        try
-        {
-            Directory.CreateDirectory(fullPath);
-        }
-        catch
-        {
-        }
-
-        return fullPath;
-    }
-
-    private static bool IsPathUnderRoot(string candidatePath, string rootPath)
-    {
-        var fullRoot = Path.GetFullPath(rootPath)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var fullCandidate = Path.GetFullPath(candidatePath)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-
-        var comparison = OperatingSystem.IsWindows()
-            ? StringComparison.OrdinalIgnoreCase
-            : StringComparison.Ordinal;
-        if (string.Equals(fullCandidate, fullRoot, comparison))
-        {
-            return true;
-        }
-
-        var rootWithSlash = fullRoot + Path.DirectorySeparatorChar;
-        return fullCandidate.StartsWith(rootWithSlash, comparison);
-    }
-
-    private static string? ResolveActionPathOrFallback(string actionType, string? path, string? content)
-    {
-        var normalizedPath = (path ?? string.Empty).Trim();
-        if (!string.IsNullOrWhiteSpace(normalizedPath))
-        {
-            return normalizedPath;
-        }
-
-        if (actionType == "write_file" || actionType == "append_file")
-        {
-            return InferFallbackPathForGeneratedCode(content);
-        }
-
-        return null;
-    }
-
-    private static string InferFallbackPathForGeneratedCode(string? content)
-    {
-        var lowered = (content ?? string.Empty).ToLowerInvariant();
-        if (lowered.Contains("<!doctype html", StringComparison.Ordinal)
-            || lowered.Contains("<html", StringComparison.Ordinal))
-        {
-            return "index.html";
-        }
-
-        if (lowered.Contains("using system;", StringComparison.Ordinal)
-            || lowered.Contains("namespace ", StringComparison.Ordinal))
-        {
-            return "Program.cs";
-        }
-
-        if (lowered.Contains("#!/usr/bin/env bash", StringComparison.Ordinal)
-            || lowered.Contains("set -e", StringComparison.Ordinal)
-            || lowered.Contains("echo ", StringComparison.Ordinal))
-        {
-            return "run.sh";
-        }
-
-        if (lowered.Contains("function ", StringComparison.Ordinal)
-            || lowered.Contains("console.log(", StringComparison.Ordinal)
-            || lowered.Contains("=>", StringComparison.Ordinal))
-        {
-            return "main.js";
-        }
-
-        return "main.py";
-    }
-
-    private static string ResolveWorkspacePath(string workspaceRoot, string? relativeOrAbsolutePath)
-    {
-        var raw = (relativeOrAbsolutePath ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            throw new InvalidOperationException("path is required");
-        }
-
-        if (Path.IsPathRooted(raw))
-        {
-            return Path.GetFullPath(raw);
-        }
-
-        return Path.GetFullPath(Path.Combine(workspaceRoot, raw));
-    }
-
-    private static string BuildVerificationCommand(string language, IReadOnlyCollection<string> changedFiles, string workspaceRoot)
-    {
-        var firstFile = changedFiles
-            .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path));
-        if (string.IsNullOrWhiteSpace(firstFile))
-        {
-            return string.Empty;
-        }
-
-        var safePath = firstFile.Replace("'", "'\"'\"'", StringComparison.Ordinal);
-        var normalizedLanguage = NormalizeLanguageForCode(language);
-        if (normalizedLanguage == "python")
-        {
-            return $"python3 -m py_compile '{safePath}'";
-        }
-
-        if (normalizedLanguage == "javascript")
-        {
-            return $"if command -v node >/dev/null 2>&1; then node --check '{safePath}'; else echo 'node 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "c")
-        {
-            return $"if command -v cc >/dev/null 2>&1; then cc -fsyntax-only '{safePath}'; else echo 'cc 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "cpp")
-        {
-            return $"if command -v c++ >/dev/null 2>&1; then c++ -fsyntax-only '{safePath}'; elif command -v g++ >/dev/null 2>&1; then g++ -fsyntax-only '{safePath}'; else echo 'c++ 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "csharp")
-        {
-            return "if command -v dotnet >/dev/null 2>&1; then dotnet --info >/dev/null; echo 'dotnet 확인 완료'; else echo 'dotnet 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "java")
-        {
-            return $"if command -v javac >/dev/null 2>&1; then javac -Xlint:none '{safePath}'; else echo 'javac 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "kotlin")
-        {
-            return "if command -v kotlinc >/dev/null 2>&1; then echo 'kotlinc 확인 완료'; else echo 'kotlinc 없음, 파일 생성 확인'; fi";
-        }
-
-        if (normalizedLanguage == "html" || normalizedLanguage == "css")
-        {
-            return $"test -f '{safePath}' && echo '정적 파일 생성 확인: {Path.GetFileName(firstFile)}'";
-        }
-
-        if (normalizedLanguage == "bash")
-        {
-            return $"if command -v bash >/dev/null 2>&1; then bash -n '{safePath}'; else echo 'bash 없음, 파일 생성 확인'; fi";
-        }
-
-        var workspaceSafe = workspaceRoot.Replace("'", "'\"'\"'", StringComparison.Ordinal);
-        return $"cd '{workspaceSafe}' && ls -la";
-    }
-
-    private static string NormalizePythonCommandForShell(string command)
-    {
-        var raw = command ?? string.Empty;
-        var trimmed = raw.TrimStart();
-        if (OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(trimmed))
-        {
-            return raw;
-        }
-
-        if (!trimmed.StartsWith("python", StringComparison.OrdinalIgnoreCase)
-            || trimmed.StartsWith("python3", StringComparison.OrdinalIgnoreCase))
-        {
-            return raw;
-        }
-
-        if (trimmed.Length > "python".Length)
-        {
-            var next = trimmed["python".Length];
-            if (!char.IsWhiteSpace(next))
-            {
-                return raw;
-            }
-        }
-
-        var prefixLength = raw.Length - trimmed.Length;
-        var suffix = trimmed.Length > "python".Length ? trimmed["python".Length..] : string.Empty;
-        return new string(' ', prefixLength) + "python3" + suffix;
-    }
-
-    private async Task<ShellRunResult> RunWorkspaceCommandWithAutoInstallAsync(string command, string workDir, CancellationToken cancellationToken)
-    {
-        var installLogs = new List<string>();
-        var installErrors = new List<string>();
-
-        await EnsureWorkspaceDependenciesAsync(command, workDir, installLogs, installErrors, cancellationToken);
-        var shell = await RunWorkspaceCommandAsync(command, workDir, cancellationToken);
-
-        if (!shell.TimedOut && shell.ExitCode != 0)
-        {
-            var retried = await TryInstallMissingDependencyFromErrorAsync(command, workDir, shell.StdErr, installLogs, installErrors, cancellationToken);
-            if (retried)
-            {
-                shell = await RunWorkspaceCommandAsync(command, workDir, cancellationToken);
-            }
-        }
-
-        if (installLogs.Count == 0 && installErrors.Count == 0)
-        {
-            return shell;
-        }
-
-        var mergedStdOut = MergeInstallLogs("[auto-install]", installLogs, shell.StdOut);
-        var mergedStdErr = MergeInstallLogs("[auto-install]", installErrors, shell.StdErr);
-        return new ShellRunResult(shell.ExitCode, mergedStdOut, mergedStdErr, shell.TimedOut);
-    }
-
-    private async Task EnsureWorkspaceDependenciesAsync(
-        string command,
-        string workDir,
-        List<string> logs,
-        List<string> errors,
-        CancellationToken cancellationToken
-    )
-    {
-        try
-        {
-            if (LooksLikePythonCommand(command))
-            {
-                var pythonBaseDir = ResolveDependencyBaseDirectory(command, workDir, ".py");
-                var requirementsPath = FindRequirementsFile(pythonBaseDir, workDir);
-                if (!string.IsNullOrWhiteSpace(requirementsPath) && File.Exists(requirementsPath))
-                {
-                    var pipCommand = $"python3 -m pip install --disable-pip-version-check -r {EscapeShellArg(requirementsPath)}";
-                    var installResult = await RunWorkspaceCommandAsync(pipCommand, workDir, cancellationToken);
-                    AppendInstallOutcome("requirements.txt 설치", pipCommand, installResult, logs, errors);
-                }
-
-                var pythonScriptPath = TryExtractScriptPath(command, workDir, ".py");
-                if (!string.IsNullOrWhiteSpace(pythonScriptPath) && File.Exists(pythonScriptPath))
-                {
-                    var packages = ExtractPythonPackagesFromSource(pythonScriptPath);
-                    if (packages.Count > 0)
-                    {
-                        var pipCommand = $"python3 -m pip install --disable-pip-version-check {string.Join(" ", packages.Select(EscapeShellArg))}";
-                        var installResult = await RunWorkspaceCommandAsync(pipCommand, workDir, cancellationToken);
-                        AppendInstallOutcome("Python import 패키지 설치", pipCommand, installResult, logs, errors);
-                    }
-                }
-            }
-
-            if (LooksLikeNodeCommand(command))
-            {
-                var nodeBaseDir = ResolveDependencyBaseDirectory(command, workDir, ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx");
-                var packageJsonPath = Path.Combine(nodeBaseDir, "package.json");
-                if (File.Exists(packageJsonPath))
-                {
-                    var nodeModulesPath = Path.Combine(nodeBaseDir, "node_modules");
-                    if (!Directory.Exists(nodeModulesPath))
-                    {
-                        var npmInstallCommand = "npm install --no-fund --no-audit";
-                        var installResult = await RunWorkspaceCommandAsync(npmInstallCommand, nodeBaseDir, cancellationToken);
-                        AppendInstallOutcome("package.json 의존성 설치", npmInstallCommand, installResult, logs, errors);
-                    }
-                }
-
-                var nodeScriptPath = TryExtractScriptPath(command, workDir, ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx");
-                if (!string.IsNullOrWhiteSpace(nodeScriptPath) && File.Exists(nodeScriptPath))
-                {
-                    var packages = ExtractNodePackagesFromSource(nodeScriptPath);
-                    if (packages.Count > 0)
-                    {
-                        var npmCommand = $"npm install --no-save {string.Join(" ", packages.Select(EscapeShellArg))}";
-                        var installResult = await RunWorkspaceCommandAsync(npmCommand, nodeBaseDir, cancellationToken);
-                        AppendInstallOutcome("Node import 패키지 설치", npmCommand, installResult, logs, errors);
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"의존성 자동 설치 파이프라인 내부 오류: {ex.Message}");
-        }
-    }
-
-    private async Task<bool> TryInstallMissingDependencyFromErrorAsync(
-        string command,
-        string workDir,
-        string stdErr,
-        List<string> logs,
-        List<string> errors,
-        CancellationToken cancellationToken
-    )
-    {
-        try
-        {
-            if (LooksLikePythonCommand(command))
-            {
-                var missingModule = ExtractPythonMissingModule(stdErr);
-                if (IsPythonSystemModule(missingModule))
-                {
-                    var installedSystemModule = await TryInstallPythonSystemModuleAsync(missingModule!, workDir, logs, errors, cancellationToken);
-                    if (installedSystemModule)
-                    {
-                        return true;
-                    }
-                }
-
-                var pythonPackage = ResolvePythonPackageName(missingModule);
-                if (!string.IsNullOrWhiteSpace(pythonPackage))
-                {
-                    var pipCommand = $"python3 -m pip install --disable-pip-version-check {EscapeShellArg(pythonPackage)}";
-                    var installResult = await RunWorkspaceCommandAsync(pipCommand, workDir, cancellationToken);
-                    AppendInstallOutcome($"Python 누락 모듈 설치({pythonPackage})", pipCommand, installResult, logs, errors);
-                    if (installResult.ExitCode == 0)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            if (LooksLikeNodeCommand(command))
-            {
-                var missingSpecifier = ExtractNodeMissingModule(stdErr);
-                var nodePackage = ResolveNodePackageName(missingSpecifier);
-                if (!string.IsNullOrWhiteSpace(nodePackage))
-                {
-                    var nodeBaseDir = ResolveDependencyBaseDirectory(command, workDir, ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx");
-                    var npmCommand = $"npm install --no-save {EscapeShellArg(nodePackage)}";
-                    var installResult = await RunWorkspaceCommandAsync(npmCommand, nodeBaseDir, cancellationToken);
-                    AppendInstallOutcome($"Node 누락 모듈 설치({nodePackage})", npmCommand, installResult, logs, errors);
-                    if (installResult.ExitCode == 0)
-                    {
-                        return true;
-                    }
-                }
-            }
-
-            var missingProgram = ExtractMissingProgram(stdErr);
-            if (!string.IsNullOrWhiteSpace(missingProgram) && !ProgramInstallDenyList.Contains(missingProgram))
-            {
-                var installed = await TryInstallProgramAsync(missingProgram, workDir, logs, errors, cancellationToken);
-                if (installed)
-                {
-                    return true;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            errors.Add($"누락 의존성 자동 설치 오류: {ex.Message}");
-        }
-
-        return false;
-    }
-
-    private static bool IsPythonSystemModule(string? moduleName)
-    {
-        return string.Equals(moduleName, "tkinter", StringComparison.OrdinalIgnoreCase)
-               || string.Equals(moduleName, "_tkinter", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private async Task<bool> TryInstallPythonSystemModuleAsync(
-        string moduleName,
-        string workDir,
-        List<string> logs,
-        List<string> errors,
-        CancellationToken cancellationToken
-    )
-    {
-        if (!IsPythonSystemModule(moduleName))
-        {
-            return false;
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            var brewCheck = await RunWorkspaceCommandAsync("command -v brew >/dev/null 2>&1", workDir, cancellationToken);
-            if (brewCheck.ExitCode != 0)
-            {
-                errors.Add("tkinter 자동 설치 건너뜀: brew 없음");
-                return false;
-            }
-
-            var versionResult = await RunWorkspaceCommandAsync(
-                "python3 - <<'PY'\nimport sys\nprint(f\"{sys.version_info.major}.{sys.version_info.minor}\")\nPY",
-                workDir,
-                cancellationToken
-            );
-            var version = versionResult.ExitCode == 0 ? versionResult.StdOut.Trim() : string.Empty;
-            var formulaCandidates = new List<string>();
-            if (!string.IsNullOrWhiteSpace(version))
-            {
-                formulaCandidates.Add($"python-tk@{version}");
-            }
-
-            formulaCandidates.Add("python-tk");
-            foreach (var formula in formulaCandidates.Distinct(StringComparer.OrdinalIgnoreCase))
-            {
-                var brewInstall = $"brew install {EscapeShellArg(formula)}";
-                var installResult = await RunWorkspaceCommandAsync(brewInstall, workDir, cancellationToken);
-                AppendInstallOutcome($"tkinter 시스템 패키지 설치({formula})", brewInstall, installResult, logs, errors);
-                if (installResult.ExitCode == 0)
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        if (OperatingSystem.IsLinux())
-        {
-            var aptCheck = await RunWorkspaceCommandAsync("command -v apt-get >/dev/null 2>&1", workDir, cancellationToken);
-            if (aptCheck.ExitCode != 0)
-            {
-                errors.Add("tkinter 자동 설치 건너뜀: apt-get 없음 (python3-tk)");
-                return false;
-            }
-
-            var aptInstall = "if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y python3-tk; elif command -v sudo >/dev/null 2>&1; then sudo -n apt-get update && sudo -n apt-get install -y python3-tk; else exit 126; fi";
-            var installResult = await RunWorkspaceCommandAsync(aptInstall, workDir, cancellationToken);
-            AppendInstallOutcome("tkinter 시스템 패키지 설치(python3-tk)", aptInstall, installResult, logs, errors);
-            return installResult.ExitCode == 0;
-        }
-
-        errors.Add($"tkinter 자동 설치 미지원 OS ({moduleName})");
-        return false;
-    }
-
-    private async Task<bool> TryInstallProgramAsync(
-        string program,
-        string workDir,
-        List<string> logs,
-        List<string> errors,
-        CancellationToken cancellationToken
-    )
-    {
-        var safeProgram = SanitizeProgramName(program);
-        if (string.IsNullOrWhiteSpace(safeProgram))
-        {
-            return false;
-        }
-
-        if (OperatingSystem.IsMacOS())
-        {
-            var brewCheck = await RunWorkspaceCommandAsync("command -v brew >/dev/null 2>&1", workDir, cancellationToken);
-            if (brewCheck.ExitCode != 0)
-            {
-                errors.Add($"프로그램 자동 설치 건너뜀: brew 없음 ({safeProgram})");
-                return false;
-            }
-
-            var brewInstall = $"brew install {EscapeShellArg(safeProgram)}";
-            var installResult = await RunWorkspaceCommandAsync(brewInstall, workDir, cancellationToken);
-            AppendInstallOutcome($"brew 프로그램 설치({safeProgram})", brewInstall, installResult, logs, errors);
-            return installResult.ExitCode == 0;
-        }
-
-        if (OperatingSystem.IsLinux())
-        {
-            var aptCheck = await RunWorkspaceCommandAsync("command -v apt-get >/dev/null 2>&1", workDir, cancellationToken);
-            if (aptCheck.ExitCode != 0)
-            {
-                errors.Add($"프로그램 자동 설치 건너뜀: apt-get 없음 ({safeProgram})");
-                return false;
-            }
-
-            var aptInstall = $"if [ \"$(id -u)\" -eq 0 ]; then apt-get update && apt-get install -y {EscapeShellArg(safeProgram)}; elif command -v sudo >/dev/null 2>&1; then sudo -n apt-get update && sudo -n apt-get install -y {EscapeShellArg(safeProgram)}; else exit 126; fi";
-            var installResult = await RunWorkspaceCommandAsync(aptInstall, workDir, cancellationToken);
-            AppendInstallOutcome($"apt 프로그램 설치({safeProgram})", aptInstall, installResult, logs, errors);
-            return installResult.ExitCode == 0;
-        }
-
-        errors.Add($"프로그램 자동 설치 미지원 OS ({safeProgram})");
-        return false;
-    }
-
-    private static string? FindRequirementsFile(string primaryDir, string fallbackDir)
-    {
-        if (!string.IsNullOrWhiteSpace(primaryDir))
-        {
-            var primary = Path.Combine(primaryDir, "requirements.txt");
-            if (File.Exists(primary))
-            {
-                return primary;
-            }
-        }
-
-        var fallback = Path.Combine(fallbackDir, "requirements.txt");
-        return File.Exists(fallback) ? fallback : null;
-    }
-
-    private static string ResolveDependencyBaseDirectory(string command, string workDir, params string[] extensions)
-    {
-        var scriptPath = TryExtractScriptPath(command, workDir, extensions);
-        if (string.IsNullOrWhiteSpace(scriptPath))
-        {
-            return workDir;
-        }
-
-        var candidate = scriptPath;
-        if (!Path.IsPathRooted(candidate))
-        {
-            candidate = Path.GetFullPath(Path.Combine(workDir, candidate));
-        }
-
-        if (Directory.Exists(candidate))
-        {
-            return candidate;
-        }
-
-        var parent = Path.GetDirectoryName(candidate);
-        return string.IsNullOrWhiteSpace(parent) ? workDir : parent;
-    }
-
-    private static string? TryExtractScriptPath(string command, string workDir, params string[] extensions)
-    {
-        if (string.IsNullOrWhiteSpace(command) || extensions.Length == 0)
-        {
-            return null;
-        }
-
-        foreach (Match match in ShellTokenRegex.Matches(command))
-        {
-            var token = match.Groups["sq"].Success
-                ? match.Groups["sq"].Value
-                : match.Groups["dq"].Success
-                    ? match.Groups["dq"].Value
-                    : match.Groups["bare"].Value;
-            if (string.IsNullOrWhiteSpace(token))
-            {
-                continue;
-            }
-
-            if (!extensions.Any(ext => token.EndsWith(ext, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            if (Path.IsPathRooted(token))
-            {
-                return token;
-            }
-
-            return Path.GetFullPath(Path.Combine(workDir, token));
-        }
-
-        return null;
-    }
-
-    private static List<string> ExtractPythonPackagesFromSource(string scriptPath)
-    {
-        string text;
-        try
-        {
-            text = File.ReadAllText(scriptPath);
-        }
-        catch
-        {
-            return new List<string>();
-        }
-
-        var scriptDir = Path.GetDirectoryName(scriptPath) ?? string.Empty;
-        var modules = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match match in PythonImportRegex.Matches(text))
-        {
-            var parts = (match.Groups["mods"].Value ?? string.Empty)
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            foreach (var part in parts)
-            {
-                var tokenParts = part.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                if (tokenParts.Length == 0)
-                {
-                    continue;
-                }
-
-                var token = tokenParts[0];
-                var rootParts = token.Split('.', StringSplitOptions.RemoveEmptyEntries);
-                if (rootParts.Length == 0)
-                {
-                    continue;
-                }
-
-                var root = rootParts[0];
-                if (!string.IsNullOrWhiteSpace(root))
-                {
-                    modules.Add(root);
-                }
-            }
-        }
-
-        foreach (Match match in PythonFromImportRegex.Matches(text))
-        {
-            var rootParts = (match.Groups["mod"].Value ?? string.Empty)
-                .Split('.', StringSplitOptions.RemoveEmptyEntries);
-            if (rootParts.Length == 0)
-            {
-                continue;
-            }
-
-            var root = rootParts[0];
-            if (!string.IsNullOrWhiteSpace(root))
-            {
-                modules.Add(root);
-            }
-        }
-
-        var packages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var module in modules)
-        {
-            if (PythonStdlibModules.Contains(module))
-            {
-                continue;
-            }
-
-            var localModulePath = Path.Combine(scriptDir, module + ".py");
-            var localPackagePath = Path.Combine(scriptDir, module);
-            if (File.Exists(localModulePath) || Directory.Exists(localPackagePath))
-            {
-                continue;
-            }
-
-            var package = ResolvePythonPackageName(module);
-            if (!string.IsNullOrWhiteSpace(package))
-            {
-                packages.Add(package);
-            }
-        }
-
-        return packages.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    private static List<string> ExtractNodePackagesFromSource(string scriptPath)
-    {
-        string text;
-        try
-        {
-            text = File.ReadAllText(scriptPath);
-        }
-        catch
-        {
-            return new List<string>();
-        }
-
-        var packages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (Match match in NodeImportRegex.Matches(text))
-        {
-            var specifier = match.Groups["mod"].Success
-                ? match.Groups["mod"].Value
-                : match.Groups["mod2"].Success
-                    ? match.Groups["mod2"].Value
-                    : match.Groups["mod3"].Value;
-            var package = ResolveNodePackageName(specifier);
-            if (!string.IsNullOrWhiteSpace(package))
-            {
-                packages.Add(package);
-            }
-        }
-
-        return packages.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
-    }
-
-    private static string? ResolvePythonPackageName(string? moduleName)
-    {
-        var rootParts = (moduleName ?? string.Empty)
-            .Split('.', StringSplitOptions.RemoveEmptyEntries);
-        if (rootParts.Length == 0)
-        {
-            return null;
-        }
-
-        var root = rootParts[0].Trim();
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            return null;
-        }
-
-        if (IsPythonSystemModule(root))
-        {
-            return null;
-        }
-
-        if (PythonModulePackageMap.TryGetValue(root, out var mapped))
-        {
-            return mapped;
-        }
-
-        return Regex.IsMatch(root, "^[A-Za-z0-9._-]+$") ? root : null;
-    }
-
-    private static string? ResolveNodePackageName(string? specifier)
-    {
-        var raw = (specifier ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(raw)
-            || raw.StartsWith("./", StringComparison.Ordinal)
-            || raw.StartsWith("../", StringComparison.Ordinal)
-            || raw.StartsWith("/", StringComparison.Ordinal)
-            || raw.StartsWith("node:", StringComparison.OrdinalIgnoreCase)
-            || raw.StartsWith("file:", StringComparison.OrdinalIgnoreCase)
-            || raw.StartsWith("http:", StringComparison.OrdinalIgnoreCase)
-            || raw.StartsWith("https:", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        string package;
-        if (raw.StartsWith("@", StringComparison.Ordinal))
-        {
-            var segments = raw.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length < 2)
-            {
-                return null;
-            }
-
-            package = $"{segments[0]}/{segments[1]}";
-        }
-        else
-        {
-            var segments = raw.Split('/', StringSplitOptions.RemoveEmptyEntries);
-            if (segments.Length == 0)
-            {
-                return null;
-            }
-
-            package = segments[0];
-        }
-
-        if (NodeBuiltinModules.Contains(package))
-        {
-            return null;
-        }
-
-        return Regex.IsMatch(package, "^@?[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)?$") ? package : null;
-    }
-
-    private static string? ExtractPythonMissingModule(string stderr)
-    {
-        if (string.IsNullOrWhiteSpace(stderr))
-        {
-            return null;
-        }
-
-        var moduleNotFoundMatch = PythonModuleNotFoundRegex.Match(stderr);
-        if (moduleNotFoundMatch.Success)
-        {
-            return moduleNotFoundMatch.Groups["module"].Value;
-        }
-
-        var importErrorMatch = PythonImportErrorRegex.Match(stderr);
-        return importErrorMatch.Success ? importErrorMatch.Groups["module"].Value : null;
-    }
-
-    private static string? ExtractNodeMissingModule(string stderr)
-    {
-        if (string.IsNullOrWhiteSpace(stderr))
-        {
-            return null;
-        }
-
-        var match = NodeModuleNotFoundRegex.Match(stderr);
-        if (!match.Success)
-        {
-            return null;
-        }
-
-        return match.Groups["module"].Success ? match.Groups["module"].Value : match.Groups["module2"].Value;
-    }
-
-    private static string? ExtractMissingProgram(string stderr)
-    {
-        if (string.IsNullOrWhiteSpace(stderr))
-        {
-            return null;
-        }
-
-        var match = CommandNotFoundRegex.Match(stderr);
-        if (!match.Success)
-        {
-            return null;
-        }
-
-        var candidate = match.Groups["cmd"].Success ? match.Groups["cmd"].Value : match.Groups["cmd2"].Value;
-        return SanitizeProgramName(candidate);
-    }
-
-    private static bool LooksLikePythonCommand(string command)
-    {
-        var lowered = (command ?? string.Empty).ToLowerInvariant();
-        return lowered.Contains("python", StringComparison.Ordinal);
-    }
-
-    private static bool LooksLikeNodeCommand(string command)
-    {
-        var lowered = (command ?? string.Empty).ToLowerInvariant();
-        return lowered.Contains("node", StringComparison.Ordinal)
-               || lowered.Contains("npm", StringComparison.Ordinal)
-               || lowered.Contains("pnpm", StringComparison.Ordinal)
-               || lowered.Contains("yarn", StringComparison.Ordinal)
-               || lowered.Contains("tsx", StringComparison.Ordinal)
-               || lowered.Contains("ts-node", StringComparison.Ordinal);
-    }
-
-    private static string? SanitizeProgramName(string? value)
-    {
-        var token = (value ?? string.Empty).Trim();
-        return Regex.IsMatch(token, "^[A-Za-z0-9][A-Za-z0-9+._-]{1,63}$") ? token : null;
-    }
-
-    private static void AppendInstallOutcome(
-        string title,
-        string installCommand,
-        ShellRunResult result,
-        List<string> logs,
-        List<string> errors
-    )
-    {
-        if (result.ExitCode == 0)
-        {
-            logs.Add($"{title}: ok");
-            var stdout = TrimInstallLog(result.StdOut, 1000);
-            if (!string.IsNullOrWhiteSpace(stdout))
-            {
-                logs.Add(stdout);
-            }
-            return;
-        }
-
-        errors.Add($"{title}: error(exit={result.ExitCode})");
-        errors.Add($"command={installCommand}");
-        var stderr = TrimInstallLog(result.StdErr, 1400);
-        if (!string.IsNullOrWhiteSpace(stderr))
-        {
-            errors.Add(stderr);
-        }
-    }
-
-    private static string MergeInstallLogs(string header, IReadOnlyList<string> installLogs, string originalText)
-    {
-        if (installLogs.Count == 0)
-        {
-            return originalText ?? string.Empty;
-        }
-
+        var resolvedLanguage = ResolveInitialCodingLanguage(languageHint, objective);
         var builder = new StringBuilder();
-        builder.AppendLine(header);
-        foreach (var line in installLogs)
+        builder.AppendLine("너는 병렬 코딩 워커 초안 생성기다.");
+        builder.AppendLine("실제 파일 수정/삭제/실행은 하지 말고 최종 통합용 초안만 작성하라.");
+        builder.AppendLine($"언어 힌트: {resolvedLanguage}");
+        builder.AppendLine();
+        builder.AppendLine("[작업 목표]");
+        builder.AppendLine(objective ?? string.Empty);
+        builder.AppendLine();
+        builder.AppendLine("규칙:");
+        builder.AppendLine("- 가장 가능성 높은 구현안 1개만 제시");
+        builder.AppendLine("- 불필요한 서론, 사과, 메타 설명 금지");
+        builder.AppendLine("- 필요한 파일은 상대경로로 적기");
+        builder.AppendLine("- 더미 코드, TODO, 의사코드 금지");
+        builder.AppendLine("- 마지막에는 반드시 LANGUAGE=<언어> 줄과 최소 1개의 코드블록 포함");
+        builder.AppendLine("- 여러 파일이 필요하면 `FILE: 상대경로` 줄 다음에 코드블록을 이어서 작성");
+        foreach (var rule in BuildLanguagePromptRuleLines(string.Empty, string.Empty, resolvedLanguage, objective ?? string.Empty))
         {
-            builder.AppendLine(line);
+            builder.AppendLine(rule);
         }
 
-        if (!string.IsNullOrWhiteSpace(originalText))
-        {
-            builder.AppendLine();
-            builder.Append(originalText.Trim());
-        }
-
+        builder.AppendLine();
+        builder.AppendLine("출력 형식:");
+        builder.AppendLine("[요약]");
+        builder.AppendLine("- 핵심 구현 전략");
+        builder.AppendLine("[파일]");
+        builder.AppendLine("- 상대경로: 역할");
+        builder.AppendLine("[리스크]");
+        builder.AppendLine("- 남는 위험 또는 검증 포인트");
+        builder.AppendLine("LANGUAGE=<언어>");
+        builder.AppendLine("FILE: <핵심 파일 상대경로>");
+        builder.AppendLine("```<언어>");
+        builder.AppendLine("// 핵심 코드");
+        builder.AppendLine("```");
         return builder.ToString().Trim();
-    }
-
-    private static string TrimInstallLog(string text, int maxLength)
-    {
-        var value = (text ?? string.Empty).Trim();
-        if (value.Length <= maxLength)
-        {
-            return value;
-        }
-
-        return value[..maxLength] + "\n...(truncated)";
-    }
-
-    private static string EscapeShellArg(string value)
-    {
-        return $"'{(value ?? string.Empty).Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
-    }
-
-    private async Task<ShellRunResult> RunWorkspaceCommandAsync(string command, string workDir, CancellationToken cancellationToken)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/zsh",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = workDir
-        };
-
-        var normalizedCommand = NormalizePythonCommandForShell(command);
-        if (OperatingSystem.IsWindows())
-        {
-            startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add(normalizedCommand);
-        }
-        else
-        {
-            startInfo.ArgumentList.Add("-lc");
-            startInfo.ArgumentList.Add(normalizedCommand);
-        }
-
-        using var process = new Process { StartInfo = startInfo };
-        try
-        {
-            process.Start();
-        }
-        catch (Exception ex)
-        {
-            return new ShellRunResult(127, string.Empty, ex.Message, false);
-        }
-
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(20, _config.CodeExecutionTimeoutSec)));
-        var stdoutTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-        var stderrTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
-
-        try
-        {
-            await process.WaitForExitAsync(timeoutCts.Token);
-            return new ShellRunResult(process.ExitCode, await stdoutTask, await stderrTask, false);
-        }
-        catch (OperationCanceledException)
-        {
-            try
-            {
-                if (!process.HasExited)
-                {
-                    process.Kill(entireProcessTree: true);
-                }
-            }
-            catch
-            {
-            }
-
-            string stdout;
-            string stderr;
-            try
-            {
-                stdout = await stdoutTask;
-            }
-            catch
-            {
-                stdout = string.Empty;
-            }
-
-            try
-            {
-                stderr = await stderrTask;
-            }
-            catch
-            {
-                stderr = string.Empty;
-            }
-
-            if (string.IsNullOrWhiteSpace(stderr))
-            {
-                stderr = "execution timed out";
-            }
-
-            return new ShellRunResult(124, stdout, stderr, true);
-        }
     }
 
     private static string? GetStringProperty(JsonElement element, string propertyName)
@@ -4693,180 +5864,30 @@ public sealed partial class CommandService
         var builder = new StringBuilder();
         builder.AppendLine($"원본 요청: {originalInput}");
         builder.AppendLine();
-        builder.AppendLine("아래 각 모델의 코드/실행 결과에서 공통으로 맞는 내용과 차이를 요약하세요.");
+        builder.AppendLine("아래 각 모델의 독립 코딩 결과를 비교해 공통점과 차이를 정리하세요.");
         builder.AppendLine("출력 형식:");
-        builder.AppendLine("[공통]");
-        builder.AppendLine("- ...");
+        builder.AppendLine("[공통 요약]");
+        builder.AppendLine("- 여러 결과를 한 번에 이해할 수 있는 짧은 요약");
+        builder.AppendLine("[공통점]");
+        builder.AppendLine("- 대부분 결과가 공통으로 만족한 구현/검증 포인트");
         builder.AppendLine("[차이]");
-        builder.AppendLine("- ...");
+        builder.AppendLine("- 모델별로 갈린 구현 방식, 검증 결과, 리스크");
         builder.AppendLine("[추천]");
-        builder.AppendLine("- ...");
+        builder.AppendLine("- 어떤 결과를 우선 볼지, 어떤 차이를 주의할지");
+        builder.AppendLine();
+        builder.AppendLine("규칙:");
+        builder.AppendLine("- 실행 상태와 변경 파일, 검증 명령, 요약을 근거로 작성");
+        builder.AppendLine("- 공통점이 거의 없으면 [공통점]에 '공통점 없음'이라고 적기");
+        builder.AppendLine("- 차이가 거의 없으면 [차이]에 '의미 있는 차이 없음'이라고 적기");
+        builder.AppendLine("- 추천은 2~4줄 이내로 간결하게 작성");
         builder.AppendLine();
         foreach (var worker in workers)
         {
             builder.AppendLine($"[{worker.Provider}:{worker.Model}]");
-            builder.AppendLine(worker.RawResponse.Length > 1800 ? worker.RawResponse[..1800] + "\n...(truncated)" : worker.RawResponse);
+            builder.AppendLine(BuildCodingWorkerDigest(worker));
             builder.AppendLine();
         }
 
-        return builder.ToString().Trim();
-    }
-
-    private static string BuildAutonomousCodingSummary(
-        IReadOnlyList<string> iterations,
-        IReadOnlyList<string> changedFiles,
-        CodeExecutionResult execution,
-        int maxIterations
-    )
-    {
-        var highlights = new List<string>();
-        foreach (var entry in iterations.TakeLast(12))
-        {
-            var highlight = ExtractCodingIterationHighlight(entry);
-            if (string.IsNullOrWhiteSpace(highlight))
-            {
-                continue;
-            }
-
-            if (highlights.Contains(highlight, StringComparer.Ordinal))
-            {
-                continue;
-            }
-
-            highlights.Add(highlight);
-            if (highlights.Count >= 3)
-            {
-                break;
-            }
-        }
-
-        if (highlights.Count == 0)
-        {
-            highlights.Add("반복 로그에서 요약 가능한 핵심 항목이 없습니다.");
-        }
-
-        var iterationCount = Math.Min(Math.Max(iterations.Count, 0), Math.Max(maxIterations, 0));
-        var builder = new StringBuilder();
-        builder.AppendLine($"내부 반복: {iterationCount}/{Math.Max(maxIterations, 1)}");
-        builder.AppendLine($"변경 파일: {changedFiles.Count}개");
-        builder.AppendLine($"실행 상태: {execution.Status} (exit={execution.ExitCode})");
-        if (!string.IsNullOrWhiteSpace(execution.Command) && execution.Command != "(none)" && execution.Command != "-")
-        {
-            builder.AppendLine($"실행 명령: {TrimForOutput(execution.Command, 180)}");
-        }
-
-        builder.AppendLine("핵심 진행:");
-        foreach (var highlight in highlights)
-        {
-            builder.AppendLine($"- {TrimForOutput(highlight, 220)}");
-        }
-
-        return builder.ToString().Trim();
-    }
-
-    private static string ExtractCodingIterationHighlight(string iterationLog)
-    {
-        var value = (iterationLog ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return string.Empty;
-        }
-
-        if (value.Contains("plan_parse_failed", StringComparison.OrdinalIgnoreCase))
-        {
-            return "계획 파싱 실패로 복구 경로를 시도했습니다.";
-        }
-
-        if (value.StartsWith("fallback=write:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "복구 코드 생성 결과를 파일로 저장했습니다.";
-        }
-
-        if (value.StartsWith("fallback=scaffold:", StringComparison.OrdinalIgnoreCase))
-        {
-            return "자동 스캐폴드로 기본 파일을 생성했습니다.";
-        }
-
-        if (value.StartsWith("fallback=no_code", StringComparison.OrdinalIgnoreCase))
-        {
-            return "복구 생성에서도 코드 블록을 찾지 못했습니다.";
-        }
-
-        var marker = "analysis=";
-        var idx = value.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        if (idx >= 0)
-        {
-            var analysis = value[(idx + marker.Length)..];
-            var split = analysis.IndexOf(" | ", StringComparison.Ordinal);
-            if (split >= 0)
-            {
-                analysis = analysis[..split];
-            }
-
-            analysis = Regex.Replace(analysis, @"\s+", " ").Trim();
-            return analysis;
-        }
-
-        return Regex.Replace(value, @"\s+", " ").Trim();
-    }
-
-    private static string BuildCodingAssistantText(
-        string mode,
-        string provider,
-        string model,
-        string language,
-        CodeExecutionResult execution,
-        IReadOnlyList<string> changedFiles,
-        string summary
-    )
-    {
-        var safeCommand = string.IsNullOrWhiteSpace(execution.Command) ? "(none)" : execution.Command;
-        var changed = changedFiles.Count == 0
-            ? "- 변경 파일 없음"
-            : string.Join("\n", changedFiles.Take(6).Select(path => $"- {path}"));
-        var hasMoreFiles = changedFiles.Count > 6;
-        var compactSummary = TrimForOutput(RemoveCodeBlocksFromText(summary), 800);
-        return $"""
-                [Coding:{mode}]
-                모델: {provider}:{model}
-                언어: {language}
-                작업 폴더: {execution.RunDirectory}
-                실행 상태: {execution.Status} (exit={execution.ExitCode})
-                실행 명령: {safeCommand}
-                변경 파일: {changedFiles.Count}개
-                {changed}
-                {(hasMoreFiles ? "- ...(추가 파일 있음, 하단 카드에서 확인)" : string.Empty)}
-
-                요약:
-                {compactSummary}
-
-                상세 파일 프리뷰는 아래 '최근 코딩 결과' 카드에서 파일 칩을 눌러 확인하세요.
-                """;
-    }
-
-    private static string BuildMultiCodingAssistantText(IReadOnlyList<CodingWorkerResult> workers, string summary)
-    {
-        var builder = new StringBuilder();
-        builder.AppendLine("[Coding:multi]");
-        builder.AppendLine($"워커 수: {workers.Count}개");
-        builder.AppendLine();
-        foreach (var worker in workers)
-        {
-            builder.AppendLine($"- {worker.Provider}:{worker.Model}");
-            builder.AppendLine($"  상태={worker.Execution.Status} exit={worker.Execution.ExitCode} 언어={worker.Language} 변경파일={worker.ChangedFiles.Count}개");
-            if (!string.IsNullOrWhiteSpace(worker.Execution.Command)
-                && worker.Execution.Command != "(none)"
-                && worker.Execution.Command != "-")
-            {
-                builder.AppendLine($"  실행={TrimForOutput(worker.Execution.Command, 180)}");
-            }
-        }
-
-        builder.AppendLine();
-        builder.AppendLine("[요약]");
-        builder.AppendLine(TrimForOutput(RemoveCodeBlocksFromText(SanitizeChatOutput(summary)), 2200));
-        builder.AppendLine();
-        builder.AppendLine("코드 본문은 자동 출력하지 않습니다. 파일 칩을 선택해 프리뷰를 확인하세요.");
         return builder.ToString().Trim();
     }
 
@@ -4909,6 +5930,80 @@ public sealed partial class CommandService
         };
     }
 
+    private static string NormalizeCodingLanguageHintPreservingAuto(string? languageHint)
+    {
+        var raw = (languageHint ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(raw) || raw == "auto")
+        {
+            return "auto";
+        }
+
+        return NormalizeLanguageForCode(raw);
+    }
+
+    private static string ResolveExplicitObjectiveLanguage(string? objective)
+    {
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return string.Empty;
+        }
+
+        if (ContainsAny(text, "파이썬", "python"))
+        {
+            return "python";
+        }
+
+        if (ContainsAny(text, "자바스크립트", "javascript", "node.js", "nodejs"))
+        {
+            return "javascript";
+        }
+
+        if (ContainsAny(text, "c#", "csharp", "dotnet", "asp.net"))
+        {
+            return "csharp";
+        }
+
+        if (ContainsAny(text, "c++", "cpp"))
+        {
+            return "cpp";
+        }
+
+        if (ContainsAny(text, "html"))
+        {
+            return "html";
+        }
+
+        if (ContainsAny(text, "css"))
+        {
+            return "css";
+        }
+
+        if (ContainsAny(text, "코틀린", "kotlin", "안드로이드"))
+        {
+            return "kotlin";
+        }
+
+        if (Regex.IsMatch(text, @"(?<![a-z])java(?!script)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)
+            || Regex.IsMatch(text, @"자바(?!스크립트)", RegexOptions.CultureInvariant)
+            || ContainsAny(text, "spring"))
+        {
+            return "java";
+        }
+
+        if (ContainsAny(text, "c언어", "gcc", "clang"))
+        {
+            return "c";
+        }
+
+        if (ContainsAny(text, "bash", "shell", "쉘"))
+        {
+            return "bash";
+        }
+
+        return string.Empty;
+    }
+
     private static string ResolveInitialCodingLanguage(string? languageHint, string objective)
     {
         var rawHint = (languageHint ?? string.Empty).Trim().ToLowerInvariant();
@@ -4917,7 +6012,13 @@ public sealed partial class CommandService
             return NormalizeLanguageForCode(rawHint);
         }
 
-        var text = (objective ?? string.Empty).ToLowerInvariant();
+        var explicitLanguage = ResolveExplicitObjectiveLanguage(objective);
+        if (!string.IsNullOrWhiteSpace(explicitLanguage))
+        {
+            return explicitLanguage;
+        }
+
+        var text = ExtractLatestCodingRequestText(WebUtility.HtmlDecode(objective ?? string.Empty)).ToLowerInvariant();
         if (ContainsAny(text, "html", "css", "javascript", "js", "ui", "웹", "frontend", "react", "vue", "next", "클론"))
         {
             return "html";

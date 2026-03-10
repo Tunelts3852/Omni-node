@@ -12,4 +12,5 @@ public sealed class CodingApplicationService : ICodingApplicationService
     public Task<CodingRunResult> RunCodingSingleAsync(CodingRunRequest request, CancellationToken cancellationToken, Action<CodingProgressUpdate>? progressCallback = null) => _inner.RunCodingSingleAsync(request, cancellationToken, progressCallback);
     public Task<CodingRunResult> RunCodingOrchestrationAsync(CodingRunRequest request, CancellationToken cancellationToken, Action<CodingProgressUpdate>? progressCallback = null) => _inner.RunCodingOrchestrationAsync(request, cancellationToken, progressCallback);
     public Task<CodingRunResult> RunCodingMultiAsync(CodingRunRequest request, CancellationToken cancellationToken, Action<CodingProgressUpdate>? progressCallback = null) => _inner.RunCodingMultiAsync(request, cancellationToken, progressCallback);
+    public Task<CodingResultExecutionResult> ExecuteLatestCodingResultAsync(string conversationId, string? standardInput, CancellationToken cancellationToken) => _inner.ExecuteLatestCodingResultAsync(conversationId, standardInput, cancellationToken);
 }

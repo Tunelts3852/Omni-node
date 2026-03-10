@@ -87,6 +87,7 @@ public sealed partial class CommandService :
     private readonly TelegramClient _telegramClient;
     private readonly RuntimeSettings _runtimeSettings;
     private readonly ProviderRegistry _providerRegistry;
+    private readonly RoutingPolicyResolver _routingPolicyResolver;
     private readonly ToolRegistry _toolRegistry;
     private readonly SearchGateway _searchGateway;
     private readonly ISearchGuard _searchGuard;
@@ -110,12 +111,27 @@ public sealed partial class CommandService :
     private readonly IRunArtifactStore _runArtifactStore;
     private readonly UniversalCodeRunner _codeRunner;
     private readonly AuditLogger _auditLogger;
+    private readonly DoctorService _doctorService;
+    private readonly PlanService _planService;
+    private readonly PlanReviewService _planReviewService;
+    private readonly TaskGraphService _taskGraphService;
+    private readonly BackgroundTaskCoordinator _taskGraphCoordinator;
+    private readonly ProjectContextLoader _projectContextLoader;
+    private readonly NotebookService _notebookService;
+    private readonly AnchorReadService _anchorReadService;
+    private readonly AnchorEditService _anchorEditService;
+    private readonly DiffPreviewService _diffPreviewService;
+    private readonly LspRefactorService _lspRefactorService;
+    private readonly AstGrepRefactorService _astGrepRefactorService;
     private readonly Queue<string> _recentEvents = new();
     private readonly object _eventLock = new();
     private readonly object _telegramLlmLock = new();
     private readonly object _webLlmLock = new();
+    private readonly object _telegramCodingLock = new();
+    private readonly object _telegramRefactorLock = new();
     private readonly object _telegramUpgradeQuotaLock = new();
     private readonly object _routineLock = new();
+    private readonly object _planLock = new();
     private readonly AsyncLocal<TelegramExecutionMetadata?> _telegramExecutionMetadata = new();
     private readonly string _telegramUpgradeQuotaStatePath;
     private readonly string _routineStatePath;
@@ -127,6 +143,8 @@ public sealed partial class CommandService :
     private string _telegramUpgradeQuotaDay = string.Empty;
     private int _telegramUpgradeQuotaCount;
     private TelegramLlmPreferences _telegramLlmPreferences;
+    private TelegramCodingPreferences _telegramCodingPreferences;
+    private TelegramRefactorSession _telegramRefactorSession;
     private WebLlmPreferences _webLlmPreferences;
 
     internal CommandService(
@@ -137,6 +155,7 @@ public sealed partial class CommandService :
         TelegramClient telegramClient,
         RuntimeSettings runtimeSettings,
         ProviderRegistry providerRegistry,
+        RoutingPolicyResolver routingPolicyResolver,
         ToolRegistry toolRegistry,
         SearchGateway searchGateway,
         ISearchGuard searchGuard,
@@ -159,7 +178,19 @@ public sealed partial class CommandService :
         IRoutineStore routineStore,
         IRunArtifactStore runArtifactStore,
         UniversalCodeRunner codeRunner,
-        AuditLogger auditLogger
+        AuditLogger auditLogger,
+        DoctorService doctorService,
+        PlanService planService,
+        PlanReviewService planReviewService,
+        TaskGraphService taskGraphService,
+        BackgroundTaskCoordinator taskGraphCoordinator,
+        ProjectContextLoader projectContextLoader,
+        NotebookService notebookService,
+        AnchorReadService anchorReadService,
+        AnchorEditService anchorEditService,
+        DiffPreviewService diffPreviewService,
+        LspRefactorService lspRefactorService,
+        AstGrepRefactorService astGrepRefactorService
     )
     {
         _config = config;
@@ -169,6 +200,7 @@ public sealed partial class CommandService :
         _telegramClient = telegramClient;
         _runtimeSettings = runtimeSettings;
         _providerRegistry = providerRegistry;
+        _routingPolicyResolver = routingPolicyResolver;
         _toolRegistry = toolRegistry;
         _searchGateway = searchGateway;
         _searchGuard = searchGuard;
@@ -192,6 +224,18 @@ public sealed partial class CommandService :
         _runArtifactStore = runArtifactStore;
         _codeRunner = codeRunner;
         _auditLogger = auditLogger;
+        _doctorService = doctorService;
+        _planService = planService;
+        _planReviewService = planReviewService;
+        _taskGraphService = taskGraphService;
+        _taskGraphCoordinator = taskGraphCoordinator;
+        _projectContextLoader = projectContextLoader;
+        _notebookService = notebookService;
+        _anchorReadService = anchorReadService;
+        _anchorEditService = anchorEditService;
+        _diffPreviewService = diffPreviewService;
+        _lspRefactorService = lspRefactorService;
+        _astGrepRefactorService = astGrepRefactorService;
         _killAllowlist = (_config.KillAllowlistCsv ?? string.Empty)
             .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -217,12 +261,38 @@ public sealed partial class CommandService :
             OrchestrationProvider = "auto",
             OrchestrationModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
             MultiGroqModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
+            MultiGeminiModel = _config.GeminiModel,
             MultiCopilotModel = string.IsNullOrWhiteSpace(_copilotWrapper.GetSelectedModel()) ? DefaultCopilotModel : _copilotWrapper.GetSelectedModel(),
             MultiCerebrasModel = _config.CerebrasModel,
+            MultiCodexModel = _config.CodexModel,
             MultiSummaryProvider = "auto",
             TalkThinkingLevel = "low",
             CodeThinkingLevel = "high"
         };
+        _telegramCodingPreferences = new TelegramCodingPreferences
+        {
+            Mode = "orchestration",
+            SingleProvider = "copilot",
+            SingleModel = string.IsNullOrWhiteSpace(_copilotWrapper.GetSelectedModel()) ? DefaultCopilotModel : _copilotWrapper.GetSelectedModel(),
+            SingleLanguage = "auto",
+            OrchestrationProvider = "auto",
+            OrchestrationModel = string.Empty,
+            OrchestrationLanguage = "auto",
+            OrchestrationGroqModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
+            OrchestrationGeminiModel = _config.GeminiModel,
+            OrchestrationCerebrasModel = _config.CerebrasModel,
+            OrchestrationCopilotModel = "none",
+            OrchestrationCodexModel = "none",
+            MultiProvider = "gemini",
+            MultiModel = _config.GeminiModel,
+            MultiLanguage = "auto",
+            MultiGroqModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
+            MultiGeminiModel = _config.GeminiModel,
+            MultiCerebrasModel = _config.CerebrasModel,
+            MultiCopilotModel = "none",
+            MultiCodexModel = "none"
+        };
+        _telegramRefactorSession = new TelegramRefactorSession();
         _webLlmPreferences = new WebLlmPreferences
         {
             Profile = "default",
@@ -233,8 +303,10 @@ public sealed partial class CommandService :
             OrchestrationProvider = "auto",
             OrchestrationModel = string.IsNullOrWhiteSpace(_config.GeminiModel) ? _config.GroqModel : _config.GeminiModel,
             MultiGroqModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel,
+            MultiGeminiModel = _config.GeminiModel,
             MultiCopilotModel = string.IsNullOrWhiteSpace(_copilotWrapper.GetSelectedModel()) ? DefaultCopilotModel : _copilotWrapper.GetSelectedModel(),
             MultiCerebrasModel = _config.CerebrasModel,
+            MultiCodexModel = _config.CodexModel,
             MultiSummaryProvider = "auto",
             TalkThinkingLevel = "low",
             CodeThinkingLevel = "high"

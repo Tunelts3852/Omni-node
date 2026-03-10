@@ -55,7 +55,8 @@ public sealed partial class CommandService
         string provider,
         string model,
         string language,
-        string message
+        string message,
+        string role = ""
     )
     {
         var execution = new CodeExecutionResult(
@@ -75,7 +76,9 @@ public sealed partial class CommandService
             string.Empty,
             message,
             execution,
-            Array.Empty<string>()
+            Array.Empty<string>(),
+            role,
+            message
         );
     }
 }

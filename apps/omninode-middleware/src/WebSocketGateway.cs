@@ -51,6 +51,10 @@ public sealed partial class WebSocketGateway
     private readonly IMemoryApplicationService _memoryService;
     private readonly IToolApplicationService _toolService;
     private readonly IRoutineApplicationService _routineService;
+    private readonly IPlanningApplicationService _planService;
+    private readonly IRefactorApplicationService _refactorService;
+    private readonly IContextApplicationService _contextService;
+    private readonly INotebookApplicationService _notebookService;
     private readonly IChatApplicationService _chatService;
     private readonly ICodingApplicationService _codingService;
     private readonly LlmRouter _llmRouter;
@@ -64,6 +68,12 @@ public sealed partial class WebSocketGateway
     private readonly WsConversationMemoryDispatcher _conversationMemoryDispatcher;
     private readonly WsToolCommandDispatcher _toolCommandDispatcher;
     private readonly WsRoutineCommandDispatcher _routineCommandDispatcher;
+    private readonly WsDoctorCommandDispatcher _doctorCommandDispatcher;
+    private readonly WsPlanningCommandDispatcher _planningCommandDispatcher;
+    private readonly WsTaskCommandDispatcher _taskCommandDispatcher;
+    private readonly WsRefactorCommandDispatcher _refactorCommandDispatcher;
+    private readonly WsContextCommandDispatcher _contextCommandDispatcher;
+    private readonly WsNotebookCommandDispatcher _notebookCommandDispatcher;
     private readonly WsAiCommandDispatcher _aiCommandDispatcher;
     private readonly Dictionary<string, RateWindow> _sessionRateMap = new();
     private readonly object _rateLock = new();
@@ -109,6 +119,12 @@ public sealed partial class WebSocketGateway
         IMemoryApplicationService memoryService,
         IToolApplicationService toolService,
         IRoutineApplicationService routineService,
+        IDoctorApplicationService doctorService,
+        IPlanningApplicationService planService,
+        ITaskGraphApplicationService taskGraphService,
+        IRefactorApplicationService refactorService,
+        IContextApplicationService contextService,
+        INotebookApplicationService notebookService,
         IChatApplicationService chatService,
         ICodingApplicationService codingService,
         LlmRouter llmRouter,
@@ -127,6 +143,10 @@ public sealed partial class WebSocketGateway
         _memoryService = memoryService;
         _toolService = toolService;
         _routineService = routineService;
+        _planService = planService;
+        _refactorService = refactorService;
+        _contextService = contextService;
+        _notebookService = notebookService;
         _chatService = chatService;
         _codingService = codingService;
         _llmRouter = llmRouter;
@@ -134,7 +154,7 @@ public sealed partial class WebSocketGateway
         _guardRetryTimelineStore = guardRetryTimelineStore;
         _auditLogger = auditLogger;
         _staticFileEndpoint = new HttpStaticFileEndpoint(config.DashboardIndexPath);
-        _apiEndpoint = new GatewayApiEndpoint(guardRetryTimelineStore);
+        _apiEndpoint = new GatewayApiEndpoint(guardRetryTimelineStore, conversationService);
         _authSessionGateway = new AuthSessionGateway(sessionManager, telegramClient, config.EnableLocalOtpFallback);
         _setupCommandDispatcher = new WsSetupCommandDispatcher(
             settingsService,
@@ -143,7 +163,9 @@ public sealed partial class WebSocketGateway
             SendSettingsStateAsync,
             SendGroqModelsAsync,
             SendCopilotModelsAsync,
-            (socket, sendLock, token, forceRefresh) => SendUsageStatsAsync(socket, sendLock, token, forceRefresh)
+            (socket, sendLock, token, forceRefresh) => SendUsageStatsAsync(socket, sendLock, token, forceRefresh),
+            SendRoutingPolicyResultAsync,
+            SendRoutingDecisionAsync
         );
         _conversationMemoryDispatcher = new WsConversationMemoryDispatcher(
             conversationService,
@@ -187,6 +209,37 @@ public sealed partial class WebSocketGateway
             SendRoutineProgressAsync,
             SendRoutineRunDetailAsync
         );
+        _doctorCommandDispatcher = new WsDoctorCommandDispatcher(
+            doctorService,
+            SendDoctorResultAsync
+        );
+        _planningCommandDispatcher = new WsPlanningCommandDispatcher(
+            planService,
+            SendPlanActionResultAsync,
+            SendPlanListResultAsync
+        );
+        _taskCommandDispatcher = new WsTaskCommandDispatcher(
+            taskGraphService,
+            SendTaskGraphActionResultAsync,
+            SendTaskGraphListResultAsync,
+            SendTaskOutputResultAsync,
+            SendTaskUpdatedAsync,
+            SendTaskLogAsync
+        );
+        _refactorCommandDispatcher = new WsRefactorCommandDispatcher(
+            refactorService,
+            SendRefactorActionResultAsync
+        );
+        _contextCommandDispatcher = new WsContextCommandDispatcher(
+            contextService,
+            SendProjectContextAsync,
+            SendSkillsListAsync,
+            SendCommandsListAsync
+        );
+        _notebookCommandDispatcher = new WsNotebookCommandDispatcher(
+            notebookService,
+            SendNotebookResultAsync
+        );
         _aiCommandDispatcher = new WsAiCommandDispatcher(
             chatService,
             codingService,
@@ -197,6 +250,7 @@ public sealed partial class WebSocketGateway
             SendChatResultAsync,
             SendChatStreamChunkAsync,
             SendCodingResultAsync,
+            SendCodingExecutionResultAsync,
             SendCodingProgressAsync,
             SendConversationsAsync,
             SendGroqModelsAsync,
@@ -207,264 +261,307 @@ public sealed partial class WebSocketGateway
         );
     }
 
-    private async Task HandleWebSocketAsync(HttpListenerContext context, CancellationToken cancellationToken)
+    private Task SendDoctorResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        DoctorReport? report,
+        bool found,
+        CancellationToken cancellationToken
+    )
     {
-        WebSocket? socket = null;
-        string? sessionId = null;
-        var sendLock = new SemaphoreSlim(1, 1);
-        var streamCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        Task? streamTask = null;
-
-        try
-        {
-            var wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
-            socket = wsContext.WebSocket;
-            MarkWebSocketAccepted();
-            sessionId = await _authSessionGateway.CreatePendingSessionAsync(
-                socket,
-                sendLock,
-                cancellationToken
-            );
-            await SendSettingsStateAsync(socket, sendLock, cancellationToken);
-
-            while (socket.State == WebSocketState.Open && !cancellationToken.IsCancellationRequested)
-            {
-                string? text;
-                try
-                {
-                    text = await ReceiveTextAsync(socket, cancellationToken);
-                }
-                catch (InvalidOperationException ex)
-                {
-                    await SendTextAsync(socket, sendLock, $"{{\"type\":\"error\",\"message\":\"{EscapeJson(ex.Message)}\"}}", cancellationToken);
-                    break;
-                }
-
-                if (text == null)
-                {
-                    break;
-                }
-
-                var message = ParseClientMessage(text);
-                if (message == null)
-                {
-                    await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"invalid message format\"}", cancellationToken);
-                    continue;
-                }
-
-                if (message.Type == "ping")
-                {
-                    MarkWebSocketRoundTrip();
-                    var acceptedCount = Interlocked.Read(ref _webSocketAcceptedCount);
-                    var roundTripCount = Interlocked.Read(ref _webSocketRoundTripCount);
-                    var nowUtc = DateTimeOffset.UtcNow.ToString("O");
-                    await SendTextAsync(
-                        socket,
-                        sendLock,
-                        "{"
-                        + "\"type\":\"pong\","
-                        + $"\"atUtc\":\"{EscapeJson(nowUtc)}\","
-                        + $"\"webSocketAcceptedCount\":{acceptedCount},"
-                        + $"\"webSocketRoundTripCount\":{roundTripCount}"
-                        + "}",
-                        cancellationToken
-                    );
-                    continue;
-                }
-
-                var authDispatch = await _authSessionGateway.TryHandleAsync(
-                    message.Type,
-                    sessionId,
-                    message.Otp,
-                    message.AuthToken,
-                    message.AuthTtlHours,
-                    socket,
-                    sendLock,
-                    cancellationToken
-                );
-                if (authDispatch.Handled)
-                {
-                    if (authDispatch.Authenticated)
-                    {
-                        await SendGroqModelsAsync(socket, sendLock, cancellationToken);
-                        await SendCopilotModelsAsync(socket, sendLock, cancellationToken);
-                        await SendUsageStatsAsync(socket, sendLock, cancellationToken);
-                        if (streamTask == null)
-                        {
-                            streamTask = StreamMetricsAsync(socket, sendLock, streamCts.Token);
-                        }
-                    }
-
-                    continue;
-                }
-
-                if (await _setupCommandDispatcher.TryHandleAsync(message, socket, sendLock, cancellationToken))
-                {
-                    continue;
-                }
-
-                if (await _conversationMemoryDispatcher.TryHandleAsync(
-                        message,
-                        _sessionManager.IsAuthenticated(sessionId),
-                        socket,
-                        sendLock,
-                        cancellationToken
-                    ))
-                {
-                    continue;
-                }
-
-                if (!_sessionManager.IsAuthenticated(sessionId))
-                {
-                    await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"unauthorized\"}", cancellationToken);
-                    continue;
-                }
-
-                if (message.Type == GuardAlertDispatchMessageType)
-                {
-                    var guardAlertEventJson = BuildGuardAlertEventJson(message.RawJson);
-                    if (string.IsNullOrWhiteSpace(guardAlertEventJson))
-                    {
-                        await SendTextAsync(
-                            socket,
-                            sendLock,
-                            "{"
-                            + $"\"type\":\"{GuardAlertDispatchResultType}\","
-                            + "\"ok\":false,"
-                            + "\"status\":\"invalid_payload\","
-                            + "\"message\":\"guardAlertEvent object is required\","
-                            + $"\"schemaVersion\":\"{GuardAlertSchemaVersion}\","
-                            + $"\"eventType\":\"{GuardAlertEventType}\","
-                            + $"\"attemptedAtUtc\":\"{EscapeJson(DateTimeOffset.UtcNow.ToString("O"))}\","
-                            + "\"targets\":[]"
-                            + "}",
-                            cancellationToken
-                        );
-                        continue;
-                    }
-
-                    var dispatchResult = await DispatchGuardAlertEventAsync(guardAlertEventJson, cancellationToken);
-                    await SendTextAsync(
-                        socket,
-                        sendLock,
-                        BuildGuardAlertDispatchResultJson(dispatchResult),
-                        cancellationToken
-                    );
-                    continue;
-                }
-
-                if (await _toolCommandDispatcher.TryHandleAsync(
-                        message,
-                        sessionId!,
-                        socket,
-                        sendLock,
-                        cancellationToken
-                    ))
-                {
-                    continue;
-                }
-
-                if (await _routineCommandDispatcher.TryHandleAsync(
-                        message,
-                        socket,
-                        sendLock,
-                        cancellationToken
-                    ))
-                {
-                    continue;
-                }
-
-                if (await _aiCommandDispatcher.TryHandleAsync(
-                        message,
-                        sessionId!,
-                        socket,
-                        sendLock,
-                        cancellationToken
-                    ))
-                {
-                    continue;
-                }
-
-                await SendTextAsync(socket, sendLock, "{\"type\":\"error\",\"message\":\"unsupported message type\"}", cancellationToken);
-            }
-        }
-        catch (OperationCanceledException)
-        {
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[ws] client error: {ex.Message}");
-        }
-        finally
-        {
-            streamCts.Cancel();
-            if (streamTask != null)
-            {
-                try
-                {
-                    await streamTask;
-                }
-                catch
-                {
-                }
-            }
-
-            if (sessionId != null)
-            {
-                _sessionManager.Remove(sessionId);
-                ClearRateWindow(sessionId);
-            }
-
-            if (socket != null && socket.State != WebSocketState.Closed && socket.State != WebSocketState.Aborted)
-            {
-                try
-                {
-                    await socket.CloseAsync(WebSocketCloseStatus.NormalClosure, "bye", CancellationToken.None);
-                }
-                catch
-                {
-                }
-            }
-
-            socket?.Dispose();
-            sendLock.Dispose();
-            streamCts.Dispose();
-        }
+        var reportJson = report == null ? "null" : DoctorJson.Serialize(report);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"doctor_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"found\":{(found ? "true" : "false")},"
+            + $"\"report\":{reportJson}"
+            + "}",
+            cancellationToken
+        );
     }
 
-    private async Task StreamMetricsAsync(WebSocket socket, SemaphoreSlim sendLock, CancellationToken cancellationToken)
+    private Task SendPlanActionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        PlanActionResult result,
+        CancellationToken cancellationToken
+    )
     {
-        var interval = TimeSpan.FromSeconds(Math.Max(1, _config.MetricsPushIntervalSec));
-        var warnedCoreUnavailable = false;
-        while (!cancellationToken.IsCancellationRequested && socket.State == WebSocketState.Open)
-        {
-            try
-            {
-                var metricsRaw = await _settingsService.GetMetricsAsync(cancellationToken);
-                await SendMetricsAsync(socket, sendLock, "metrics_stream", metricsRaw, cancellationToken);
-                warnedCoreUnavailable = false;
-                await Task.Delay(interval, cancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-            catch (Exception ex)
-            {
-                var message = ex.Message ?? string.Empty;
-                var isConnectionRefused = message.IndexOf("Connection refused", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!isConnectionRefused || !warnedCoreUnavailable)
-                {
-                    Console.Error.WriteLine($"[ws] metrics stream error: {message}");
-                }
+        var payload = PlanJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"plan_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
 
-                warnedCoreUnavailable = warnedCoreUnavailable || isConnectionRefused;
-                var delay = isConnectionRefused
-                    ? TimeSpan.FromSeconds(Math.Max(3, _config.MetricsPushIntervalSec))
-                    : TimeSpan.FromSeconds(1);
-                await Task.Delay(delay, cancellationToken);
-            }
-        }
+    private Task SendPlanListResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        PlanListResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = PlanJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"plan_list_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendTaskGraphActionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        TaskGraphActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = TaskGraphJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"task_graph_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendTaskGraphListResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        TaskGraphListResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = TaskGraphJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"task_graph_list_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendTaskOutputResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        TaskOutputResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = TaskGraphJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"task_output_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendRoutingPolicyResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        RoutingPolicyActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = RoutingPolicyJson.SerializeActionResult(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"routing_policy_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendRefactorActionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        RefactorActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = RefactorJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"refactor_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendProjectContextAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        ProjectContextSnapshot snapshot,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = ContextJson.Serialize(snapshot);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"context_scan_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendSkillsListAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        SkillManifestListResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = ContextJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"skills_list_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendCommandsListAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        CommandTemplateListResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = ContextJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"commands_list_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendNotebookResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string action,
+        NotebookActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = NotebookJson.Serialize(result);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"notebook_result\","
+            + $"\"action\":\"{EscapeJson(action)}\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendRoutingDecisionAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        RoutingDecision? decision,
+        CancellationToken cancellationToken
+    )
+    {
+        var payload = decision == null ? "null" : RoutingPolicyJson.SerializeDecision(decision);
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"routing_decision_result\","
+            + $"\"payload\":{payload}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendTaskUpdatedAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string graphId,
+        TaskNode task,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"task_updated\","
+            + $"\"graphId\":\"{EscapeJson(graphId)}\","
+            + $"\"task\":{TaskGraphJson.Serialize(task)}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendTaskLogAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        string graphId,
+        string taskId,
+        string line,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"task_log\","
+            + $"\"graphId\":\"{EscapeJson(graphId)}\","
+            + $"\"taskId\":\"{EscapeJson(taskId)}\","
+            + $"\"line\":\"{EscapeJson(line)}\""
+            + "}",
+            cancellationToken
+        );
     }
 
     private async Task SendSettingsStateAsync(WebSocket socket, SemaphoreSlim sendLock, CancellationToken cancellationToken)
@@ -2609,6 +2706,10 @@ public sealed partial class WebSocketGateway
             + $"\"language\":\"{EscapeJson(result.Language)}\","
             + "\"code\":\"\","
             + $"\"summary\":\"{EscapeJson(result.Summary)}\","
+            + $"\"commonSummary\":\"{EscapeJson(result.CommonSummary)}\","
+            + $"\"commonPoints\":\"{EscapeJson(result.CommonPoints)}\","
+            + $"\"differences\":\"{EscapeJson(result.Differences)}\","
+            + $"\"recommendation\":\"{EscapeJson(result.Recommendation)}\","
             + $"\"execution\":{BuildExecutionJson(result.Execution)},"
             + $"\"workers\":{BuildCodingWorkersJson(result.Workers)},"
             + $"\"changedFiles\":{BuildStringArrayJson(result.ChangedFiles)},"
@@ -2628,6 +2729,21 @@ public sealed partial class WebSocketGateway
             + $"\"retryMaxAttempts\":{Math.Max(0, result.RetryMaxAttempts)},"
             + $"\"retryStopReason\":\"{EscapeJson(normalizedRetryStopReason)}\""
             + "}",
+            cancellationToken
+        );
+    }
+
+    private async Task SendCodingExecutionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        CodingResultExecutionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        await SendTextAsync(
+            socket,
+            sendLock,
+            BuildCodingExecutionResultJson(result),
             cancellationToken
         );
     }
@@ -2725,41 +2841,6 @@ public sealed partial class WebSocketGateway
             $"{{\"type\":\"{type}\",\"payload\":\"{EscapeJson(metricsRaw)}\"}}",
             cancellationToken
         );
-    }
-
-    private bool AllowCommand(string sessionId)
-    {
-        var now = DateTimeOffset.UtcNow;
-        lock (_rateLock)
-        {
-            if (!_sessionRateMap.TryGetValue(sessionId, out var window))
-            {
-                _sessionRateMap[sessionId] = new RateWindow(now, 1);
-                return true;
-            }
-
-            if (now - window.WindowStart >= TimeSpan.FromMinutes(1))
-            {
-                _sessionRateMap[sessionId] = new RateWindow(now, 1);
-                return true;
-            }
-
-            if (window.Count >= _config.WebSocketCommandsPerMinute)
-            {
-                return false;
-            }
-
-            _sessionRateMap[sessionId] = window with { Count = window.Count + 1 };
-            return true;
-        }
-    }
-
-    private void ClearRateWindow(string sessionId)
-    {
-        lock (_rateLock)
-        {
-            _sessionRateMap.Remove(sessionId);
-        }
     }
 
     private async Task<GuardAlertDispatchResult> DispatchGuardAlertEventAsync(
@@ -3095,58 +3176,6 @@ public sealed partial class WebSocketGateway
         return builder.ToString();
     }
 
-    private async Task<string?> ReceiveTextAsync(WebSocket socket, CancellationToken cancellationToken)
-    {
-        var buffer = new byte[4096];
-        var total = 0;
-        using var ms = new MemoryStream();
-
-        while (true)
-        {
-            var result = await socket.ReceiveAsync(buffer, cancellationToken);
-            if (result.MessageType == WebSocketMessageType.Close)
-            {
-                return null;
-            }
-
-            total += result.Count;
-            if (total > _config.WebSocketMaxMessageBytes)
-            {
-                throw new InvalidOperationException($"payload too large (max={_config.WebSocketMaxMessageBytes})");
-            }
-
-            ms.Write(buffer, 0, result.Count);
-            if (result.EndOfMessage)
-            {
-                break;
-            }
-        }
-
-        return Encoding.UTF8.GetString(ms.ToArray());
-    }
-
-    internal static async Task SendTextAsync(
-        WebSocket socket,
-        SemaphoreSlim sendLock,
-        string text,
-        CancellationToken cancellationToken
-    )
-    {
-        var bytes = Encoding.UTF8.GetBytes(text);
-        await sendLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (socket.State == WebSocketState.Open)
-            {
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
-            }
-        }
-        finally
-        {
-            sendLock.Release();
-        }
-    }
-
     private static ClientMessage? ParseClientMessage(string json)
     {
         try
@@ -3209,10 +3238,20 @@ public sealed partial class WebSocketGateway
             string? profile = null;
             string? outputFormat = null;
             string? conversationId = null;
+            string? standardInput = null;
             string? conversationTitle = null;
             string? project = null;
+            string? projectKey = null;
             string? category = null;
+            string? kind = null;
+            string? planId = null;
+            string? graphId = null;
+            string? taskId = null;
+            string? previewId = null;
             string? language = null;
+            string? symbol = null;
+            string? pattern = null;
+            string? replacement = null;
             string? noteName = null;
             string? newName = null;
             string? filePath = null;
@@ -3231,6 +3270,8 @@ public sealed partial class WebSocketGateway
             string? groqApiKey = null;
             string? geminiApiKey = null;
             string? cerebrasApiKey = null;
+            string? routingPolicyJson = null;
+            string? refactorEditsJson = null;
             int? authTtlHours = null;
             int? timeoutSeconds = null;
             int? runTimeoutSeconds = null;
@@ -3259,6 +3300,7 @@ public sealed partial class WebSocketGateway
             var attachments = new List<InputAttachment>();
             var memoryNotes = new List<string>();
             var tags = new List<string>();
+            var constraints = new List<string>();
             var kinds = new List<string>();
             var weekdays = new List<int>();
             var webUrls = new List<string>();
@@ -3278,6 +3320,12 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("text", out var textElement))
             {
                 text = textElement.GetString();
+            }
+
+            if (string.IsNullOrWhiteSpace(text)
+                && doc.RootElement.TryGetProperty("content", out var contentElement))
+            {
+                text = contentElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("message", out var messageElement))
@@ -3313,6 +3361,7 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("path", out var pathElement))
             {
                 memoryPath = pathElement.GetString();
+                filePath = pathElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("model", out var modelElement))
@@ -3348,6 +3397,21 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("codexModel", out var codexModelElement))
             {
                 codexModel = codexModelElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("policy", out var policyElement))
+            {
+                routingPolicyJson = policyElement.ValueKind == JsonValueKind.String
+                    ? policyElement.GetString()
+                    : policyElement.GetRawText();
+            }
+
+            if (string.IsNullOrWhiteSpace(routingPolicyJson)
+                && doc.RootElement.TryGetProperty("routingPolicy", out var routingPolicyElement))
+            {
+                routingPolicyJson = routingPolicyElement.ValueKind == JsonValueKind.String
+                    ? routingPolicyElement.GetString()
+                    : routingPolicyElement.GetRawText();
             }
 
             if (doc.RootElement.TryGetProperty("summaryProvider", out var summaryProviderElement))
@@ -3477,6 +3541,17 @@ public sealed partial class WebSocketGateway
                 conversationId = conversationIdElement.GetString();
             }
 
+            if (doc.RootElement.TryGetProperty("stdin", out var standardInputElement)
+                && standardInputElement.ValueKind == JsonValueKind.String)
+            {
+                standardInput = standardInputElement.GetString();
+            }
+            else if (doc.RootElement.TryGetProperty("standardInput", out var explicitStandardInputElement)
+                     && explicitStandardInputElement.ValueKind == JsonValueKind.String)
+            {
+                standardInput = explicitStandardInputElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("conversationTitle", out var conversationTitleElement))
             {
                 conversationTitle = conversationTitleElement.GetString();
@@ -3487,9 +3562,39 @@ public sealed partial class WebSocketGateway
                 project = projectElement.GetString();
             }
 
+            if (doc.RootElement.TryGetProperty("projectKey", out var projectKeyElement))
+            {
+                projectKey = projectKeyElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("category", out var categoryElement))
             {
                 category = categoryElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("kind", out var kindElement))
+            {
+                kind = kindElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("planId", out var planIdElement))
+            {
+                planId = planIdElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("graphId", out var graphIdElement))
+            {
+                graphId = graphIdElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("taskId", out var taskIdElement))
+            {
+                taskId = taskIdElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("previewId", out var previewIdElement))
+            {
+                previewId = previewIdElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("tags", out var tagsElement)
@@ -3506,6 +3611,30 @@ public sealed partial class WebSocketGateway
                     if (!string.IsNullOrWhiteSpace(value))
                     {
                         tags.Add(value.Trim());
+                    }
+                }
+            }
+
+            if (doc.RootElement.TryGetProperty("constraints", out var constraintsElement)
+                && constraintsElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in constraintsElement.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var value = item.GetString();
+                    if (string.IsNullOrWhiteSpace(value))
+                    {
+                        continue;
+                    }
+
+                    constraints.Add(value.Trim());
+                    if (constraints.Count >= 16)
+                    {
+                        break;
                     }
                 }
             }
@@ -3539,6 +3668,21 @@ public sealed partial class WebSocketGateway
                 language = languageElement.GetString();
             }
 
+            if (doc.RootElement.TryGetProperty("symbol", out var symbolElement))
+            {
+                symbol = symbolElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("pattern", out var patternElement))
+            {
+                pattern = patternElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("replacement", out var replacementElement))
+            {
+                replacement = replacementElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("noteName", out var noteNameElement))
             {
                 noteName = noteNameElement.GetString();
@@ -3552,6 +3696,11 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("filePath", out var filePathElement))
             {
                 filePath = filePathElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("edits", out var editsElement))
+            {
+                refactorEditsJson = editsElement.GetRawText();
             }
 
             if (doc.RootElement.TryGetProperty("routineId", out var routineIdElement))
@@ -4145,10 +4294,20 @@ public sealed partial class WebSocketGateway
                 Profile = profile,
                 OutputFormat = outputFormat,
                 ConversationId = conversationId,
+                StandardInput = standardInput,
                 ConversationTitle = conversationTitle,
                 Project = project,
+                ProjectKey = projectKey,
                 Category = category,
+                Kind = kind,
+                PlanId = planId,
+                GraphId = graphId,
+                TaskId = taskId,
+                PreviewId = previewId,
                 Language = language,
+                Symbol = symbol,
+                Pattern = pattern,
+                Replacement = replacement,
                 NoteName = noteName,
                 NewName = newName,
                 FilePath = filePath,
@@ -4167,6 +4326,8 @@ public sealed partial class WebSocketGateway
                 GroqApiKey = groqApiKey,
                 GeminiApiKey = geminiApiKey,
                 CerebrasApiKey = cerebrasApiKey,
+                RoutingPolicyJson = routingPolicyJson,
+                RefactorEditsJson = refactorEditsJson,
                 AuthTtlHours = authTtlHours,
                 TimeoutSeconds = timeoutSeconds,
                 RunTimeoutSeconds = runTimeoutSeconds,
@@ -4193,6 +4354,7 @@ public sealed partial class WebSocketGateway
                 IncludeTools = includeTools,
                 Thread = thread,
                 Tags = tags.Count == 0 ? Array.Empty<string>() : tags.ToArray(),
+                Constraints = constraints.Count == 0 ? Array.Empty<string>() : constraints.ToArray(),
                 Kinds = kinds.Count == 0 ? Array.Empty<string>() : kinds.ToArray(),
                 Weekdays = weekdays.Count == 0 ? Array.Empty<int>() : weekdays.ToArray(),
                 MemoryNotes = memoryNotes.Count == 0 ? Array.Empty<string>() : memoryNotes.ToArray(),

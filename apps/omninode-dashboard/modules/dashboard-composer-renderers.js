@@ -17,6 +17,19 @@ function renderLanguageOptions(e) {
   return CODING_LANGUAGES.map((item) => e("option", { key: item[0], value: item[0] }, item[1]));
 }
 
+function renderComposerSupportDocks(e, codingResultDock, safeRefactorDock) {
+  if (!codingResultDock && !safeRefactorDock) {
+    return null;
+  }
+
+  return e(
+    "div",
+    { className: "composer-support-docks" },
+    codingResultDock || null,
+    safeRefactorDock || null
+  );
+}
+
 export function renderChatComposerPanel(props) {
   const {
     e,
@@ -104,6 +117,7 @@ export function renderChatComposerPanel(props) {
     return e(
       "div",
       { className: "composer messenger-composer" },
+      e("div", { className: "preset-hint" }, "단일 코딩은 선택한 모델 1개가 처음부터 끝까지 구현, 실행, 검증, 수정까지 직접 완주합니다."),
       e("div", { className: "toolbar" },
         e("select", {
           className: "input compact",
@@ -175,7 +189,7 @@ export function renderChatComposerPanel(props) {
     return e(
       "div",
       { className: "composer messenger-composer" },
-      e("div", { className: "preset-hint" }, "기본 권장: 1차 Groq(빠름) + 2차 Gemini 통합. AUTO와 별개로 워커 모델을 각각 선택할 수 있습니다."),
+      e("div", { className: "preset-hint" }, "오케스트레이션은 요청 성격을 보고 워커 역할을 자동 분담합니다. 초안, 리스크 점검, 예시 구체화, 최종 검토를 나눠 통합합니다."),
       e("div", { className: "toolbar" },
         e("select", {
           className: "input compact",
@@ -280,7 +294,7 @@ export function renderChatComposerPanel(props) {
   return e(
     "div",
     { className: "composer messenger-composer" },
-    e("div", { className: "preset-hint" }, "다중 LLM은 답변 충돌/중요 결정 상황에서만 사용하는 것을 권장합니다."),
+    e("div", { className: "preset-hint" }, "다중 LLM은 모델별 답변을 각각 넘겨보고, 아래 공통 정리에서 겹치는 핵심과 차이를 확인할 때 쓰는 모드입니다."),
     e("div", { className: "toolbar" },
       e("select", {
         className: "input compact",
@@ -334,6 +348,8 @@ export function renderCodingComposerPanel(props) {
     e,
     mode,
     renderComposerInputBar,
+    codingResultDock,
+    safeRefactorDock,
     constants,
     optionSets,
     selectedModels,
@@ -488,12 +504,13 @@ export function renderCodingComposerPanel(props) {
           onChange: (event) => setCodingSingleLanguage(event.target.value)
         }, renderLanguageOptions(e))
       ),
+      renderComposerSupportDocks(e, codingResultDock, safeRefactorDock),
       renderComposerInputBar({
         value: codingInputSingle,
         onChange: (event) => setCodingInputSingle(event.target.value),
         onSend: sendCodingSingle,
         pendingKey: "coding:single",
-        placeholder: "요구사항 입력 시 코드 생성/실행"
+        placeholder: "처음부터 끝까지 구현할 요구사항 입력"
       })
     );
   }
@@ -502,7 +519,7 @@ export function renderCodingComposerPanel(props) {
     return e(
       "div",
       { className: "composer messenger-composer" },
-      e("div", { className: "preset-hint" }, "기본 권장: Copilot 생성 + Gemini 검증 + Groq 보조. 집계:AUTO는 워커 결과를 어떤 모델이 최종 통합할지 자동 선택합니다(gemini 우선). 입력 없이 실행하면 워커가 역할을 자동 협의해 분배합니다."),
+      e("div", { className: "preset-hint" }, "오케스트레이션 코딩은 기획, 개발, 검증 및 테스트, 수정 단계를 모델들이 나눠 맡습니다. `주 구현`을 지정하면 개발 단계에 우선 배치하고, 입력 없이 실행하면 자동 역할 분배로 시작합니다."),
       e("div", { className: "toolbar" },
         e("select", {
           className: "input compact",
@@ -527,12 +544,12 @@ export function renderCodingComposerPanel(props) {
             }
           }
         },
-        e("option", { value: "auto" }, "집계: AUTO"),
-        e("option", { value: "groq" }, "집계: Groq"),
-        e("option", { value: "gemini" }, "집계: Gemini"),
-        e("option", { value: "cerebras" }, "집계: Cerebras"),
-        e("option", { value: "copilot" }, "집계: Copilot"),
-        e("option", { value: "codex" }, "집계: Codex")),
+        e("option", { value: "auto" }, "주 구현: AUTO"),
+        e("option", { value: "groq" }, "주 구현: Groq"),
+        e("option", { value: "gemini" }, "주 구현: Gemini"),
+        e("option", { value: "cerebras" }, "주 구현: Cerebras"),
+        e("option", { value: "copilot" }, "주 구현: Copilot"),
+        e("option", { value: "codex" }, "주 구현: Codex")),
         codingOrchProvider === "groq"
           ? e("select", {
             className: "input compact",
@@ -599,12 +616,13 @@ export function renderCodingComposerPanel(props) {
           onChange: (event) => setCodingOrchCodexModel(event.target.value)
         }, codexWorkerModelOptions)
       ),
+      renderComposerSupportDocks(e, codingResultDock, safeRefactorDock),
       renderComposerInputBar({
         value: codingInputOrch,
         onChange: (event) => setCodingInputOrch(event.target.value),
         onSend: sendCodingOrchestration,
         pendingKey: "coding:orchestration",
-        placeholder: "모델별 역할 분배 병렬 코딩"
+        placeholder: "기획부터 수정까지 역할 분담할 요구사항 입력"
       })
     );
   }
@@ -612,7 +630,7 @@ export function renderCodingComposerPanel(props) {
   return e(
     "div",
     { className: "composer messenger-composer" },
-    e("div", { className: "preset-hint" }, "실패 비용이 큰 버그/설계 이슈일 때 다중 코딩을 사용하세요. Groq/Gemini/Cerebras/Copilot 워커를 각각 선택할 수 있습니다."),
+    e("div", { className: "preset-hint" }, "다중 코딩은 선택한 각 모델이 서로 독립된 폴더에서 처음부터 끝까지 완주하고, 아래에서 모델별 결과와 공통점/차이를 비교합니다."),
     e("div", { className: "toolbar" },
       e("select", {
         className: "input compact",
@@ -635,12 +653,12 @@ export function renderCodingComposerPanel(props) {
           }
         }
       },
-      e("option", { value: "auto" }, "요약: AUTO"),
-      e("option", { value: "groq" }, "요약: Groq"),
-      e("option", { value: "gemini" }, "요약: Gemini"),
-      e("option", { value: "cerebras" }, "요약: Cerebras"),
-      e("option", { value: "copilot" }, "요약: Copilot"),
-      e("option", { value: "codex" }, "요약: Codex")),
+      e("option", { value: "auto" }, "비교 요약: AUTO"),
+      e("option", { value: "groq" }, "비교 요약: Groq"),
+      e("option", { value: "gemini" }, "비교 요약: Gemini"),
+      e("option", { value: "cerebras" }, "비교 요약: Cerebras"),
+      e("option", { value: "copilot" }, "비교 요약: Copilot"),
+      e("option", { value: "codex" }, "비교 요약: Codex")),
       codingMultiProvider === "groq"
         ? e("select", {
           className: "input compact",
@@ -706,12 +724,13 @@ export function renderCodingComposerPanel(props) {
         onChange: (event) => setCodingMultiCodexModel(event.target.value)
       }, codexWorkerModelOptions)
     ),
+    renderComposerSupportDocks(e, codingResultDock, safeRefactorDock),
     renderComposerInputBar({
       value: codingInputMulti,
       onChange: (event) => setCodingInputMulti(event.target.value),
       onSend: sendCodingMulti,
       pendingKey: "coding:multi",
-      placeholder: "여러 모델별 코드 생성/실행 + 공통점 요약"
+      placeholder: "여러 모델이 각각 끝까지 구현할 요구사항 입력"
     })
   );
 }

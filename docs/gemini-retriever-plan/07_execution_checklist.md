@@ -1,5 +1,7 @@
 # 실행 체크리스트
 
+업데이트 기준: 2026-03-10
+
 ## 1. 착수 전 체크
 - [ ] P0~P7 목표와 완료 기준 확정
 - [ ] 기준 문서(`GEMINI_SEARCH_RETRIEVER_INTEGRATION_PLAN.md`) 고정

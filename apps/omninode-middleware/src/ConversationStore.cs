@@ -224,6 +224,18 @@ public sealed class ConversationStore : IConversationStore
         }
     }
 
+    public ConversationThreadView SetLatestCodingResult(string conversationId, ConversationCodingResultSnapshot? result)
+    {
+        lock (_lock)
+        {
+            var thread = RequireThreadLocked(conversationId);
+            thread.LatestCodingResult = result;
+            thread.UpdatedUtc = DateTimeOffset.UtcNow;
+            SaveLocked();
+            return ToView(thread);
+        }
+    }
+
     public ConversationThreadView SetLinkedMemoryNotes(string conversationId, IReadOnlyList<string> names)
     {
         lock (_lock)
@@ -557,7 +569,8 @@ public sealed class ConversationStore : IConversationStore
             thread.CreatedUtc,
             thread.UpdatedUtc,
             thread.Messages.Select(x => new ConversationMessageView(x.Role, x.Text, x.Meta, x.CreatedUtc)).ToArray(),
-            thread.LinkedMemoryNotes.ToArray()
+            thread.LinkedMemoryNotes.ToArray(),
+            thread.LatestCodingResult
         );
     }
 
@@ -724,6 +737,7 @@ public sealed class ConversationThread
     public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
     public List<ConversationMessage> Messages { get; set; } = new();
     public List<string> LinkedMemoryNotes { get; set; } = new();
+    public ConversationCodingResultSnapshot? LatestCodingResult { get; set; }
 }
 
 public sealed class ConversationMessage
@@ -767,5 +781,6 @@ public sealed record ConversationThreadView(
     DateTimeOffset CreatedUtc,
     DateTimeOffset UpdatedUtc,
     IReadOnlyList<ConversationMessageView> Messages,
-    IReadOnlyList<string> LinkedMemoryNotes
+    IReadOnlyList<string> LinkedMemoryNotes,
+    ConversationCodingResultSnapshot? LatestCodingResult
 );

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Text;
+using System.Linq;
 
 namespace OmniNode.Middleware;
 
@@ -8,11 +9,17 @@ internal sealed class GatewayApiEndpoint
 {
     private const string GuardRetryTimelineApiPath = "/api/guard/retry-timeline";
     private const string LocalImageApiPath = "/api/local-image";
+    private const string CodingPreviewApiPrefix = "/api/coding-preview/";
     private readonly GuardRetryTimelineStore _guardRetryTimelineStore;
+    private readonly IConversationApplicationService _conversationService;
 
-    public GatewayApiEndpoint(GuardRetryTimelineStore guardRetryTimelineStore)
+    public GatewayApiEndpoint(
+        GuardRetryTimelineStore guardRetryTimelineStore,
+        IConversationApplicationService conversationService
+    )
     {
         _guardRetryTimelineStore = guardRetryTimelineStore;
+        _conversationService = conversationService;
     }
 
     public async Task<bool> TryHandleAsync(
@@ -30,6 +37,12 @@ internal sealed class GatewayApiEndpoint
         if (path.Equals(LocalImageApiPath, StringComparison.OrdinalIgnoreCase))
         {
             await HandleLocalImageApiAsync(context, cancellationToken);
+            return true;
+        }
+
+        if (path.StartsWith(CodingPreviewApiPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            await HandleCodingPreviewApiAsync(context, path, cancellationToken);
             return true;
         }
 
@@ -150,6 +163,188 @@ internal sealed class GatewayApiEndpoint
         await WriteBinaryResponseAsync(context.Response, contentType, bytes, cancellationToken);
     }
 
+    private async Task HandleCodingPreviewApiAsync(
+        HttpListenerContext context,
+        string path,
+        CancellationToken cancellationToken
+    )
+    {
+        var method = context.Request.HttpMethod?.ToUpperInvariant() ?? "GET";
+        if (method != "GET" && method != "HEAD")
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
+            context.Response.Headers["Allow"] = "GET, HEAD";
+            await WritePreviewResponseAsync(context.Response, "text/plain; charset=utf-8", "Method Not Allowed", cancellationToken);
+            return;
+        }
+
+        if (!TryResolveCodingPreviewRequest(path, out var conversationId, out var targetSegment, out var relativePath))
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.BadRequest;
+            await WritePreviewResponseAsync(context.Response, "text/plain; charset=utf-8", "preview path is invalid", cancellationToken);
+            return;
+        }
+
+        var fileResult = ResolveCodingPreviewFile(conversationId, targetSegment, relativePath);
+        if (fileResult == null)
+        {
+            context.Response.StatusCode = (int)HttpStatusCode.NotFound;
+            await WritePreviewResponseAsync(context.Response, "text/plain; charset=utf-8", "preview file not found", cancellationToken);
+            return;
+        }
+
+        context.Response.StatusCode = (int)HttpStatusCode.OK;
+        if (method == "HEAD")
+        {
+            context.Response.ContentType = fileResult.ContentType;
+            context.Response.ContentLength64 = 0;
+            context.Response.Headers["Cache-Control"] = "no-store";
+            context.Response.Headers["X-Content-Type-Options"] = "nosniff";
+            context.Response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+            context.Response.OutputStream.Close();
+            return;
+        }
+
+        if (fileResult.IsBinary)
+        {
+            var bytes = await File.ReadAllBytesAsync(fileResult.FullPath, cancellationToken);
+            await WriteBinaryPreviewResponseAsync(context.Response, fileResult.ContentType, bytes, cancellationToken);
+            return;
+        }
+
+        var body = await File.ReadAllTextAsync(fileResult.FullPath, cancellationToken);
+        await WritePreviewResponseAsync(context.Response, fileResult.ContentType, body, cancellationToken);
+    }
+
+    private sealed record CodingPreviewFileResult(string FullPath, string ContentType, bool IsBinary);
+
+    private static bool TryResolveCodingPreviewRequest(
+        string path,
+        out string conversationId,
+        out string targetSegment,
+        out string relativePath
+    )
+    {
+        conversationId = string.Empty;
+        targetSegment = string.Empty;
+        relativePath = string.Empty;
+
+        var normalized = (path ?? string.Empty).Trim();
+        if (!normalized.StartsWith(CodingPreviewApiPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var remainder = normalized[CodingPreviewApiPrefix.Length..].Trim('/');
+        if (string.IsNullOrWhiteSpace(remainder))
+        {
+            return false;
+        }
+
+        var segments = remainder.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 3)
+        {
+            return false;
+        }
+
+        conversationId = Uri.UnescapeDataString(segments[0]);
+        targetSegment = Uri.UnescapeDataString(segments[1]);
+        relativePath = string.Join("/", segments.Skip(2).Select(Uri.UnescapeDataString));
+        return !string.IsNullOrWhiteSpace(conversationId)
+            && !string.IsNullOrWhiteSpace(targetSegment)
+            && !string.IsNullOrWhiteSpace(relativePath);
+    }
+
+    private CodingPreviewFileResult? ResolveCodingPreviewFile(
+        string conversationId,
+        string targetSegment,
+        string relativePath
+    )
+    {
+        var conversation = _conversationService.GetConversation(conversationId);
+        var latest = conversation?.LatestCodingResult;
+        if (latest == null)
+        {
+            return null;
+        }
+
+        var execution = ResolveCodingPreviewExecution(latest, targetSegment);
+        if (execution == null)
+        {
+            return null;
+        }
+
+        var runDirectory = (execution.RunDirectory ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(runDirectory) || !Directory.Exists(runDirectory))
+        {
+            return null;
+        }
+
+        var normalizedRelativePath = relativePath
+            .Replace('\\', '/')
+            .Trim('/')
+            .Replace("//", "/", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalizedRelativePath) || normalizedRelativePath.Contains("..", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var fullPath = Path.GetFullPath(Path.Combine(runDirectory, normalizedRelativePath));
+        if (!IsPathUnderRoot(fullPath, runDirectory) || !File.Exists(fullPath))
+        {
+            return null;
+        }
+
+        var extension = Path.GetExtension(fullPath).ToLowerInvariant();
+        var contentType = extension switch
+        {
+            ".html" => "text/html; charset=utf-8",
+            ".css" => "text/css; charset=utf-8",
+            ".js" or ".mjs" => "application/javascript; charset=utf-8",
+            ".json" => "application/json; charset=utf-8",
+            ".svg" => "image/svg+xml",
+            ".png" => "image/png",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".gif" => "image/gif",
+            ".webp" => "image/webp",
+            ".ico" => "image/x-icon",
+            ".txt" => "text/plain; charset=utf-8",
+            _ => string.Empty
+        };
+        if (string.IsNullOrWhiteSpace(contentType))
+        {
+            return null;
+        }
+
+        var isBinary = !contentType.Contains("charset=utf-8", StringComparison.OrdinalIgnoreCase)
+            && !contentType.StartsWith("text/", StringComparison.OrdinalIgnoreCase)
+            && !contentType.StartsWith("application/json", StringComparison.OrdinalIgnoreCase)
+            && !contentType.StartsWith("application/javascript", StringComparison.OrdinalIgnoreCase);
+
+        return new CodingPreviewFileResult(fullPath, contentType, isBinary);
+    }
+
+    private static CodeExecutionResult? ResolveCodingPreviewExecution(
+        ConversationCodingResultSnapshot latest,
+        string targetSegment
+    )
+    {
+        if (string.Equals(targetSegment, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            return latest.Execution;
+        }
+
+        if (targetSegment.StartsWith("worker-", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(targetSegment["worker-".Length..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var workerIndex)
+            && workerIndex >= 0
+            && workerIndex < latest.Workers.Count)
+        {
+            return latest.Workers[workerIndex].Execution;
+        }
+
+        return null;
+    }
+
     private static int? ParseQueryInt(string? raw, int min, int max)
     {
         if (string.IsNullOrWhiteSpace(raw))
@@ -208,5 +403,52 @@ internal sealed class GatewayApiEndpoint
         response.ContentLength64 = body.Length;
         await response.OutputStream.WriteAsync(body, cancellationToken);
         response.OutputStream.Close();
+    }
+
+    private static async Task WritePreviewResponseAsync(
+        HttpListenerResponse response,
+        string contentType,
+        string body,
+        CancellationToken cancellationToken
+    )
+    {
+        response.ContentType = contentType;
+        response.Headers["Cache-Control"] = "no-store";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+        response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+        var bytes = Encoding.UTF8.GetBytes(body);
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes, cancellationToken);
+        response.OutputStream.Close();
+    }
+
+    private static async Task WriteBinaryPreviewResponseAsync(
+        HttpListenerResponse response,
+        string contentType,
+        byte[] body,
+        CancellationToken cancellationToken
+    )
+    {
+        response.ContentType = contentType;
+        response.Headers["Cache-Control"] = "no-store";
+        response.Headers["X-Content-Type-Options"] = "nosniff";
+        response.Headers["X-Frame-Options"] = "SAMEORIGIN";
+        response.ContentLength64 = body.Length;
+        await response.OutputStream.WriteAsync(body, cancellationToken);
+        response.OutputStream.Close();
+    }
+
+    private static bool IsPathUnderRoot(string candidatePath, string rootPath)
+    {
+        var fullRoot = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullCandidate = Path.GetFullPath(candidatePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(fullCandidate, fullRoot, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return fullCandidate.StartsWith(fullRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal);
     }
 }

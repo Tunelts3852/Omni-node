@@ -258,6 +258,109 @@ public sealed class LlmRouter : IDisposable
         }
     }
 
+    public string ResolvePlanningRoute(string role, IReadOnlyList<string>? providerChain = null)
+    {
+        var normalizedRole = (role ?? string.Empty).Trim().ToLowerInvariant();
+        var routeRole = normalizedRole == "reviewer" ? "reviewer" : "planner";
+
+        foreach (var provider in NormalizePlanningProviderChain(providerChain))
+        {
+            if (provider == "gemini" && HasGeminiApiKey())
+            {
+                return $"{routeRole}:gemini:{_config.GeminiModel}";
+            }
+
+            if (provider == "groq" && HasGroqApiKey())
+            {
+                return $"{routeRole}:groq:{GetSelectedGroqModel()}";
+            }
+
+            if (provider == "cerebras" && HasCerebrasApiKey())
+            {
+                return $"{routeRole}:cerebras:{_config.CerebrasModel}";
+            }
+        }
+
+        return $"{routeRole}:fallback";
+    }
+
+    public async Task<string> BuildWorkPlanDraftAsync(
+        string objective,
+        IReadOnlyList<string> constraints,
+        string systemContext,
+        string mode,
+        IReadOnlyList<string>? providerChain,
+        CancellationToken cancellationToken
+    )
+    {
+        var prompt = BuildPlanningPrompt(objective, constraints, systemContext, mode);
+        foreach (var provider in NormalizePlanningProviderChain(providerChain))
+        {
+            if (provider == "gemini" && HasGeminiApiKey())
+            {
+                return await GenerateGeminiChatAsync(prompt, _config.GeminiModel, 1024, cancellationToken);
+            }
+
+            if (provider == "groq" && HasGroqApiKey())
+            {
+                return await GenerateGroqChatAsync(prompt, GetSelectedGroqModel(), 1024, cancellationToken);
+            }
+
+            if (provider == "cerebras" && HasCerebrasApiKey())
+            {
+                return await GenerateCerebrasChatAsync(prompt, _config.CerebrasModel, 1024, cancellationToken);
+            }
+        }
+
+        return BuildFallbackPlan(objective, systemContext);
+    }
+
+    public async Task<string> ReviewWorkPlanAsync(
+        WorkPlan plan,
+        string systemContext,
+        IReadOnlyList<string>? providerChain,
+        CancellationToken cancellationToken
+    )
+    {
+        var prompt = BuildPlanReviewPrompt(plan, systemContext);
+        foreach (var provider in NormalizePlanningProviderChain(providerChain))
+        {
+            if (provider == "gemini" && HasGeminiApiKey())
+            {
+                return await GenerateGeminiChatAsync(prompt, _config.GeminiModel, 768, cancellationToken);
+            }
+
+            if (provider == "groq" && HasGroqApiKey())
+            {
+                return await GenerateGroqChatAsync(prompt, GetSelectedGroqModel(), 768, cancellationToken);
+            }
+
+            if (provider == "cerebras" && HasCerebrasApiKey())
+            {
+                return await GenerateCerebrasChatAsync(prompt, _config.CerebrasModel, 768, cancellationToken);
+            }
+        }
+
+        return BuildFallbackPlanReview(plan);
+    }
+
+    private static IReadOnlyList<string> NormalizePlanningProviderChain(IReadOnlyList<string>? providerChain)
+    {
+        if (providerChain == null || providerChain.Count == 0)
+        {
+            return new[] { "gemini", "groq", "cerebras" };
+        }
+
+        return providerChain
+            .Select(item => (item ?? string.Empty).Trim().ToLowerInvariant())
+            .Where(item =>
+                item == "gemini"
+                || item == "groq"
+                || item == "cerebras")
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public Task<string> GenerateGroqChatAsync(
         string userInput,
         string? modelOverride,
@@ -1871,6 +1974,121 @@ public sealed class LlmRouter : IDisposable
                 Input: {userInput}
                 Context: {systemContext}
                 """;
+    }
+
+    private static string BuildPlanningPrompt(
+        string objective,
+        IReadOnlyList<string> constraints,
+        string systemContext,
+        string mode
+    )
+    {
+        var constraintsText = constraints == null || constraints.Count == 0
+            ? "- 없음"
+            : string.Join('\n', constraints.Select(item => $"- {item}"));
+        var normalizedMode = string.Equals(mode, "interview", StringComparison.OrdinalIgnoreCase)
+            ? "interview"
+            : "fast";
+
+        return $"""
+                한국어로만 답하라.
+                너의 역할은 Omni-node Planner다.
+                아래 목표를 실제 구현 가능한 작업 계획으로 분해하라.
+                과도한 설명 없이 바로 실행 가능한 단계만 작성하라.
+
+                반드시 아래 형식만 사용한다.
+                TITLE: 한 줄 제목
+                STEPS:
+                1. ...
+                2. ...
+                3. ...
+
+                규칙:
+                - 단계는 4개 이상 8개 이하
+                - 각 단계는 실제 저장소 작업 단위로 쓴다
+                - 문서/검증 단계도 포함한다
+                - mode=interview면 첫 단계에 모호한 지점 확인을 넣는다
+
+                [목표]
+                {objective}
+
+                [제약사항]
+                {constraintsText}
+
+                [planning_mode]
+                {normalizedMode}
+
+                [context]
+                {systemContext}
+                """;
+    }
+
+    private static string BuildPlanReviewPrompt(WorkPlan plan, string systemContext)
+    {
+        var builder = new StringBuilder();
+        builder.AppendLine("한국어로만 답하라.");
+        builder.AppendLine("너의 역할은 Omni-node Reviewer다.");
+        builder.AppendLine("아래 계획에서 빠진 검증, 위험, 범위 누락만 짚어라.");
+        builder.AppendLine("200자 이내의 짧은 리뷰 요약만 출력하라.");
+        builder.AppendLine();
+        builder.AppendLine("[목표]");
+        builder.AppendLine(plan.Objective);
+        builder.AppendLine();
+        builder.AppendLine("[제약사항]");
+        if (plan.Constraints.Count == 0)
+        {
+            builder.AppendLine("- 없음");
+        }
+        else
+        {
+            foreach (var item in plan.Constraints)
+            {
+                builder.AppendLine($"- {item}");
+            }
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("[단계]");
+        foreach (var step in plan.Steps)
+        {
+            builder.AppendLine($"- {step.StepId}: {step.Description}");
+            foreach (var item in step.Verification)
+            {
+                builder.AppendLine($"  verification: {item}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(systemContext))
+        {
+            builder.AppendLine();
+            builder.AppendLine("[project_context]");
+            builder.AppendLine(systemContext);
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string BuildFallbackPlanReview(WorkPlan plan)
+    {
+        var verificationGap = plan.Steps.Any(step => step.Verification == null || step.Verification.Count == 0);
+        var constraintsMissing = plan.Constraints.Count == 0;
+        if (!verificationGap && !constraintsMissing)
+        {
+            return "큰 누락은 보이지 않지만 실행 전에 검증 명령과 변경 범위를 마지막으로 확인해야 합니다.";
+        }
+
+        var issues = new List<string>();
+        if (verificationGap)
+        {
+            issues.Add("검증 단계 보강 필요");
+        }
+
+        if (constraintsMissing)
+        {
+            issues.Add("제약사항 명시 필요");
+        }
+
+        return $"보완 필요: {string.Join(", ", issues)}.";
     }
 
     private static string ExtractGroqContent(string json)

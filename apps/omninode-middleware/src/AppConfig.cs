@@ -21,7 +21,7 @@ public sealed class AppConfig
     public string CodexBinary { get; init; } = "codex";
     public string CodexModel { get; init; } = "gpt-5.4";
     public string PythonBinary { get; init; } = "python3";
-    public string SandboxExecutorPath { get; init; } = "../omninode-sandbox/executor.py";
+    public string SandboxExecutorPath { get; init; } = ResolveDefaultSandboxExecutorPath();
     public string DashboardIndexPath { get; init; } = ResolveDefaultDashboardIndexPath();
     public bool EnableDynamicCode { get; init; }
     public string? GroqApiKey { get; init; }
@@ -88,6 +88,14 @@ public sealed class AppConfig
     public string GatewayStartupProbeMode { get; init; } = "live";
     public bool EnableLocalOtpFallback { get; init; } = true;
     public string KillAllowlistCsv { get; init; } = string.Empty;
+    public int DoctorTimeoutSeconds { get; init; } = 15;
+    public bool DoctorEnableSandboxSmoke { get; init; } = true;
+    public bool DoctorWriteHistory { get; init; } = true;
+    public bool RefactorEnableLsp { get; init; }
+    public bool RefactorEnableAstGrep { get; init; }
+    public int RefactorPreviewTtlMinutes { get; init; } = 120;
+    public string ProjectContextFallbackFilenamesCsv { get; init; } = "TEAM_GUIDE.md,.agents.md";
+    public int ProjectContextMaxBytes { get; init; } = 65536;
 
     public static AppConfig LoadFromEnvironment()
     {
@@ -121,7 +129,7 @@ public sealed class AppConfig
             CodexBinary = GetStringEnv("OMNINODE_CODEX_BIN", "codex"),
             CodexModel = GetStringEnv("OMNINODE_CODEX_MODEL", "gpt-5.4"),
             PythonBinary = GetStringEnv("OMNINODE_PYTHON_BIN", "python3"),
-            SandboxExecutorPath = GetStringEnv("OMNINODE_SANDBOX_EXECUTOR", "../omninode-sandbox/executor.py"),
+            SandboxExecutorPath = GetStringEnv("OMNINODE_SANDBOX_EXECUTOR", ResolveDefaultSandboxExecutorPath()),
             DashboardIndexPath = GetStringEnv("OMNINODE_DASHBOARD_INDEX", pathResolver.DashboardIndexPath),
             EnableDynamicCode = GetBoolEnv("OMNINODE_ENABLE_DYNAMIC_CODE", false),
             GroqApiKey = SecretLoader.ResolveApiKey(
@@ -219,7 +227,15 @@ public sealed class AppConfig
             GatewayStartupProbePollIntervalMs = Math.Max(50, GetIntEnv("OMNINODE_GATEWAY_STARTUP_PROBE_POLL_INTERVAL_MS", 150)),
             GatewayStartupProbeMode = GetStringEnv("OMNINODE_GATEWAY_STARTUP_PROBE_MODE", "live"),
             EnableLocalOtpFallback = GetBoolEnv("OMNINODE_ENABLE_LOCAL_OTP_FALLBACK", true),
-            KillAllowlistCsv = GetStringEnv("OMNINODE_KILL_ALLOWLIST", string.Empty)
+            KillAllowlistCsv = GetStringEnv("OMNINODE_KILL_ALLOWLIST", string.Empty),
+            DoctorTimeoutSeconds = Math.Max(3, GetIntEnv("OMNINODE_DOCTOR_TIMEOUT_SECONDS", 15)),
+            DoctorEnableSandboxSmoke = GetBoolEnv("OMNINODE_DOCTOR_ENABLE_SANDBOX_SMOKE", true),
+            DoctorWriteHistory = GetBoolEnv("OMNINODE_DOCTOR_WRITE_HISTORY", true),
+            RefactorEnableLsp = GetBoolEnv("OMNINODE_REFACTOR_ENABLE_LSP", false),
+            RefactorEnableAstGrep = GetBoolEnv("OMNINODE_REFACTOR_ENABLE_AST_GREP", false),
+            RefactorPreviewTtlMinutes = Math.Clamp(GetIntEnv("OMNINODE_REFACTOR_PREVIEW_TTL_MINUTES", 120), 5, 1440),
+            ProjectContextFallbackFilenamesCsv = GetStringEnv("OMNINODE_PROJECT_CONTEXT_FALLBACK_FILENAMES", "TEAM_GUIDE.md,.agents.md"),
+            ProjectContextMaxBytes = Math.Clamp(GetIntEnv("OMNINODE_PROJECT_CONTEXT_MAX_BYTES", 65536), 4096, 262144)
         };
     }
 
@@ -262,6 +278,30 @@ public sealed class AppConfig
     private static string ResolveDefaultCoreSocketPath()
     {
         return DefaultStatePathResolver.CreateDefault().CoreSocketPath;
+    }
+
+    private static string ResolveDefaultSandboxExecutorPath()
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var cwd = Directory.GetCurrentDirectory();
+        var candidates = new[]
+        {
+            Path.GetFullPath(Path.Combine(baseDir, "../../../../omninode-sandbox/executor.py")),
+            Path.GetFullPath(Path.Combine(cwd, "apps/omninode-sandbox/executor.py")),
+            Path.GetFullPath(Path.Combine(cwd, "omninode-sandbox/executor.py")),
+            Path.GetFullPath(Path.Combine(cwd, "../omninode-sandbox/executor.py")),
+            Path.GetFullPath(Path.Combine(cwd, "../apps/omninode-sandbox/executor.py"))
+        };
+
+        foreach (var candidate in candidates)
+        {
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return candidates[0];
     }
 
     private static string ResolveDefaultWorkspaceRootDir()

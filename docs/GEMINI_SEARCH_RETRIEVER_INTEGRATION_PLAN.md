@@ -1,5 +1,12 @@
 # Gemini 검색 전용 리트리버 + 멀티 LLM 생성기 통합 설계서
 
+업데이트 기준: 2026-03-10
+
+현재 구현 참고:
+
+- 현행 검색 경로는 `GeminiGroundedRetriever + SearchEvidencePackBuilder + SearchAnswerGuard + DefaultSearchAnswerComposer` 조합을 기준으로 운영한다.
+- 이 문서는 제품 설계/확장 기준 문서이며, 실제 현재 계약은 `apps/omninode-middleware/src/CommandService.SearchPipeline.cs`와 관련 타입이 가장 정확하다.
+
 ## 1) 문서 목적
 현재 루프에서 사용 중인 기존 검색 방안을 유지한 채 개발을 진행하되, 루프 종료 후 패치로 적용할 차세대 구조를 정의한다.
 

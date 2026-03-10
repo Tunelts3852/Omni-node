@@ -1,3 +1,10 @@
+import { renderDoctorPanel } from "./doctor-renderers.js";
+import { renderPlansPanel } from "./plans-renderers.js";
+import { renderContextPanel } from "./context-renderers.js";
+import { renderRoutingPolicyPanel } from "./routing-policy-renderers.js";
+import { renderTaskGraphPanel } from "./task-graph-renderers.js";
+import { renderNotebooksPanel } from "./notebooks-renderers.js";
+
 export function renderSettingsPanel(props) {
   const {
     e,
@@ -52,6 +59,49 @@ export function renderSettingsPanel(props) {
     authed,
     metrics,
     logs,
+    doctorState,
+    runDoctorReport,
+    refreshDoctorReport,
+    contextState,
+    routingPolicyState,
+    plansState,
+    taskGraphState,
+    notebooksState,
+    refreshProjectContext,
+    refreshSkillsList,
+    refreshCommandsList,
+    setRoutingPolicyChain,
+    refreshRoutingPolicy,
+    saveRoutingPolicy,
+    resetRoutingPolicy,
+    refreshRoutingDecision,
+    setPlanCreateObjective,
+    setPlanCreateConstraintsText,
+    setPlanCreateMode,
+    refreshPlansList,
+    loadPlanSnapshot,
+    submitPlanCreate,
+    reviewPlan,
+    approvePlan,
+    runPlan,
+    setTaskGraphCreatePlanId,
+    useSelectedPlanForTaskGraph,
+    refreshTaskGraphList,
+    loadTaskGraph,
+    submitTaskGraphCreate,
+    runTaskGraph,
+    loadTaskOutput,
+    cancelTask,
+    setNotebookProjectKey,
+    setNotebookAppendKind,
+    setNotebookAppendText,
+    refreshNotebook,
+    appendNotebook,
+    createNotebookHandoff,
+    appendSelectedPlanDecision,
+    appendSelectedTaskVerification,
+    appendDoctorVerification,
+    appendRefactorVerification,
     opsDomainFilter,
     opsDomainFilters,
     opsDomainStats,
@@ -69,6 +119,9 @@ export function renderSettingsPanel(props) {
     { key: "auth", label: "인증" },
     { key: "integration", label: "연동" },
     { key: "model", label: "모델" },
+    { key: "context", label: "문맥" },
+    { key: "plan", label: "계획" },
+    { key: "notes", label: "노트" },
     { key: "ops", label: "운영" }
   ];
 
@@ -486,10 +539,90 @@ export function renderSettingsPanel(props) {
     }, "로그 비우기")
   );
 
+  const doctorPanel = renderDoctorPanel({
+    e,
+    authed,
+    doctorState,
+    runDoctorReport,
+    refreshDoctorReport
+  });
+
+  const plansPanel = renderPlansPanel({
+    e,
+    authed,
+    plansState,
+    setPlanCreateObjective,
+    setPlanCreateConstraintsText,
+    setPlanCreateMode,
+    refreshPlansList,
+    loadPlanSnapshot,
+    submitPlanCreate,
+    reviewPlan,
+    approvePlan,
+    runPlan
+  });
+
+  const routingPolicyPanel = renderRoutingPolicyPanel({
+    e,
+    authed,
+    routingPolicyState,
+    setRoutingPolicyChain,
+    refreshRoutingPolicy,
+    saveRoutingPolicy,
+    resetRoutingPolicy,
+    refreshRoutingDecision
+  });
+
+  const contextPanel = renderContextPanel({
+    e,
+    authed,
+    contextState,
+    refreshProjectContext,
+    refreshSkillsList,
+    refreshCommandsList
+  });
+
+  const taskGraphPanel = renderTaskGraphPanel({
+    e,
+    authed,
+    plansState,
+    taskGraphState,
+    setTaskGraphCreatePlanId,
+    useSelectedPlanForTaskGraph,
+    refreshTaskGraphList,
+    loadTaskGraph,
+    submitTaskGraphCreate,
+    runTaskGraph,
+    loadTaskOutput,
+    cancelTask
+  });
+
+  const notebooksPanel = renderNotebooksPanel({
+    e,
+    authed,
+    notebooksState,
+    setNotebookProjectKey,
+    setNotebookAppendKind,
+    setNotebookAppendText,
+    refreshNotebook,
+    appendNotebook,
+    createNotebookHandoff,
+    appendSelectedPlanDecision,
+    appendSelectedTaskVerification,
+    appendDoctorVerification,
+    appendRefactorVerification
+  });
+
   const desktopSettingsGrid = e("div", { className: "settings-grid" },
     otpPanel,
     telegramPanel,
     llmPanel,
+    routingPolicyPanel,
+    contextPanel,
+    plansPanel,
+    taskGraphPanel,
+    notebooksPanel,
+    doctorPanel,
     geminiUsagePanel,
     copilotPremiumPanel,
     copilotModelsPanel,
@@ -507,10 +640,19 @@ export function renderSettingsPanel(props) {
       ? e("div", { className: "responsive-panel-stack" }, telegramPanel, llmPanel, geminiUsagePanel)
       : null,
     currentSettingsPane === "model"
-      ? e("div", { className: "responsive-panel-stack" }, copilotPremiumPanel, copilotModelsPanel, groqModelsPanel)
+      ? e("div", { className: "responsive-panel-stack" }, copilotPremiumPanel, copilotModelsPanel, groqModelsPanel, routingPolicyPanel)
+      : null,
+    currentSettingsPane === "context"
+      ? e("div", { className: "responsive-panel-stack" }, contextPanel)
+      : null,
+    currentSettingsPane === "plan"
+      ? e("div", { className: "responsive-panel-stack" }, plansPanel, taskGraphPanel)
+      : null,
+    currentSettingsPane === "notes"
+      ? e("div", { className: "responsive-panel-stack" }, notebooksPanel)
       : null,
     currentSettingsPane === "ops"
-      ? e("div", { className: "responsive-panel-stack" }, consolePanel, toolPanel)
+      ? e("div", { className: "responsive-panel-stack" }, doctorPanel, consolePanel, toolPanel)
       : null
   );
 

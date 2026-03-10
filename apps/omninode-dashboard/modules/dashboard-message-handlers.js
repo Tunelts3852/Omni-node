@@ -12,6 +12,91 @@ function summarizeRoutineStatusMessage(text) {
   return first.length > 180 ? `${first.slice(0, 177)}...` : first
 }
 
+function shouldAutoShowCodingLogs(result) {
+  const rawStatus = `${result && result.execution && typeof result.execution.status === "string" ? result.execution.status : ""}`.trim().toLowerCase()
+  const stdout = `${result && result.execution && typeof result.execution.stdout === "string" ? result.execution.stdout : ""}`.trim()
+  const stderr = `${result && result.execution && typeof result.execution.stderr === "string" ? result.execution.stderr : ""}`.trim()
+  return /(error|fail|timeout|cancel|killed|aborted)/i.test(rawStatus) || !!stdout || !!stderr
+}
+
+function createCodingRuntimeState(msg) {
+  const execution = msg && msg.execution && typeof msg.execution === "object" ? msg.execution : null
+  return {
+    pending: false,
+    ok: !!msg.ok,
+    runMode: msg.runMode || "",
+    language: msg.language || "",
+    message: msg.message || "",
+    targetProvider: msg.targetProvider || "",
+    targetModel: msg.targetModel || "",
+    previewUrl: msg.previewUrl || "",
+    previewEntry: msg.previewEntry || "",
+    execution,
+    updatedAt: Date.now()
+  }
+}
+
+function normalizeWorkspaceSnapshotPath(value) {
+  const normalized = `${value || ""}`.trim()
+  if (!normalized || normalized === "-" || normalized === "(none)") {
+    return ""
+  }
+  return normalized
+}
+
+function resolveCodingPreviewPath(result) {
+  const execution = result && result.execution && typeof result.execution === "object" ? result.execution : null
+  const changedFiles = Array.isArray(result && result.changedFiles) ? result.changedFiles.filter(Boolean) : []
+  const runDirectory = normalizeWorkspaceSnapshotPath(execution && execution.runDirectory ? execution.runDirectory : "")
+  const entryFile = normalizeWorkspaceSnapshotPath(execution && execution.entryFile ? execution.entryFile : "")
+
+  if (entryFile) {
+    if (entryFile.startsWith("/")) {
+      return entryFile
+    }
+
+    if (runDirectory) {
+      return `${runDirectory.replace(/\/+$/, "")}/${entryFile.replace(/^\/+/, "")}`
+    }
+
+    const matchedEntry = changedFiles.find((pathValue) => pathValue === entryFile || pathValue.endsWith(`/${entryFile}`))
+    if (matchedEntry) {
+      return matchedEntry
+    }
+  }
+
+  return changedFiles[0] || ""
+}
+
+function requestCodingPreviewIfNeeded(conversationId, result, requestWorkspaceFilePreview, existingPreviewPath = "") {
+  if (!conversationId || typeof requestWorkspaceFilePreview !== "function") {
+    return
+  }
+
+  const nextPreviewPath = resolveCodingPreviewPath(result)
+  if (!nextPreviewPath || nextPreviewPath === existingPreviewPath) {
+    return
+  }
+
+  requestWorkspaceFilePreview(nextPreviewPath, conversationId)
+}
+
+function shouldAutoRequestCodingPreview(conversation, currentKey, currentConversationId) {
+  if (!conversation || conversation.scope !== "coding") {
+    return false
+  }
+
+  const conversationKey = `${conversation.scope || ""}:${conversation.mode || ""}`.trim()
+  const normalizedCurrentKey = `${currentKey || ""}`.trim()
+  const normalizedCurrentConversationId = `${currentConversationId || ""}`.trim()
+
+  if (normalizedCurrentConversationId && normalizedCurrentConversationId === conversation.id) {
+    return true
+  }
+
+  return !!conversationKey && conversationKey === normalizedCurrentKey
+}
+
 export function handleConversationMemoryMessage(msg, context) {
   const {
     autoCreateConversationRef,
@@ -31,7 +116,14 @@ export function handleConversationMemoryMessage(msg, context) {
     send,
     setError,
     currentKey,
-    setFilePreviewByConversation
+    setFilePreviewByConversation,
+    filePreviewByConversation,
+    setCodingResultByConversation,
+    codingResultByConversation,
+    setShowExecutionLogsByConversation,
+    setCodingRuntimeByConversation,
+    setCodingExecutionInputByConversation,
+    requestWorkspaceFilePreview
   } = context
 
   if (msg.type === "conversations") {
@@ -85,6 +177,15 @@ export function handleConversationMemoryMessage(msg, context) {
       return true
     }
 
+    const latestCodingResult = conversation.latestCodingResult && typeof conversation.latestCodingResult === "object"
+      ? {
+          ...conversation.latestCodingResult,
+          type: "coding_result",
+          conversationId: conversation.id,
+          conversation
+        }
+      : null
+
     const key = `${conversation.scope}:${conversation.mode}`
     autoCreateConversationRef.current[key] = false
     setConversationDetails((prev) => ({ ...prev, [conversation.id]: conversation }))
@@ -122,6 +223,53 @@ export function handleConversationMemoryMessage(msg, context) {
       }
       return { ...prev, [conversation.id]: incoming }
     })
+    setCodingResultByConversation((prev) => {
+      if (latestCodingResult) {
+        return { ...prev, [conversation.id]: latestCodingResult }
+      }
+
+      if (!(conversation.id in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversation.id]
+      return next
+    })
+    setShowExecutionLogsByConversation((prev) => {
+      const latestCodingResult = conversation.latestCodingResult && typeof conversation.latestCodingResult === "object"
+        ? conversation.latestCodingResult
+        : null
+
+      if (latestCodingResult) {
+        return { ...prev, [conversation.id]: shouldAutoShowCodingLogs(latestCodingResult) }
+      }
+
+      if (!(conversation.id in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversation.id]
+      return next
+    })
+    setCodingRuntimeByConversation((prev) => {
+      if (!(conversation.id in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversation.id]
+      return next
+    })
+    if (latestCodingResult && shouldAutoRequestCodingPreview(conversation, currentKey, currentConversationId)) {
+      requestCodingPreviewIfNeeded(
+        conversation.id,
+        latestCodingResult,
+        requestWorkspaceFilePreview,
+        filePreviewByConversation && filePreviewByConversation[conversation.id] ? filePreviewByConversation[conversation.id].path || "" : ""
+      )
+    }
     return true
   }
 
@@ -154,6 +302,42 @@ export function handleConversationMemoryMessage(msg, context) {
       return next
     })
     setChatMultiResultByConversation((prev) => {
+      const next = { ...prev }
+      delete next[conversationId]
+      return next
+    })
+    setCodingResultByConversation((prev) => {
+      if (!(conversationId in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversationId]
+      return next
+    })
+    setShowExecutionLogsByConversation((prev) => {
+      if (!(conversationId in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversationId]
+      return next
+    })
+    setCodingRuntimeByConversation((prev) => {
+      if (!(conversationId in prev)) {
+        return prev
+      }
+
+      const next = { ...prev }
+      delete next[conversationId]
+      return next
+    })
+    setCodingExecutionInputByConversation((prev) => {
+      if (!(conversationId in prev)) {
+        return prev
+      }
+
       const next = { ...prev }
       delete next[conversationId]
       return next
@@ -307,7 +491,13 @@ export function handleConversationMemoryMessage(msg, context) {
     }
 
     if (!msg.ok) {
-      setError(currentKey, msg.message || "파일 프리뷰를 불러오지 못했습니다.")
+      setFilePreviewByConversation((prev) => ({
+        ...prev,
+        [conversationId]: {
+          path: msg.path || "",
+          content: msg.message || "파일 프리뷰를 불러오지 못했습니다."
+        }
+      }))
       return true
     }
 
@@ -497,8 +687,12 @@ export function handleExecutionFlowMessage(msg, context) {
     finishPendingRequest,
     setError,
     setCodingResultByConversation,
+    codingResultByConversation,
     setShowExecutionLogsByConversation,
+    setCodingRuntimeByConversation,
     setFilePreviewByConversation,
+    filePreviewByConversation,
+    requestWorkspaceFilePreview,
     send,
     log,
     setMetrics
@@ -630,19 +824,61 @@ export function handleExecutionFlowMessage(msg, context) {
 
     if (msg.type === "coding_result") {
       setCodingResultByConversation((prev) => ({ ...prev, [conv.id]: msg }))
-      const rawStatus = `${msg.execution && typeof msg.execution.status === "string" ? msg.execution.status : ""}`.trim().toLowerCase()
-      const shouldShowLogs = /(error|fail|timeout|cancel|killed|aborted)/i.test(rawStatus)
-      setShowExecutionLogsByConversation((prev) => ({ ...prev, [conv.id]: shouldShowLogs }))
+      setShowExecutionLogsByConversation((prev) => ({ ...prev, [conv.id]: shouldAutoShowCodingLogs(msg) }))
+      setCodingRuntimeByConversation((prev) => {
+        if (!(conv.id in prev)) {
+          return prev
+        }
+
+        const next = { ...prev }
+        delete next[conv.id]
+        return next
+      })
       setFilePreviewByConversation((prev) => {
         const next = { ...prev }
         delete next[conv.id]
         return next
       })
+      requestCodingPreviewIfNeeded(conv.id, msg, requestWorkspaceFilePreview)
     }
 
     if (msg.autoMemoryNote) {
       send({ type: "list_memory_notes" })
       log(`자동 컨텍스트 압축 노트 생성: ${msg.autoMemoryNote.name}`)
+    }
+    return true
+  }
+
+  if (msg.type === "coding_execute_result") {
+    const conversationId = msg.conversationId || ""
+    if (!conversationId) {
+      return true
+    }
+
+    const runtimeState = createCodingRuntimeState(msg)
+    setCodingRuntimeByConversation((prev) => ({
+      ...prev,
+      [conversationId]: runtimeState
+    }))
+
+    if (!msg.ok) {
+      log(`[coding] ${runtimeState.message || "최근 코딩 결과 실행 실패"}`, "error")
+      return true
+    }
+
+    if (runtimeState.runMode === "command" && runtimeState.execution) {
+      setShowExecutionLogsByConversation((prev) => ({
+        ...prev,
+        [conversationId]: true
+      }))
+      requestCodingPreviewIfNeeded(
+        conversationId,
+        codingResultByConversation && codingResultByConversation[conversationId]
+          ? codingResultByConversation[conversationId]
+          : { execution: runtimeState.execution, changedFiles: [] },
+        requestWorkspaceFilePreview,
+        filePreviewByConversation && filePreviewByConversation[conversationId] ? filePreviewByConversation[conversationId].path || "" : ""
+      )
     }
     return true
   }

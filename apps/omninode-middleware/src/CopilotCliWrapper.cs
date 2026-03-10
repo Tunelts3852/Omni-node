@@ -9,6 +9,7 @@ namespace OmniNode.Middleware;
 public sealed class CopilotCliWrapper
 {
     private const string DefaultCopilotModel = "gpt-5-mini";
+    private const string LegacyDefaultCopilotModel = "claude-sonnet-4.6";
     private static readonly Regex CodeBlockRegex = new(
         "(?s)```(?:python|bash)?\\n(.*?)\\n```",
         RegexOptions.Compiled | RegexOptions.IgnoreCase
@@ -91,7 +92,7 @@ public sealed class CopilotCliWrapper
     {
         _ghBinaryPath = ghBinaryPath;
         _copilotBinaryPath = copilotBinaryPath;
-        _selectedModel = string.IsNullOrWhiteSpace(defaultModel) ? DefaultCopilotModel : defaultModel.Trim();
+        _selectedModel = NormalizeSelectedModel(defaultModel);
         _usageStatePath = string.IsNullOrWhiteSpace(usageStatePath) ? "/tmp/omninode_copilot_usage.json" : usageStatePath.Trim();
         _requestTimeoutSec = Math.Max(10, requestTimeoutSec);
         LoadState();
@@ -128,7 +129,7 @@ public sealed class CopilotCliWrapper
         }
 
         ProcessResult result;
-        var model = GetSelectedModel();
+        var model = NormalizeSelectedModel(GetSelectedModel());
         using var timeoutCts = CreateTimeoutToken(cancellationToken);
         if (mode == CopilotMode.DirectCopilot)
         {
@@ -196,7 +197,7 @@ public sealed class CopilotCliWrapper
             return "copilot cli not found";
         }
 
-        var model = string.IsNullOrWhiteSpace(modelOverride) ? GetSelectedModel() : modelOverride.Trim();
+        var model = NormalizeSelectedModel(string.IsNullOrWhiteSpace(modelOverride) ? GetSelectedModel() : modelOverride);
         if (mode == CopilotMode.DirectCopilot)
         {
             using var timeoutCts = CreateTimeoutToken(cancellationToken);
@@ -328,12 +329,13 @@ public sealed class CopilotCliWrapper
             return false;
         }
 
+        var normalized = NormalizeSelectedModel(trimmed);
         lock (_modelLock)
         {
-            _selectedModel = trimmed;
-            if (!_usageByModel.ContainsKey(trimmed))
+            _selectedModel = normalized;
+            if (!_usageByModel.ContainsKey(normalized))
             {
-                _usageByModel[trimmed] = new CopilotUsage();
+                _usageByModel[normalized] = new CopilotUsage();
             }
         }
 
@@ -539,6 +541,12 @@ public sealed class CopilotCliWrapper
             RedirectStandardError = true
         };
 
+        startInfo.Environment["TERM"] = "dumb";
+        startInfo.Environment["NO_COLOR"] = "1";
+        startInfo.Environment["CLICOLOR"] = "0";
+        startInfo.Environment["COLUMNS"] = "4000";
+        startInfo.Environment["LINES"] = "4000";
+
         foreach (var arg in args)
         {
             startInfo.ArgumentList.Add(arg);
@@ -729,7 +737,7 @@ public sealed class CopilotCliWrapper
             {
                 if (!string.IsNullOrWhiteSpace(state.SelectedModel))
                 {
-                    _selectedModel = state.SelectedModel.Trim();
+                    _selectedModel = NormalizeSelectedModel(state.SelectedModel);
                 }
 
                 _usageByModel.Clear();
@@ -796,6 +804,13 @@ public sealed class CopilotCliWrapper
 
         var merged = $"{result.StdOut}\n{result.StdErr}";
         return ParseModelChoices(merged);
+    }
+
+    private static string NormalizeSelectedModel(string? modelId)
+    {
+        _ = modelId;
+        // Omni-node에서는 Copilot 모델을 gpt-5-mini로 고정한다.
+        return DefaultCopilotModel;
     }
 
     private static IReadOnlyList<string> ParseModelChoices(string helpText)

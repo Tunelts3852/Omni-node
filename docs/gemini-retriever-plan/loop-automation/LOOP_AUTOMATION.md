@@ -1,5 +1,7 @@
 # Codex 무한 루프 자동 개발 실행 가이드
 
+업데이트 기준: 2026-03-10
+
 ## 개요
 이 문서는 Gemini 검색 리트리버 전환 작업을 Codex로 반복 실행하기 위한 자동 루프 사용법을 설명한다.
 
@@ -34,17 +36,17 @@
 
 ### 1) 루프 시작
 ```bash
-bash /Users/songhabin/Omni-node/gemini-retriever-plan/loop-automation/run_codex_dev_loop.sh
+bash docs/gemini-retriever-plan/loop-automation/run_codex_dev_loop.sh
 ```
 
 ### 2) 루프 상태 확인
 ```bash
-bash /Users/songhabin/Omni-node/gemini-retriever-plan/loop-automation/status_codex_dev_loop.sh
+bash docs/gemini-retriever-plan/loop-automation/status_codex_dev_loop.sh
 ```
 
 ### 3) 안전 정지 요청
 ```bash
-bash /Users/songhabin/Omni-node/gemini-retriever-plan/loop-automation/stop_codex_dev_loop.sh
+bash docs/gemini-retriever-plan/loop-automation/stop_codex_dev_loop.sh
 ```
 
 정지 요청은 현재 루프 완료 후 적용된다.

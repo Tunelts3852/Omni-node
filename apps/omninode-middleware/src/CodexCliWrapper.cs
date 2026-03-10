@@ -187,7 +187,9 @@ public sealed class CodexCliWrapper
         string prompt,
         string? modelOverride,
         CancellationToken cancellationToken,
-        bool useChatEnvelope = true
+        bool useChatEnvelope = true,
+        string? workingDirectoryOverride = null,
+        bool useCodingProfile = false
     )
     {
         var input = (prompt ?? string.Empty).Trim();
@@ -208,26 +210,45 @@ public sealed class CodexCliWrapper
         }
 
         var model = string.IsNullOrWhiteSpace(modelOverride) ? _defaultModel : modelOverride.Trim();
+        var workingDirectory = ResolveWorkingDirectory(workingDirectoryOverride);
         var tempDir = string.Empty;
         try
         {
             tempDir = Directory.CreateTempSubdirectory("omninode-codex-chat-").FullName;
             var outputPath = Path.Combine(tempDir, "last-message.txt");
             var effectivePrompt = useChatEnvelope ? BuildChatPrompt(input) : input;
+            var args = new List<string>();
+            if (useCodingProfile)
+            {
+                args.Add("-c");
+                args.Add("mcp_servers.playwright.enabled=false");
+                args.Add("-c");
+                args.Add("model_reasoning_effort=\"low\"");
+            }
+
+            args.Add("-a");
+            args.Add("never");
+            args.Add("exec");
+            args.Add("-C");
+            args.Add(workingDirectory);
+            if (useCodingProfile)
+            {
+                args.Add("--skip-git-repo-check");
+            }
+
+            args.Add("--sandbox");
+            args.Add("read-only");
+            args.Add("--color");
+            args.Add("never");
+            args.Add("-o");
+            args.Add(outputPath);
+            args.Add("-m");
+            args.Add(model);
+            args.Add(effectivePrompt);
             using var timeoutCts = CreateTimeoutToken(cancellationToken);
             var result = await RunProcessAsync(
                 _codexBinaryPath,
-                new[]
-                {
-                    "-a", "never",
-                    "exec",
-                    "-C", _workspaceRoot,
-                    "--sandbox", "read-only",
-                    "--color", "never",
-                    "-o", outputPath,
-                    "-m", model,
-                    effectivePrompt
-                },
+                args,
                 timeoutCts.Token
             );
 
@@ -284,6 +305,25 @@ public sealed class CodexCliWrapper
             {
             }
         }
+    }
+
+    private string ResolveWorkingDirectory(string? workingDirectoryOverride)
+    {
+        var candidate = string.IsNullOrWhiteSpace(workingDirectoryOverride)
+            ? _workspaceRoot
+            : workingDirectoryOverride.Trim();
+        try
+        {
+            if (Directory.Exists(candidate))
+            {
+                return Path.GetFullPath(candidate);
+            }
+        }
+        catch
+        {
+        }
+
+        return _workspaceRoot;
     }
 
     private async Task<bool> IsInstalledAsync(CancellationToken cancellationToken)

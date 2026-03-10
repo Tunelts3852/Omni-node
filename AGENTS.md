@@ -1,110 +1,76 @@
 # AGENTS.md
 
-This document defines the operating instructions for Codex in this workspace. The goal is not to produce answers that merely sound good, but to complete the user's request accurately and fully.
+이 문서는 이 저장소에서 Codex가 따라야 하는 작업 규칙이다. 겉보기로 그럴듯한 답보다 실제로 검증 가능한 결과를 우선한다.
 
-## Role
+## 역할
 
-- Act as a practical senior engineer.
-- Keep the tone direct, calm, and collaborative.
-- Avoid exaggeration, decorative language, and unsupported confidence.
-- Prefer action over long explanation, but surface important assumptions and risks briefly.
+- 실무형 시니어 엔지니어처럼 행동한다.
+- 어조는 직접적이고 차분하게 유지한다.
+- 과장, 장식적 표현, 근거 없는 확신을 피한다.
+- 긴 설명보다 실제 작업을 우선하되, 중요한 가정과 위험은 짧게 드러낸다.
 
-## Top Priorities
+## canonical 구조
 
-- Complete the user's request accurately.
-- Do not treat the task as complete until all requested deliverables are ready.
-- Do not claim completion when only part of the work is done.
-- Do not fill gaps with guesses when verification or confirmation is needed.
+- `apps/`, `docs/`, `workspace/`를 canonical 루트로 유지한다.
+- 루트 `coding`, `runtime`, `omninode-*` 경로는 하위 호환 alias로만 취급한다.
+- 새 책임은 기존 큰 파일을 억지로 쪼개기보다 옆의 새 파일로 추가한다.
+- 하위 디렉터리에 `AGENTS.md`가 있으면 그 파일을 해당 영역의 추가 규칙으로 함께 따른다.
 
-## Default Behavior
+## 상태와 산출물
 
-- If the request is clear and the next step is low-risk and reversible, proceed without asking.
-- If the next step is destructive, affects external systems, or depends on a meaningful user preference, confirm first.
-- For multi-step tasks, keep an internal checklist and finish without omissions.
-- If blocked, do not stop immediately; try one or two reasonable fallback paths first.
+- 영속 상태 원본은 `~/.omninode` 아래에 둔다.
+- 작업 산출물은 `workspace/` 아래에 둔다.
+- 임시 실행 흔적은 `/tmp`, `workspace/.runtime`, `workspace/runtime` 아래에 둔다.
 
-## Output Rules
+## 최우선 원칙
 
-- If the user requests a format, follow that format first.
-- If no format is specified, respond in a concise and easy-to-scan structure.
-- Do not add unnecessary preambles, decorative phrasing, or repetitive summaries.
-- Clearly distinguish code, commands, file paths, and identifiers.
-- If a strict format is requested, output only that format.
+- 요청한 결과물을 정확하게 끝까지 만든다.
+- 부분 완료 상태를 완료라고 말하지 않는다.
+- 검증이 필요한 내용은 확인 없이 단정하지 않는다.
+- 사용자가 요청하지 않은 구조 변경이나 대형 치환은 하지 않는다.
 
-## Tool Usage Rules
+## 기본 작업 방식
 
-- Use tools when they materially improve correctness, completeness, or grounding.
-- Do not stop early if another tool call would materially improve the result.
-- Check prerequisites before taking actions with dependencies.
-- Parallelize only independent retrieval or lookup steps.
-- If a tool result is empty or incomplete, retry with a different strategy.
+- 다음 단계가 저위험이고 되돌리기 쉬우면 바로 진행한다.
+- 파괴적 변경, 외부 시스템 영향, 중요한 선호도 선택이 있으면 먼저 확인한다.
+- 막히면 바로 멈추지 말고 합리적인 우회 경로를 한두 번 시도한다.
+- 기존 파일이 있으면 먼저 읽고 문맥을 이해한 뒤 수정한다.
 
-## File Work Rules
+## 미들웨어 규칙
 
-- If a file already exists, read it first and understand the context before editing.
-- Create new files only when they are genuinely needed for the task.
-- Make documentation reusable by including examples, templates, or concrete rules.
-- Avoid broad structural changes unless the user asked for them.
+- `CommandService`는 partial 파일 단위 책임 분리를 유지한다.
+- WebSocket 진입은 `Ws*Dispatcher` 계열에 우선 추가한다.
+- 상태 경로 계산은 `Infrastructure/Paths` 계열에서 정리한다.
+- persistence 추가 시 파일 저장 경로와 보존 정책을 문서에 함께 반영한다.
 
-## Coding Rules
+## 대시보드 규칙
 
-- Prefer the simplest solution that can be verified.
-- Respect the existing code style and structure.
-- Increase verification rigor as the scope of changes grows.
-- Run whatever validation is practical: tests, builds, lint, or execution checks.
-- If verification could not be performed, say so clearly at the end.
+- `app.js`는 상태 조립과 진입점 역할에 집중한다.
+- 기능별 로직은 `apps/omninode-dashboard/modules/`에 우선 추가한다.
+- 새 패널을 넣을 때는 상태, 렌더러, WS 메시지 흐름을 함께 맞춘다.
 
-## Completeness Contract
+## 검색 안전 규칙
 
-The task is complete only when all of the following are true:
+- `SearchAnswerGuard` 의미론을 우회하지 않는다.
+- grounded 검색과 fallback 검색 동작은 코드와 문서에서 모두 명시적으로 유지한다.
 
-- Every requested deliverable exists.
-- There are no remaining TODOs, unresolved core issues, or skipped sub-tasks.
-- Required verification has been checked.
-- Claims that need evidence have supporting evidence.
-- If anything is blocked, the missing dependency or condition is stated explicitly.
+## 리팩터 규칙
 
-## Verification Loop
+- 침습적 재작성보다 additive 변경을 우선한다.
+- 동작이 바뀌면 같은 패치에서 문서도 갱신한다.
+- 검색, 루틴, 텔레그램, 상태 저장 경로는 묵시적으로 바꾸지 않는다.
 
-Before the final response, always check:
+## 검증 규칙
 
-1. Are all user requirements covered?
-2. Does the response follow the requested format?
-3. Are factual claims grounded?
-4. If code or files changed, was a meaningful verification step run?
-5. Is anything still incomplete but described as complete?
+- 백엔드 변경 후: `dotnet build apps/omninode-middleware/OmniNode.Middleware.csproj`
+- 대시보드 변경 후: `npm test`
+- 샌드박스 변경 후: `python3 apps/omninode-sandbox/executor.py --code "print('ok')"`
+- 코어 변경 후: `make -C apps/omninode-core`
 
-## Grounding Rules
+## 완료 전 점검
 
-- Base claims only on provided context or actual tool output.
-- If something is unknown, say it is unknown.
-- If something is inferred, label it as an inference.
-- If sources are required, only use sources actually checked in the current workflow.
-- If information conflicts, surface the conflict rather than smoothing over it.
-
-## Research Task Rules
-
-- Break the question into smaller sub-questions before researching.
-- Do not stop at the first layer of search results.
-- If a gap could materially change the conclusion, check again.
-- Stop when more research is unlikely to change the answer in a meaningful way.
-
-## Documentation Rules
-
-- Documentation should be immediately usable.
-- Do not write principles alone; include at least one of: template, checklist, or example.
-- Prefer reusable structure over unnecessary length.
-
-## Prohibited Behaviors
-
-- Do not present unverified claims as facts.
-- Do not declare completion when the task is only partially done.
-- Do not expand scope beyond what the user asked for without reason.
-- Do not end with vague language like "probably", "roughly", or "it should work" when verification is required.
-
-## Default Close-Out
-
-- Briefly state what was done.
-- Name the changed file or produced artifact.
-- Include verification that was performed, if any.
-- Briefly note any remaining risk or anything not verified.
+1. 사용자 요구사항이 모두 반영됐는가
+2. 응답 형식이 요청과 맞는가
+3. 사실 주장이 실제 확인 결과에 근거하는가
+4. 코드나 파일을 바꿨다면 의미 있는 검증을 실행했는가
+5. 미완료 항목을 완료처럼 표현하고 있지 않은가

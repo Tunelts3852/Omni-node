@@ -251,39 +251,39 @@ async function run() {
     const expected = buildChatMultiRenderSnapshot(multiPayload);
 
     await page.waitForFunction(() => {
-      return Array.from(document.querySelectorAll(".coding-result-head strong")).some(
-        (node) => (node.textContent || "").includes("다중 LLM 상세 결과")
+      return Array.from(document.querySelectorAll(".multi-inline-carousel .result-carousel-current-label")).some(
+        (node) => `${node.textContent || ""}`.trim().length > 0
       );
     }, null, { timeout: 15000 });
 
     const actual = await page.evaluate(() => {
-      const section = Array.from(document.querySelectorAll("section.coding-result")).find((node) => {
+      const carousel = Array.from(document.querySelectorAll(".multi-inline-carousel")).find((node) => {
+        const title = node.querySelector(".result-carousel-copy strong");
+        return (title?.textContent || "").includes("다중 LLM");
+      });
+      if (!carousel) {
+        return null;
+      }
+
+      const supportSectionExists = Array.from(document.querySelectorAll("section.coding-result")).some((node) => {
         const title = node.querySelector(".coding-result-head strong");
         return (title?.textContent || "").includes("다중 LLM 상세 결과");
       });
 
-      if (!section) {
-        return null;
-      }
-
-      const rows = Array.from(section.querySelectorAll(".coding-preview")).map((node) => ({
-        heading: (node.querySelector(".coding-preview-head")?.textContent || "").trim(),
-        body: node.querySelector(".coding-preview-content")?.textContent || ""
-      }));
-
-      return { rows };
+      return {
+        title: (carousel.querySelector(".result-carousel-copy strong")?.textContent || "").trim(),
+        activeHeading: (carousel.querySelector(".result-carousel-current-label")?.textContent || "").trim(),
+        activeBody: carousel.querySelector(".thread-inline-carousel-body")?.textContent || "",
+        supportSectionExists
+      };
     });
 
-    assert.ok(actual, "다중 LLM 상세 결과 섹션을 찾지 못했습니다.");
-    assert.deepEqual(
-      actual.rows.map((row) => row.heading),
-      expected.sections.map((section) => section.heading),
-      "헤더 렌더 결과가 WebSocket payload와 일치하지 않습니다."
-    );
-    assert.deepEqual(
-      actual.rows.map((row) => row.body),
-      expected.sections.map((section) => section.body),
-      "본문 렌더 결과가 WebSocket payload와 일치하지 않습니다."
+    assert.ok(actual, "메시지 안의 다중 LLM inline 캐러셀을 찾지 못했습니다.");
+    assert.equal(actual.title, "다중 LLM", "메시지 안 비교 캐러셀 제목이 예상과 다릅니다.");
+    assert.equal(actual.supportSectionExists, false, "별도 다중 LLM 상세 결과 패널이 남아 있으면 안 됩니다.");
+    assert.ok(
+      expected.entries.some((entry) => entry.heading === actual.activeHeading),
+      "활성 모델 heading이 WebSocket payload와 일치하지 않습니다."
     );
 
     const result = {
@@ -295,7 +295,8 @@ async function run() {
       requestedSummaryProvider: multiPayload.requestedSummaryProvider,
       resolvedSummaryProvider: multiPayload.resolvedSummaryProvider,
       frameCount: wsFrames.length,
-      sections: actual.rows
+      activeHeading: actual.activeHeading,
+      supportSectionExists: actual.supportSectionExists
     };
 
     console.log(JSON.stringify(result, null, 2));

@@ -10,6 +10,10 @@ public sealed class SettingsApplicationService : ISettingsApplicationService
     }
 
     public SettingsSnapshot GetSettingsSnapshot() => _inner.GetSettingsSnapshot();
+    public RoutingPolicyActionResult GetRoutingPolicySnapshot() => _inner.GetRoutingPolicySnapshot();
+    public RoutingPolicyActionResult SaveRoutingPolicy(RoutingPolicy? policy) => _inner.SaveRoutingPolicy(policy);
+    public RoutingPolicyActionResult ResetRoutingPolicy() => _inner.ResetRoutingPolicy();
+    public RoutingDecision? GetLastRoutingDecision() => _inner.GetLastRoutingDecision();
     public string UpdateTelegramCredentials(string? botToken, string? chatId, bool persist) => _inner.UpdateTelegramCredentials(botToken, chatId, persist);
     public string UpdateLlmCredentials(string? groqApiKey, string? geminiApiKey, string? cerebrasApiKey, string? codexApiKey, bool persist) => _inner.UpdateLlmCredentials(groqApiKey, geminiApiKey, cerebrasApiKey, codexApiKey, persist);
     public string DeleteTelegramCredentials(bool deletePersisted) => _inner.DeleteTelegramCredentials(deletePersisted);

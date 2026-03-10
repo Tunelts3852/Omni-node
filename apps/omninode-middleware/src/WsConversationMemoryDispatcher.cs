@@ -378,7 +378,11 @@ internal sealed class WsConversationMemoryDispatcher
                 return true;
             }
 
-            var preview = _conversationService.ReadWorkspaceFile(message.FilePath.Trim());
+            var preview = _conversationService.ReadWorkspaceFile(
+                message.FilePath.Trim(),
+                message.ConversationId,
+                120_000
+            );
             if (preview == null)
             {
                 await WebSocketGateway.SendTextAsync(

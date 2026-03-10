@@ -9,6 +9,22 @@ public interface IStatePathResolver
     string DashboardIndexPath { get; }
     string CoreSocketPath { get; }
     string RoutinePromptDir { get; }
+    string GetDoctorRoot();
+    string GetDoctorLastReportPath();
+    string GetDoctorHistoryRoot();
+    string GetPlansRoot();
+    string GetPlansIndexPath();
+    string GetRoutingPolicyPath();
+    string GetTaskGraphsRoot();
+    string GetTaskGraphsIndexPath();
+    string GetTaskRuntimeRoot();
+    string GetTaskRuntimePath(string graphId, string taskId);
+    string GetNotebooksRoot();
+    string GetNotebookProjectRoot(string projectKey);
+    string GetRefactorPreviewRoot();
+    string GetRefactorPreviewPath(string previewId);
+    string GetGlobalSkillsRoot();
+    string GetGlobalCommandsRoot();
     string ResolveStateFilePath(string fileName);
     string ResolveStateDirectoryPath(string directoryName);
 }
@@ -57,6 +73,88 @@ public sealed class DefaultStatePathResolver : IStatePathResolver
     public string ResolveStateDirectoryPath(string directoryName)
     {
         return Path.Combine(StateRootDir, directoryName);
+    }
+
+    public string GetDoctorRoot()
+    {
+        return ResolveStateDirectoryPath("doctor");
+    }
+
+    public string GetDoctorLastReportPath()
+    {
+        return Path.Combine(GetDoctorRoot(), "last-report.json");
+    }
+
+    public string GetDoctorHistoryRoot()
+    {
+        return Path.Combine(GetDoctorRoot(), "history");
+    }
+
+    public string GetPlansRoot()
+    {
+        return ResolveStateDirectoryPath("plans");
+    }
+
+    public string GetPlansIndexPath()
+    {
+        return Path.Combine(GetPlansRoot(), "index.json");
+    }
+
+    public string GetRoutingPolicyPath()
+    {
+        return ResolveStateFilePath("routing-policy.json");
+    }
+
+    public string GetTaskGraphsRoot()
+    {
+        return ResolveStateDirectoryPath("tasks");
+    }
+
+    public string GetTaskGraphsIndexPath()
+    {
+        return Path.Combine(GetTaskGraphsRoot(), "index.json");
+    }
+
+    public string GetTaskRuntimeRoot()
+    {
+        var workspaceContainerRoot = ResolveWorkspaceContainerRoot();
+        return Path.Combine(workspaceContainerRoot, ".runtime", "tasks");
+    }
+
+    public string GetTaskRuntimePath(string graphId, string taskId)
+    {
+        return Path.Combine(GetTaskRuntimeRoot(), graphId.Trim(), taskId.Trim());
+    }
+
+    public string GetNotebooksRoot()
+    {
+        return ResolveStateDirectoryPath("notebooks");
+    }
+
+    public string GetNotebookProjectRoot(string projectKey)
+    {
+        return Path.Combine(GetNotebooksRoot(), projectKey.Trim());
+    }
+
+    public string GetRefactorPreviewRoot()
+    {
+        var workspaceContainerRoot = ResolveWorkspaceContainerRoot();
+        return Path.Combine(workspaceContainerRoot, ".runtime", "refactor-preview");
+    }
+
+    public string GetRefactorPreviewPath(string previewId)
+    {
+        return Path.Combine(GetRefactorPreviewRoot(), $"{previewId.Trim()}.json");
+    }
+
+    public string GetGlobalSkillsRoot()
+    {
+        return ResolveStateDirectoryPath("skills");
+    }
+
+    public string GetGlobalCommandsRoot()
+    {
+        return ResolveStateDirectoryPath("commands");
     }
 
     private static string ResolveDefaultDashboardIndexPath()
@@ -132,6 +230,22 @@ public sealed class DefaultStatePathResolver : IStatePathResolver
         }
 
         return Path.Combine(home, ".omninode");
+    }
+
+    private string ResolveWorkspaceContainerRoot()
+    {
+        var workspaceRoot = Path.GetFullPath(WorkspaceRootDir);
+        var leaf = Path.GetFileName(workspaceRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (leaf.Equals("coding", StringComparison.OrdinalIgnoreCase))
+        {
+            var parent = Directory.GetParent(workspaceRoot);
+            if (parent != null)
+            {
+                return parent.FullName;
+            }
+        }
+
+        return workspaceRoot;
     }
 
     private static uint GetCurrentUnixUid()

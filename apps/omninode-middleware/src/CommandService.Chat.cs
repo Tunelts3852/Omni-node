@@ -145,13 +145,19 @@ public sealed partial class CommandService
         var requestedProvider = NormalizeProvider(request.Provider, allowAuto: true);
         if (requestedProvider == "auto")
         {
-            requestedProvider = await ResolveAutoProviderAsync(cancellationToken);
+            requestedProvider = await ResolveCategoryProviderAsync(
+                TaskCategory.GeneralChat,
+                requestedProvider,
+                null,
+                cancellationToken,
+                "chat_single"
+            );
             if (requestedProvider == "none")
             {
                 requestedProvider = "groq";
             }
         }
-        var resolvedModel = ResolveModel(requestedProvider, request.Model);
+        var resolvedModel = ResolveModelForCategory(TaskCategory.GeneralChat, requestedProvider, request.Model);
         var resolvedWebUrls = ResolveWebUrls(rawInput, request.WebUrls, request.WebSearchEnabled);
         if (resolvedWebUrls.Count > 0 && _llmRouter.HasGeminiApiKey())
         {
@@ -791,7 +797,9 @@ public sealed partial class CommandService
                 null,
                 null,
                 "로컬 사용량 조회로 Codex 응답은 생략되었습니다.",
-                localCodexModel
+                localCodexModel,
+                "로컬 사용량 조회라 공통 핵심 정리는 생략되었습니다.",
+                "로컬 사용량 조회라 부분 차이 정리는 생략되었습니다."
             );
         }
 
@@ -836,7 +844,9 @@ public sealed partial class CommandService
                 blockedCitationBundle.Mappings,
                 blockedCitationBundle.Validation,
                 basePrepared.UnsupportedMessage,
-                localCodexModel
+                localCodexModel,
+                "공통 핵심 정리를 생략했습니다.",
+                "부분 차이 정리를 생략했습니다."
             );
         }
         var contextualInput = BuildContextualInput(
@@ -868,7 +878,9 @@ public sealed partial class CommandService
             ("cerebras", generated.CerebrasText),
             ("copilot", generated.CopilotText),
             ("codex", generated.CodexText),
-            ("summary", generated.Summary)
+            ("summary", generated.Summary),
+            ("commonCore", generated.CommonCore),
+            ("differences", generated.Differences)
         );
         var effectiveGuardFailure = basePrepared.GuardFailure;
         var responseGroqText = generated.GroqText;
@@ -877,8 +889,7 @@ public sealed partial class CommandService
         var responseCopilotText = generated.CopilotText;
         var responseCodexText = generated.CodexText;
         var responseSummaryText = generated.Summary;
-
-        var assistantText = BuildMultiAssistantText(new LlmMultiChatResult(
+        var comparisonMessageText = BuildMultiComparisonAssistantText(new LlmMultiChatResult(
             responseGroqText,
             responseGeminiText,
             responseCerebrasText,
@@ -891,10 +902,23 @@ public sealed partial class CommandService
             generated.RequestedSummaryProvider,
             generated.ResolvedSummaryProvider,
             responseCodexText,
-            generated.CodexModel
+            generated.CodexModel,
+            generated.CommonCore,
+            generated.Differences
         ));
+        var summaryMessageText = BuildMultiSummaryAssistantText(
+            responseSummaryText,
+            generated.CommonCore,
+            generated.Differences
+        );
         _conversationStore.AppendMessage(thread.Id, "user", rawInput, "multi");
-        _conversationStore.AppendMessage(thread.Id, "assistant", assistantText, $"summary={generated.ResolvedSummaryProvider}");
+        _conversationStore.AppendMessage(thread.Id, "assistant", comparisonMessageText, "다중 LLM 모델 비교");
+        _conversationStore.AppendMessage(
+            thread.Id,
+            "assistant",
+            summaryMessageText,
+            $"공통 정리 · {(string.IsNullOrWhiteSpace(generated.ResolvedSummaryProvider) ? "-" : generated.ResolvedSummaryProvider)}"
+        );
         await EnsureConversationTitleFromFirstTurnAsync(
             thread.Id,
             generated.ResolvedSummaryProvider,
@@ -931,7 +955,9 @@ public sealed partial class CommandService
             citationBundle.Mappings,
             citationBundle.Validation,
             responseCodexText,
-            generated.CodexModel
+            generated.CodexModel,
+            generated.CommonCore,
+            generated.Differences
         );
     }
 
@@ -983,49 +1009,68 @@ public sealed partial class CommandService
             return new LlmOrchestrationResult("unknown", "empty input");
         }
 
-        var workerTasks = new List<Task<LlmSingleChatResult>>();
+        var workerSpecs = new List<(string Provider, string? Model)>();
         if (_llmRouter.HasGroqApiKey() && !IsDisabledModelSelection(groqModel))
         {
             var selectedGroq = string.IsNullOrWhiteSpace(groqModel) ? null : groqModel.Trim();
-            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("groq", selectedGroq, text, attachments, cancellationToken));
+            workerSpecs.Add(("groq", selectedGroq));
         }
 
         if (_llmRouter.HasGeminiApiKey() && !IsDisabledModelSelection(geminiModel))
         {
             var selectedGemini = string.IsNullOrWhiteSpace(geminiModel) ? null : geminiModel.Trim();
-            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("gemini", selectedGemini, text, attachments, cancellationToken));
+            workerSpecs.Add(("gemini", selectedGemini));
         }
 
         if (_llmRouter.HasCerebrasApiKey() && !IsDisabledModelSelection(cerebrasModel))
         {
             var selectedCerebras = string.IsNullOrWhiteSpace(cerebrasModel) ? null : cerebrasModel.Trim();
-            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("cerebras", selectedCerebras, text, attachments, cancellationToken));
+            workerSpecs.Add(("cerebras", selectedCerebras));
         }
 
         var copilotStatus = await _copilotWrapper.GetStatusAsync(cancellationToken);
         if (copilotStatus.Installed && copilotStatus.Authenticated && !IsDisabledModelSelection(copilotModel))
         {
             var selectedCopilot = string.IsNullOrWhiteSpace(copilotModel) ? _copilotWrapper.GetSelectedModel() : copilotModel.Trim();
-            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("copilot", selectedCopilot, text, attachments, cancellationToken));
+            workerSpecs.Add(("copilot", selectedCopilot));
         }
 
         var codexStatus = await _codexWrapper.GetStatusAsync(cancellationToken);
         if (codexStatus.Installed && codexStatus.Authenticated && !IsDisabledModelSelection(codexModel))
         {
             var selectedCodex = NormalizeModelSelection(codexModel) ?? _config.CodexModel;
-            workerTasks.Add(ExecuteProviderChatWithPreparedInputAsync("codex", selectedCodex, text, attachments, cancellationToken));
+            workerSpecs.Add(("codex", selectedCodex));
         }
 
-        if (workerTasks.Count == 0)
+        if (workerSpecs.Count == 0)
         {
             return new LlmOrchestrationResult("no_provider", "사용 가능한 LLM이 없습니다. Groq/Gemini/Cerebras 키 또는 Copilot/Codex 인증을 확인하세요.");
         }
 
-        await Task.WhenAll(workerTasks);
-        var workerResults = workerTasks
+        var participatingProviders = workerSpecs
+            .Select(x => x.Provider)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var roleByProvider = BuildChatOrchestrationRoleAssignments(participatingProviders, text);
+        var workerRuns = workerSpecs
+            .Select(spec =>
+            {
+                var role = roleByProvider.TryGetValue(spec.Provider, out var assignedRole)
+                    ? assignedRole
+                    : "보조 워커";
+                var prompt = BuildChatOrchestrationWorkerPrompt(text, spec.Provider, role, participatingProviders);
+                return (
+                    Provider: spec.Provider,
+                    Task: ExecuteProviderChatWithPreparedInputAsync(spec.Provider, spec.Model, prompt, attachments, cancellationToken)
+                );
+            })
+            .ToArray();
+
+        await Task.WhenAll(workerRuns.Select(x => x.Task));
+        var workerResults = workerRuns
             .Select(x =>
             {
-                var result = x.Result;
+                var result = x.Task.Result;
                 return new LlmSingleChatResult(result.Provider, result.Model, SanitizeChatOutput(result.Text));
             })
             .ToList();
@@ -1037,6 +1082,7 @@ public sealed partial class CommandService
 
         var requestedProvider = NormalizeProvider(provider, allowAuto: true);
         var resolvedProvider = ResolveProviderForAggregation(
+            TaskCategory.GeneralChat,
             requestedProvider,
             successfulWorkers,
             availabilityByProvider,
@@ -1060,18 +1106,17 @@ public sealed partial class CommandService
         var aggregateModel = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
         if (string.IsNullOrWhiteSpace(aggregateModel))
         {
-            aggregateModel = resolvedProvider == "groq"
-                ? (string.IsNullOrWhiteSpace(groqModel) ? _llmRouter.GetSelectedGroqModel() : groqModel.Trim())
-                : resolvedProvider == "copilot"
-                    ? (string.IsNullOrWhiteSpace(copilotModel) ? _copilotWrapper.GetSelectedModel() : copilotModel.Trim())
-                    : resolvedProvider == "codex"
-                        ? (NormalizeModelSelection(codexModel) ?? _config.CodexModel)
-                    : resolvedProvider == "cerebras"
-                        ? (string.IsNullOrWhiteSpace(cerebrasModel) ? _config.CerebrasModel : cerebrasModel.Trim())
-                    : (string.IsNullOrWhiteSpace(geminiModel) ? _config.GeminiModel : geminiModel.Trim());
+            aggregateModel = resolvedProvider switch
+            {
+                "groq" => ResolveModelForCategory(TaskCategory.GeneralChat, resolvedProvider, groqModel),
+                "copilot" => ResolveModelForCategory(TaskCategory.GeneralChat, resolvedProvider, copilotModel),
+                "codex" => ResolveModelForCategory(TaskCategory.GeneralChat, resolvedProvider, codexModel),
+                "cerebras" => ResolveModelForCategory(TaskCategory.GeneralChat, resolvedProvider, cerebrasModel),
+                _ => ResolveModelForCategory(TaskCategory.GeneralChat, resolvedProvider, geminiModel)
+            };
         }
 
-        var aggregatePrompt = BuildOrchestrationPrompt(text, workerResults);
+        var aggregatePrompt = BuildOrchestrationPrompt(text, workerResults, roleByProvider);
         var finalResult = await GenerateByProviderSafeAsync(
             resolvedProvider,
             aggregateModel,
@@ -1130,7 +1175,9 @@ public sealed partial class CommandService
                 requestedSummaryProvider,
                 "none",
                 "empty input",
-                codexResolvedModel
+                codexResolvedModel,
+                "empty input",
+                "empty input"
             );
         }
 
@@ -1205,15 +1252,23 @@ public sealed partial class CommandService
                             [Codex]
                             {codex}
 
-                            위 5개 답변에서 서로 중복/공통되는 핵심만 우선 정리하세요.
-                            출력 형식:
+                            위 답변들을 비교해 아래 형식으로만 정리하세요.
+                            [공통 요약]
+                            - 모든 답변을 한 번에 읽지 않아도 되는 짧은 요약 2~4문장
+
                             [공통 핵심]
-                            - ...
+                            - 대부분 답변이 겹치는 핵심 bullet
+
                             [부분 차이]
-                            - ...
-                            공통점이 전혀 없으면 [공통 핵심]에 "공통점 없음"이라고 쓰세요.
+                            - 서로 결론, 강조점, 조건이 갈리는 부분 bullet
+
+                            규칙:
+                            - 공통점이 거의 없으면 [공통 핵심]에 "공통점 없음"이라고 적으세요.
+                            - 부분 차이가 없으면 [부분 차이]에 "의미 있는 차이 없음"이라고 적으세요.
+                            - 한국어로 간결하게 작성하세요.
                             """;
         var resolvedSummaryProvider = ResolveProviderForAggregation(
+            TaskCategory.GeneralChat,
             requestedSummaryProvider,
             successfulWorkers,
             availabilityByProvider,
@@ -1224,13 +1279,14 @@ public sealed partial class CommandService
         string summary;
         if (resolvedSummaryProvider == "none")
         {
-            summary = "요약: 사용 가능한 LLM이 없어 자동 요약을 건너뜁니다.";
+            summary = "공통 요약을 만들 수 없어 자동 정리를 건너뜁니다.";
         }
         else
         {
             var summaryResult = await GenerateByProviderSafeAsync(resolvedSummaryProvider, null, summaryPrompt, cancellationToken);
             summary = SanitizeChatOutput(summaryResult.Text);
         }
+        var summarySections = ParseMultiSummarySections(summary);
 
         _auditLogger.Log(source, "chat_multi", "ok", $"groq={groqSelected} cerebras={cerebrasSelected} copilot={copilotSelected} codex={codexSelected} summary={resolvedSummaryProvider}");
         return new LlmMultiChatResult(
@@ -1238,7 +1294,7 @@ public sealed partial class CommandService
             gemini,
             cerebras,
             copilot,
-            summary,
+            summarySections.CommonSummary,
             groqResolvedModel,
             geminiResolvedModel,
             cerebrasResolvedModel,
@@ -1246,8 +1302,101 @@ public sealed partial class CommandService
             requestedSummaryProvider,
             resolvedSummaryProvider,
             codex,
-            codexResolvedModel
+            codexResolvedModel,
+            summarySections.CommonCore,
+            summarySections.Differences
         );
+    }
+
+    private static Dictionary<string, string> BuildChatOrchestrationRoleAssignments(
+        IReadOnlyList<string> providers,
+        string input
+    )
+    {
+        var uniqueProviders = providers
+            .Where(provider => !string.IsNullOrWhiteSpace(provider))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (uniqueProviders.Length <= 1)
+        {
+            return uniqueProviders.ToDictionary(
+                provider => provider,
+                _ => "단독 처리 담당. 핵심 결론, 리스크, 실행 단계를 한 번에 정리하세요.",
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+
+        var normalizedInput = (input ?? string.Empty).ToLowerInvariant();
+        var planningHeavy = ContainsAny(normalizedInput, "설계", "architecture", "기획", "plan", "전략", "구조", "refactor", "리팩토");
+        var debuggingHeavy = ContainsAny(normalizedInput, "bug", "fix", "debug", "error", "issue", "오류", "실패", "원인", "재현");
+        var compareHeavy = ContainsAny(normalizedInput, "비교", "차이", "장단점", "vs", "선택", "recommend", "추천", "트레이드오프");
+        var actionHeavy = ContainsAny(normalizedInput, "어떻게", "step", "절차", "실행", "명령", "적용", "도입", "migration");
+        var uiHeavy = ContainsAny(normalizedInput, "ui", "ux", "layout", "frontend", "html", "css", "화면", "컴포넌트", "디자인");
+        var assignments = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var provider in uniqueProviders)
+        {
+            assignments[provider] = provider switch
+            {
+                "groq" => debuggingHeavy
+                    ? "빠른 원인 후보와 1차 해결 방향을 압축해서 제시하세요."
+                    : compareHeavy
+                        ? "빠른 결론 후보와 선택 기준을 먼저 정리하세요."
+                        : "빠른 1차 답변 초안과 핵심 결론 후보를 정리하세요.",
+                "gemini" => planningHeavy
+                    ? "요구사항을 분해하고 구조적인 답변 뼈대를 설계하세요."
+                    : "빠진 전제, 설명 순서, 숨은 가정을 정리하세요.",
+                "cerebras" => compareHeavy || planningHeavy
+                    ? "대안 비교, 장단점, 반례와 엣지케이스를 넓게 점검하세요."
+                    : "반례, 예외, 장기 영향과 누락된 맥락을 점검하세요.",
+                "copilot" => uiHeavy
+                    ? "바로 적용할 수 있는 화면/컴포넌트 예시와 실행 단계를 구체화하세요."
+                    : actionHeavy
+                        ? "실행 가능한 절차, 예시, 적용 순서를 구체화하세요."
+                        : "실무 적용 예시와 바로 써먹을 단계를 정리하세요.",
+                "codex" => debuggingHeavy
+                    ? "모순, 누락, 실패 포인트를 검증하고 최종 보수적 결론을 제시하세요."
+                    : "정밀 검토 담당으로서 모순 제거와 최종 누락 점검을 하세요.",
+                _ => planningHeavy
+                    ? "요구사항 정리와 답변 구조화를 보조하세요."
+                    : "보조 관점에서 답변을 보강하세요."
+            };
+        }
+
+        return assignments;
+    }
+
+    private static string BuildChatOrchestrationWorkerPrompt(
+        string userText,
+        string provider,
+        string role,
+        IReadOnlyList<string> participatingProviders
+    )
+    {
+        var providerLabel = string.IsNullOrWhiteSpace(provider) ? "worker" : provider.Trim();
+        var lineup = participatingProviders.Count == 0
+            ? providerLabel
+            : string.Join(", ", participatingProviders);
+        var assignedRole = string.IsNullOrWhiteSpace(role) ? "보조 워커" : role.Trim();
+        return $"""
+                너는 대화 오케스트레이션 워커다.
+                현재 워커: {providerLabel}
+                참여 워커: {lineup}
+                배정 역할: {assignedRole}
+
+                작업 규칙:
+                1) 네 역할 관점에 집중해서 답변한다.
+                2) 다른 워커가 맡을 만한 설명을 장황하게 반복하지 않는다.
+                3) 확실하지 않으면 단정 대신 보수적으로 표현한다.
+                4) 한국어로 간결하게 작성한다.
+
+                출력 형식:
+                - 첫 줄: 역할 관점 결론 1문장
+                - 이후 최대 5개 bullet
+
+                [사용자 질문/컨텍스트]
+                {userText}
+                """;
     }
 
 }

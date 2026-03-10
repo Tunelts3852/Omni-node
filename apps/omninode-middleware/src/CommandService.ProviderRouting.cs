@@ -10,7 +10,9 @@ public sealed partial class CommandService
         string input,
         CancellationToken cancellationToken,
         int? maxOutputTokens = null,
-        bool useRawCodexPrompt = false
+        bool useRawCodexPrompt = false,
+        string? codexWorkingDirectoryOverride = null,
+        bool optimizeCodexForCoding = false
     )
     {
         var normalized = NormalizeProvider(provider, allowAuto: false);
@@ -50,7 +52,9 @@ public sealed partial class CommandService
                 input,
                 selected,
                 cancellationToken,
-                useChatEnvelope: !useRawCodexPrompt
+                useChatEnvelope: !useRawCodexPrompt,
+                workingDirectoryOverride: codexWorkingDirectoryOverride,
+                useCodingProfile: optimizeCodexForCoding
             );
             return new LlmSingleChatResult("codex", selected, response);
         }
@@ -140,20 +144,23 @@ public sealed partial class CommandService
         string input,
         CancellationToken cancellationToken,
         int? maxOutputTokens = null,
-        bool useRawCodexPrompt = false
+        bool useRawCodexPrompt = false,
+        string? codexWorkingDirectoryOverride = null,
+        bool optimizeCodexForCoding = false,
+        int? timeoutOverrideSeconds = null
     )
     {
         var normalized = NormalizeProvider(provider, allowAuto: false);
         var effectiveModel = normalized == "groq"
             ? ResolveGroqModelForInput(input, model)
             : ResolveProviderModel(normalized, model);
-        var timeoutSeconds = normalized switch
+        var timeoutSeconds = timeoutOverrideSeconds ?? (normalized switch
         {
             "copilot" => Math.Max(120, _config.LlmTimeoutSec * 3),
             "codex" => Math.Max(120, _config.LlmTimeoutSec * 3),
             "cerebras" => Math.Max(8, _config.CerebrasTimeoutSec),
             _ => Math.Max(8, _config.LlmTimeoutSec)
-        };
+        });
         var maxAttempts = normalized == "gemini" ? 2 : 1;
         LlmSingleChatResult? lastResult = null;
         Exception? lastException = null;
@@ -171,7 +178,9 @@ public sealed partial class CommandService
                     input,
                     timeoutCts.Token,
                     maxOutputTokens,
-                    useRawCodexPrompt
+                    useRawCodexPrompt,
+                    codexWorkingDirectoryOverride,
+                    optimizeCodexForCoding
                 );
                 lastException = null;
                 if (normalized == "gemini"
@@ -360,7 +369,7 @@ public sealed partial class CommandService
 
     private string ResolveProviderModel(string provider, string? model)
     {
-        var normalizedModel = NormalizeModelSelection(model);
+        var normalizedModel = NormalizePinnedProviderModelSelection(provider, model);
         if (!string.IsNullOrWhiteSpace(normalizedModel))
         {
             return normalizedModel;
@@ -370,7 +379,8 @@ public sealed partial class CommandService
         {
             "groq" => _llmRouter.GetSelectedGroqModel(),
             "cerebras" => _config.CerebrasModel,
-            "copilot" => _copilotWrapper.GetSelectedModel(),
+            "copilot" => DefaultCopilotModel,
+            "codex" => _config.CodexModel,
             _ => _config.GeminiModel
         };
     }
@@ -574,6 +584,43 @@ public sealed partial class CommandService
         return await _providerRegistry.ResolveAutoProviderAsync(cancellationToken);
     }
 
+    private async Task<string> ResolveCategoryProviderAsync(
+        TaskCategory category,
+        string? requestedProvider,
+        IReadOnlyDictionary<string, string?>? selectionByProvider,
+        CancellationToken cancellationToken,
+        string reason
+    )
+    {
+        var availabilityByProvider = await GetProviderAvailabilityMapAsync(cancellationToken);
+        var decision = ResolveCategoryProviderDecision(
+            category,
+            requestedProvider,
+            availabilityByProvider,
+            selectionByProvider,
+            reason
+        );
+        return decision.ResolvedProvider;
+    }
+
+    private RoutingDecision ResolveCategoryProviderDecision(
+        TaskCategory category,
+        string? requestedProvider,
+        IReadOnlyDictionary<string, ProviderAvailability> availabilityByProvider,
+        IReadOnlyDictionary<string, string?>? selectionByProvider,
+        string reason
+    )
+    {
+        return _routingPolicyResolver.ResolveDecision(
+            category,
+            requestedProvider,
+            availabilityByProvider.Values.ToArray(),
+            selectionByProvider,
+            allowRequestedOverride: true,
+            reason: reason
+        );
+    }
+
     private async Task<IReadOnlyDictionary<string, ProviderAvailability>> GetProviderAvailabilityMapAsync(
         CancellationToken cancellationToken
     )
@@ -603,7 +650,8 @@ public sealed partial class CommandService
         };
     }
 
-    private static string ResolveProviderForAggregation(
+    private string ResolveProviderForAggregation(
+        TaskCategory category,
         string requestedProvider,
         IReadOnlyList<LlmSingleChatResult> successfulWorkers,
         IReadOnlyDictionary<string, ProviderAvailability> availabilityByProvider,
@@ -611,56 +659,20 @@ public sealed partial class CommandService
         bool allowProviderWithoutWorkerFallback
     )
     {
-        if (requestedProvider != "auto")
-        {
-            if (!IsProviderSelectable(requestedProvider, availabilityByProvider, selectionByProvider))
-            {
-                return ResolveAutoProviderFromWorkers(
-                    successfulWorkers,
-                    availabilityByProvider,
-                    selectionByProvider,
-                    allowProviderWithoutWorkerFallback
-                );
-            }
-
-            if (successfulWorkers.Count == 0)
-            {
-                return allowProviderWithoutWorkerFallback ? requestedProvider : "none";
-            }
-
-            if (successfulWorkers.Any(x => x.Provider.Equals(requestedProvider, StringComparison.OrdinalIgnoreCase)))
-            {
-                return requestedProvider;
-            }
-        }
-
-        return ResolveAutoProviderFromWorkers(
-            successfulWorkers,
-            availabilityByProvider,
+        var workerAvailability = BuildWorkerAvailabilityMap(successfulWorkers, availabilityByProvider);
+        var effectiveAvailability = allowProviderWithoutWorkerFallback
+            ? availabilityByProvider
+            : workerAvailability;
+        var decision = ResolveCategoryProviderDecision(
+            category,
+            requestedProvider,
+            effectiveAvailability,
             selectionByProvider,
-            allowProviderWithoutWorkerFallback
+            allowProviderWithoutWorkerFallback ? "aggregation" : "aggregation_workers_only"
         );
-    }
-
-    private static string ResolveAutoProviderFromWorkers(
-        IReadOnlyList<LlmSingleChatResult> workerResults,
-        IReadOnlyDictionary<string, ProviderAvailability> availabilityByProvider,
-        IReadOnlyDictionary<string, string?> selectionByProvider,
-        bool allowProviderWithoutWorkerFallback
-    )
-    {
-        var priority = new[] { "gemini", "groq", "cerebras", "copilot", "codex" };
-        foreach (var provider in priority)
+        if (decision.ResolvedProvider != "none")
         {
-            if (!IsProviderSelectable(provider, availabilityByProvider, selectionByProvider))
-            {
-                continue;
-            }
-
-            if (workerResults.Any(x => x.Provider.Equals(provider, StringComparison.OrdinalIgnoreCase)))
-            {
-                return provider;
-            }
+            return decision.ResolvedProvider;
         }
 
         if (!allowProviderWithoutWorkerFallback)
@@ -668,17 +680,34 @@ public sealed partial class CommandService
             return "none";
         }
 
-        foreach (var provider in priority)
-        {
-            if (!IsProviderSelectable(provider, availabilityByProvider, selectionByProvider))
-            {
-                continue;
-            }
+        return ResolveAutoProviderFromWorkers(
+            category,
+            successfulWorkers,
+            availabilityByProvider,
+            selectionByProvider,
+            allowProviderWithoutWorkerFallback
+        );
+    }
 
-            return provider;
-        }
-
-        return "none";
+    private string ResolveAutoProviderFromWorkers(
+        TaskCategory category,
+        IReadOnlyList<LlmSingleChatResult> workerResults,
+        IReadOnlyDictionary<string, ProviderAvailability> availabilityByProvider,
+        IReadOnlyDictionary<string, string?> selectionByProvider,
+        bool allowProviderWithoutWorkerFallback
+    )
+    {
+        var effectiveAvailability = allowProviderWithoutWorkerFallback
+            ? availabilityByProvider
+            : BuildWorkerAvailabilityMap(workerResults, availabilityByProvider);
+        var decision = ResolveCategoryProviderDecision(
+            category,
+            "auto",
+            effectiveAvailability,
+            selectionByProvider,
+            allowProviderWithoutWorkerFallback ? "aggregation_auto" : "aggregation_auto_workers_only"
+        );
+        return decision.ResolvedProvider;
     }
 
     private static bool IsProviderSelectable(
@@ -757,5 +786,103 @@ public sealed partial class CommandService
         }
 
         return false;
+    }
+
+    private static IReadOnlyDictionary<string, ProviderAvailability> BuildWorkerAvailabilityMap(
+        IReadOnlyList<LlmSingleChatResult> workerResults,
+        IReadOnlyDictionary<string, ProviderAvailability> availabilityByProvider
+    )
+    {
+        var availableProviders = workerResults
+            .Select(item => item.Provider)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return availabilityByProvider.ToDictionary(
+            item => item.Key,
+            item => item.Value with
+            {
+                Available = item.Value.Available && availableProviders.Contains(item.Key)
+            },
+            StringComparer.OrdinalIgnoreCase
+        );
+    }
+
+    private string ResolveModelForCategory(
+        TaskCategory category,
+        string provider,
+        string? modelOverride
+    )
+    {
+        var normalizedProvider = NormalizeProvider(provider, allowAuto: false);
+        var normalizedModel = NormalizePinnedProviderModelSelection(normalizedProvider, modelOverride);
+        if (!string.IsNullOrWhiteSpace(normalizedModel))
+        {
+            return normalizedModel;
+        }
+
+        if ((category == TaskCategory.SearchTimeSensitive || category == TaskCategory.SearchFallback)
+            && normalizedProvider == "gemini")
+        {
+            return ResolveSearchLlmModel();
+        }
+
+        return ResolveModel(normalizedProvider, modelOverride);
+    }
+
+    private TaskCategory ResolveCodingTaskCategory(string? categoryHint, string? input)
+    {
+        var normalized = $"{categoryHint ?? string.Empty}\n{input ?? string.Empty}".ToLowerInvariant();
+        if (ContainsAny(normalized, "ui", "ux", "visual", "layout", "css", "design", "반응형", "스타일"))
+        {
+            return TaskCategory.VisualUi;
+        }
+
+        if (ContainsAny(normalized, "doc", "readme", "문서", "가이드"))
+        {
+            return TaskCategory.Documentation;
+        }
+
+        if (ContainsAny(normalized, "quickfix", "hotfix", "bugfix", "fix", "버그", "긴급", "오류"))
+        {
+            return TaskCategory.QuickFix;
+        }
+
+        if (ContainsAny(normalized, "refactor", "리팩토", "cleanup", "구조 정리", "안전 수정"))
+        {
+            return TaskCategory.SafeRefactor;
+        }
+
+        return TaskCategory.DeepCode;
+    }
+
+    private TaskCategory ResolveTaskGraphRoutingCategory(string? taskCategory, string? prompt)
+    {
+        var normalizedCategory = (taskCategory ?? string.Empty).Trim().ToLowerInvariant();
+        if (normalizedCategory == "documentation")
+        {
+            return TaskCategory.Documentation;
+        }
+
+        if (normalizedCategory == "refactor")
+        {
+            return TaskCategory.SafeRefactor;
+        }
+
+        if (normalizedCategory == "verification")
+        {
+            return TaskCategory.QuickFix;
+        }
+
+        if (normalizedCategory == "analysis")
+        {
+            return TaskCategory.BackgroundMonitor;
+        }
+
+        if (normalizedCategory == "research")
+        {
+            return TaskCategory.SearchFallback;
+        }
+
+        return ResolveCodingTaskCategory(normalizedCategory, prompt);
     }
 }

@@ -1,6 +1,15 @@
 namespace OmniNode.Middleware;
 
-public sealed record ProviderAvailability(string Provider, bool Available, string Reason);
+public sealed record ProviderAvailability(
+    string Provider,
+    bool Available,
+    string Reason,
+    bool VisualCapable,
+    bool CodeCapable,
+    bool SearchCapable,
+    bool CliAuthRequired,
+    bool BackgroundSafe
+);
 
 public sealed class ProviderRegistry
 {
@@ -44,24 +53,24 @@ public sealed class ProviderRegistry
         var items = new List<ProviderAvailability>(5)
         {
             _llmRouter.HasGeminiApiKey()
-                ? new ProviderAvailability("gemini", true, "configured")
-                : new ProviderAvailability("gemini", false, "api_key_missing"),
+                ? new ProviderAvailability("gemini", true, "configured", true, true, true, false, true)
+                : new ProviderAvailability("gemini", false, "api_key_missing", true, true, true, false, true),
             _llmRouter.HasGroqApiKey()
-                ? new ProviderAvailability("groq", true, "configured")
-                : new ProviderAvailability("groq", false, "api_key_missing"),
+                ? new ProviderAvailability("groq", true, "configured", false, true, false, false, true)
+                : new ProviderAvailability("groq", false, "api_key_missing", false, true, false, false, true),
             _llmRouter.HasCerebrasApiKey()
-                ? new ProviderAvailability("cerebras", true, "configured")
-                : new ProviderAvailability("cerebras", false, "api_key_missing")
+                ? new ProviderAvailability("cerebras", true, "configured", false, true, false, false, true)
+                : new ProviderAvailability("cerebras", false, "api_key_missing", false, true, false, false, true)
         };
 
         var copilot = await _copilotWrapper.GetStatusAsync(cancellationToken);
         items.Add(copilot.Installed && copilot.Authenticated
-            ? new ProviderAvailability("copilot", true, "ready")
-            : new ProviderAvailability("copilot", false, "not_ready"));
+            ? new ProviderAvailability("copilot", true, "ready", false, true, false, true, false)
+            : new ProviderAvailability("copilot", false, "not_ready", false, true, false, true, false));
         var codex = await _codexWrapper.GetStatusAsync(cancellationToken);
         items.Add(codex.Installed && codex.Authenticated
-            ? new ProviderAvailability("codex", true, "ready")
-            : new ProviderAvailability("codex", false, "not_ready"));
+            ? new ProviderAvailability("codex", true, "ready", false, true, false, true, false)
+            : new ProviderAvailability("codex", false, "not_ready", false, true, false, true, false));
 
         return items;
     }

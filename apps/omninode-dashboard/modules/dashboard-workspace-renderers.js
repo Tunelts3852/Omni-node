@@ -158,6 +158,615 @@ export function renderComposerInputBar(props) {
   );
 }
 
+function normalizeCarouselIndex(index, entryCount) {
+  if (!Number.isFinite(entryCount) || entryCount <= 0) {
+    return 0;
+  }
+
+  const numericIndex = Number.isFinite(Number(index)) ? Number(index) : 0;
+  const normalized = numericIndex % entryCount;
+  return normalized < 0 ? normalized + entryCount : normalized;
+}
+
+function buildCodingWorkerMessageBody(worker) {
+  const execution = worker && typeof worker.execution === "object" ? worker.execution : {};
+  const changedFiles = Array.isArray(worker && worker.changedFiles) ? worker.changedFiles.filter(Boolean) : [];
+  const stdout = `${execution.stdout || ""}`.trim();
+  const stderr = `${execution.stderr || ""}`.trim();
+  const command = `${execution.command || ""}`.trim();
+  const summary = `${worker && worker.summary ? worker.summary : ""}`.trim();
+  const lines = [
+    worker && worker.role ? `역할: ${worker.role}` : "",
+    `상태: ${execution.status || "-"}`,
+    `종료 코드: ${Number.isFinite(execution.exitCode) ? execution.exitCode : "-"}`,
+    `언어: ${worker && worker.language ? worker.language : "-"}`,
+    `변경 파일: ${changedFiles.length}개`
+  ].filter(Boolean);
+
+  if (command && command !== "(none)" && command !== "-") {
+    lines.push(`실행 명령: \`${command}\``);
+  }
+  if (changedFiles.length > 0) {
+    lines.push(`파일: ${changedFiles.join(", ")}`);
+  }
+  if (summary) {
+    lines.push(`요약:\n${summary}`);
+  }
+  if (stdout) {
+    lines.push(`stdout:\n\`\`\`\n${stdout}\n\`\`\``);
+  }
+  if (stderr) {
+    lines.push(`stderr:\n\`\`\`\n${stderr}\n\`\`\``);
+  }
+  if (!stdout && !stderr) {
+    lines.push("실행 출력은 없습니다.");
+  }
+
+  return lines.join("\n\n");
+}
+
+function buildCodingResultCarouselEntries(result, sanitizeCodingAssistantText) {
+  if (result && result.mode === "multi" && Array.isArray(result.workers)) {
+    return result.workers
+      .filter((worker) => worker && typeof worker === "object")
+      .map((worker, index) => {
+        const workerExecution = worker.execution && typeof worker.execution === "object" ? worker.execution : {};
+        return {
+          id: `worker-${worker.provider || "unknown"}-${index}`,
+          heading: `${worker.provider || "-"} (${worker.model || "-"})`,
+          meta: `${worker.role || "독립 완주"} · status=${workerExecution.status || "-"} · exit=${Number.isFinite(workerExecution.exitCode) ? workerExecution.exitCode : "-"}`,
+          body: buildCodingWorkerMessageBody(worker),
+          tone: /(error|fail|timeout|cancel|killed|aborted)/i.test(`${workerExecution.status || ""}`) ? "error" : "ok"
+        };
+      });
+  }
+
+  const execution = result && typeof result.execution === "object" ? result.execution : {};
+  return [{
+    id: "final",
+    heading: `${result.provider || "-"} (${result.model || "-"})`,
+    meta: `최종 구현 · status=${execution.status || "-"} · exit=${Number.isFinite(execution.exitCode) ? execution.exitCode : "-"}`,
+    body: sanitizeCodingAssistantText(result.summary || "") || "최종 요약이 없습니다.",
+    tone: /(error|fail|timeout|cancel|killed|aborted)/i.test(`${execution.status || ""}`) ? "error" : "ok"
+  }];
+}
+
+function buildCodingResultState(result) {
+  const execution = result && typeof result.execution === "object" ? result.execution : {};
+  const changedFiles = Array.isArray(result?.changedFiles) ? result.changedFiles.filter(Boolean) : [];
+  const workerCount = Array.isArray(result?.workers) ? result.workers.filter(Boolean).length : 0;
+  const status = `${execution.status || ""}`.trim() || "unknown";
+  const normalized = status.toLowerCase();
+  const tone = /(error|fail|timeout|cancel|killed|aborted)/i.test(normalized)
+    ? "error"
+    : /(success|ok|completed|done)/i.test(normalized)
+      ? "ok"
+      : "neutral";
+  const subtitle = result?.mode === "multi"
+    ? `비교 요약 ${result?.provider || "-"}/${result?.model || "-"} · 워커 ${workerCount}개`
+    : `${result?.provider || "-"}/${result?.model || "-"} · ${result?.language || "-"}`;
+  const detail = [
+    `status=${status}`,
+    `exit=${execution.exitCode ?? "-"}`,
+    result?.mode === "multi" ? `워커 ${workerCount}개` : "",
+    `파일 ${changedFiles.length}개`
+  ].filter(Boolean).join(" · ");
+
+  return {
+    tone,
+    statusText: status,
+    subtitle,
+    detail,
+    changedFiles,
+    execution
+  };
+}
+
+function normalizeExecutionText(value) {
+  return `${value || ""}`.replace(/\r\n/g, "\n").trim();
+}
+
+function formatExecutionTimestamp(updatedAt) {
+  if (!updatedAt) {
+    return "";
+  }
+
+  const date = new Date(updatedAt);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toLocaleString("ko-KR", {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function renderExecutionDetails(props) {
+  const {
+    e,
+    execution,
+    updatedAt,
+    humanPath,
+    runDir,
+    emptyMessage
+  } = props;
+
+  const normalizedExecution = execution && typeof execution === "object" ? execution : {};
+  const stdout = normalizeExecutionText(normalizedExecution.stdout);
+  const stderr = normalizeExecutionText(normalizedExecution.stderr);
+  const runtimeDir = `${normalizedExecution.runDirectory || runDir || ""}`.trim();
+  const entryFile = `${normalizedExecution.entryFile || ""}`.trim();
+  const executedAt = formatExecutionTimestamp(updatedAt);
+  const detailItems = [
+    {
+      key: "status",
+      label: "상태",
+      value: `${normalizedExecution.status || "-"} · exit=${Number.isFinite(normalizedExecution.exitCode) ? normalizedExecution.exitCode : "-"}`
+    },
+    executedAt
+      ? {
+          key: "executed-at",
+          label: "실행 시각",
+          value: executedAt
+        }
+      : null,
+    {
+      key: "command",
+      label: "명령",
+      value: `${normalizedExecution.command || "(none)"}`
+    },
+    runtimeDir
+      ? {
+          key: "run-directory",
+          label: "작업 폴더",
+          value: runtimeDir
+        }
+      : null,
+    entryFile
+      ? {
+          key: "entry-file",
+          label: "엔트리 파일",
+          value: humanPath(entryFile, runtimeDir || runDir || "")
+        }
+      : null
+  ].filter(Boolean);
+
+  return e("div", { className: "coding-execution-details" },
+    detailItems.length > 0
+      ? e("div", { className: "coding-execution-meta-grid" },
+        detailItems.map((item) => e("div", {
+          key: item.key,
+          className: `coding-execution-meta-card${item.key === "command" || item.key === "run-directory" ? " is-wide" : ""}`
+        },
+        e("div", { className: "coding-execution-meta-label" }, item.label),
+        e("div", { className: "coding-execution-meta-value" }, item.value)
+        ))
+      )
+      : null,
+    stdout
+      ? e("div", { className: "coding-execution-output-block" },
+        e("div", { className: "coding-execution-output-head" }, "stdout"),
+        e("pre", { className: "coding-execution-output-content" }, stdout)
+      )
+      : null,
+    stderr
+      ? e("div", { className: "coding-execution-output-block is-error" },
+        e("div", { className: "coding-execution-output-head" }, "stderr"),
+        e("pre", { className: "coding-execution-output-content" }, stderr)
+      )
+      : null,
+    !stdout && !stderr
+      ? e("div", { className: "coding-execution-empty" }, emptyMessage || "이번 실행에서는 stdout/stderr가 비어 있습니다.")
+      : null
+  );
+}
+
+function ResultMessageCarousel(props) {
+  const { useEffect, useState } = React;
+  const {
+    e,
+    MarkdownBubbleText,
+    title,
+    subtitle,
+    emptyText,
+    entries,
+    avatarLabel,
+    avatarClassName,
+    containerElement,
+    className,
+    headerAction
+  } = props;
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const safeEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+  const containerTag = containerElement || "section";
+  const containerClassName = className || "coding-result support-card result-carousel-card";
+
+  useEffect(() => {
+    setSelectedIndex((prev) => normalizeCarouselIndex(prev, safeEntries.length));
+  }, [safeEntries.length]);
+
+  if (safeEntries.length === 0) {
+    return e(containerTag, { className: containerClassName },
+      e("div", { className: "coding-result-head" },
+        e("strong", null, title),
+        subtitle ? e("span", null, subtitle) : null
+      ),
+      e("div", { className: "empty-line" }, emptyText || "표시할 결과가 없습니다.")
+    );
+  }
+
+  const activeIndex = normalizeCarouselIndex(selectedIndex, safeEntries.length);
+  const activeEntry = safeEntries[activeIndex];
+  const canNavigate = safeEntries.length > 1;
+  const bubbleClassName = `bubble assistant result-carousel-bubble${activeEntry.tone === "error" ? " is-error" : ""}`;
+
+  return e(
+    containerTag,
+    { className: containerClassName },
+    e("div", { className: "result-carousel-head" },
+      e("div", { className: "result-carousel-copy" },
+        e("strong", null, title),
+        subtitle ? e("span", { className: "result-carousel-subtitle" }, subtitle) : null
+      ),
+      e("div", { className: "result-carousel-head-actions" },
+        headerAction || null,
+        e("div", { className: "result-carousel-nav" },
+          e("button", {
+            type: "button",
+            className: "btn ghost result-carousel-nav-btn",
+            onClick: () => setSelectedIndex((prev) => normalizeCarouselIndex(prev - 1, safeEntries.length)),
+            disabled: !canNavigate,
+            title: "이전 모델"
+          }, "<"),
+          e("div", { className: "result-carousel-current" },
+            e("div", { className: "result-carousel-current-label" }, activeEntry.heading || "-"),
+            e("div", { className: "result-carousel-current-index" }, `${activeIndex + 1} / ${safeEntries.length}`)
+          ),
+          e("button", {
+            type: "button",
+            className: "btn ghost result-carousel-nav-btn",
+            onClick: () => setSelectedIndex((prev) => normalizeCarouselIndex(prev + 1, safeEntries.length)),
+            disabled: !canNavigate,
+            title: "다음 모델"
+          }, ">")
+        )
+      )
+    ),
+    e("div", { className: "message-list result-carousel-message-list" },
+      e("div", { className: "message-row assistant result-carousel-row" },
+        e("div", { className: `message-avatar ${avatarClassName}` }, avatarLabel),
+        e("div", { className: bubbleClassName },
+          activeEntry.meta ? e("div", { className: "bubble-meta" }, activeEntry.meta) : null,
+          e(MarkdownBubbleText, { text: activeEntry.body || "-" })
+        )
+      )
+    )
+  );
+}
+
+function renderChatMultiSummaryCard(props) {
+  const {
+    e,
+    MarkdownBubbleText,
+    summarySections
+  } = props;
+  const sections = Array.isArray(summarySections) ? summarySections.filter(Boolean) : [];
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return e(
+    "section",
+    { className: "support-card chat-multi-summary-card" },
+    e("div", { className: "coding-result-head" },
+      e("strong", null, "공통 정리")
+    ),
+    e("div", { className: "chat-multi-summary-grid" },
+      sections.map((section) => e(
+        "div",
+        { key: `chat-multi-summary-${section.key || section.title}`, className: "chat-multi-summary-block" },
+        e("div", { className: "chat-multi-summary-title" }, section.title || "-"),
+        e("div", { className: "chat-multi-summary-body markdown-panel" },
+          e(MarkdownBubbleText, { text: section.body || "-" })
+        )
+      ))
+    )
+  );
+}
+
+function renderCodingMultiSummaryCard(props) {
+  const {
+    e,
+    MarkdownBubbleText,
+    summarySections
+  } = props;
+  const sections = Array.isArray(summarySections) ? summarySections.filter(Boolean) : [];
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return e(
+    "section",
+    { className: "support-card coding-multi-summary-card" },
+    e("div", { className: "coding-result-head" },
+      e("strong", null, "공통 정리")
+    ),
+    e("div", { className: "chat-multi-summary-grid" },
+      sections.map((section) => e(
+        "div",
+        { key: `coding-multi-summary-${section.key || section.title}`, className: "chat-multi-summary-block" },
+        e("div", { className: "chat-multi-summary-title" }, section.title || "-"),
+        e("div", { className: "chat-multi-summary-body markdown-panel" },
+          e(MarkdownBubbleText, { text: section.body || "-" })
+        )
+      ))
+    )
+  );
+}
+
+function renderCodingResultCard(props) {
+  const {
+    e,
+    MarkdownBubbleText,
+    currentConversationId,
+    result,
+    codingState,
+    filePreviewByConversation,
+    runtimeByConversation,
+    executionInputByConversation,
+    showExecutionLogsByConversation,
+    sanitizeCodingAssistantText,
+    buildCodingMultiRenderSnapshot,
+    requestWorkspaceFilePreview,
+    requestLatestCodingResultExecution,
+    humanPath,
+    setCodingExecutionInputByConversation,
+    setShowExecutionLogsByConversation,
+    panelClassName,
+    headerAction
+  } = props;
+
+  const changedFiles = codingState.changedFiles;
+  const preview = filePreviewByConversation[currentConversationId] || null;
+  const runtime = runtimeByConversation[currentConversationId] || null;
+  const executionInput = `${executionInputByConversation?.[currentConversationId] || ""}`;
+  const runDir = codingState.execution.runDirectory || "";
+  const showExecutionLogs = !!showExecutionLogsByConversation[currentConversationId];
+  const canExecute = !!currentConversationId && typeof requestLatestCodingResultExecution === "function";
+  const canEditExecutionInput = !!currentConversationId && typeof setCodingExecutionInputByConversation === "function";
+  const safeSummary = sanitizeCodingAssistantText(result.summary || "");
+  const multiSnapshot = result.mode === "multi" && typeof buildCodingMultiRenderSnapshot === "function"
+    ? buildCodingMultiRenderSnapshot(result)
+    : null;
+  const carouselEntries = result.mode === "multi"
+    ? (multiSnapshot && Array.isArray(multiSnapshot.entries) && multiSnapshot.entries.length > 0
+        ? multiSnapshot.entries
+        : buildCodingResultCarouselEntries(result, sanitizeCodingAssistantText))
+    : [];
+  const actionButtons = [];
+  if (canExecute) {
+    actionButtons.push(e("button", {
+      key: "execute",
+      type: "button",
+      className: "btn secondary coding-execute-btn",
+      onClick: () => requestLatestCodingResultExecution(currentConversationId, executionInput),
+      disabled: runtime?.pending
+    }, runtime?.pending ? "실행 중..." : "실행"));
+  }
+  if (headerAction) {
+    actionButtons.push(e("span", { key: "header-action", className: "coding-result-inline-action" }, headerAction));
+  }
+  const mergedHeaderAction = actionButtons.length > 0
+    ? e("div", { className: "coding-result-inline-actions" }, actionButtons)
+    : null;
+  const filesPanel = changedFiles.length > 0
+    ? e("div", { className: "coding-files" },
+      e("div", { className: "coding-files-head" }, `생성/수정 파일 (${changedFiles.length})`),
+      e("div", { className: "coding-files-list" },
+        changedFiles.map((pathValue) => {
+          const selected = preview?.path === pathValue;
+          return e(
+            "button",
+            {
+              key: pathValue,
+              className: `file-chip ${selected ? "active" : ""}`,
+              onClick: () => requestWorkspaceFilePreview(pathValue, currentConversationId)
+            },
+            humanPath(pathValue, runDir)
+          );
+        })
+      )
+    )
+    : e("div", { className: "coding-files empty-line" }, "변경 파일이 감지되지 않았습니다.");
+  const previewPanel = preview
+    ? e("div", { className: "coding-preview" },
+      e("div", { className: "coding-preview-head" }, `프리뷰: ${humanPath(preview.path, runDir)}`),
+      e("pre", { className: "coding-preview-content" }, preview.content || "")
+    )
+    : e("div", { className: "coding-preview empty-line" }, "파일 프리뷰를 불러오는 중이거나 아직 선택된 파일이 없습니다.");
+  const runtimePanel = runtime
+    ? e("div", {
+      className: `coding-runtime-panel${runtime.ok === false ? " is-error" : ""}${runtime.pending ? " is-pending" : ""}`
+    },
+    e("div", { className: "coding-preview-head" },
+      runtime.runMode === "browser" ? "브라우저 실행" : "실행 결과"
+    ),
+    runtime.message
+      ? e("div", { className: "coding-runtime-message" }, runtime.message)
+      : null,
+    runtime.runMode === "browser" && runtime.previewUrl
+      ? e("div", { className: "coding-runtime-scroll" },
+          e("div", { className: "coding-runtime-browser-bar" },
+            runtime.previewEntry
+              ? e("span", { className: "coding-runtime-target" }, runtime.previewEntry)
+              : null,
+            e("a", {
+              className: "btn ghost",
+              href: runtime.previewUrl,
+              target: "_blank",
+              rel: "noreferrer"
+            }, "새 탭")
+          ),
+          e("iframe", {
+            key: `browser-frame-${runtime.previewUrl}-${runtime.updatedAt || 0}`,
+            className: "coding-browser-frame",
+            src: runtime.previewUrl,
+            title: "최근 코딩 결과 브라우저 실행"
+          })
+        )
+      : runtime.execution
+        ? e("div", { className: "coding-runtime-scroll" },
+            renderExecutionDetails({
+              e,
+              execution: runtime.execution,
+              updatedAt: runtime.updatedAt,
+              humanPath,
+              runDir,
+              emptyMessage: "재실행은 완료됐지만 stdout/stderr가 비어 있습니다. 입력형 CLI라면 아래 stdin 입력 칸에 값을 넣고 다시 실행하세요."
+            })
+          )
+        : e("div", { className: "coding-preview empty-line" }, runtime.pending ? "최근 결과를 다시 실행하고 있습니다." : "실행 정보를 표시할 수 없습니다.")
+    )
+    : null;
+  const executionInputPanel = canExecute
+    ? e("div", { className: "coding-execution-input-panel" },
+      e("div", { className: "coding-execution-input-head" }, "stdin 입력"),
+      e("div", { className: "coding-execution-input-help" }, "입력이 필요한 콘솔 프로그램은 값을 줄바꿈으로 넣고 실행하세요."),
+      e("textarea", {
+        className: "coding-execution-input-textarea",
+        value: executionInput,
+        placeholder: "예시\n1\n12\n3",
+        rows: 4,
+        onChange: (event) => {
+          if (!canEditExecutionInput) {
+            return;
+          }
+
+          const nextValue = event && event.target ? event.target.value : "";
+          setCodingExecutionInputByConversation((prev) => ({
+            ...prev,
+            [currentConversationId]: nextValue
+          }));
+        }
+      }),
+      e("div", { className: "coding-execution-input-actions" },
+        e("button", {
+          type: "button",
+          className: "btn secondary",
+          disabled: runtime?.pending,
+          onClick: () => requestLatestCodingResultExecution(currentConversationId, executionInput)
+        }, runtime?.pending ? "실행 중..." : "입력 포함 실행"),
+        e("button", {
+          type: "button",
+          className: "btn ghost",
+          disabled: runtime?.pending || !executionInput,
+          onClick: () => {
+            if (!canEditExecutionInput) {
+              return;
+            }
+
+            setCodingExecutionInputByConversation((prev) => {
+              if (!prev || !prev[currentConversationId]) {
+                return prev;
+              }
+
+              return {
+                ...prev,
+                [currentConversationId]: ""
+              };
+            });
+          }
+        }, "비우기")
+      )
+    )
+    : null;
+  const executionLogsPanel = e("div", { className: "coding-output-panel" },
+    e("div", { className: "coding-output-panel-head" },
+      e("div", { className: "coding-preview-head coding-output-panel-title" }, "생성 단계 실행 로그"),
+      e("div", { className: "coding-log-controls" },
+        e("button", {
+          className: "btn ghost",
+          onClick: () => setShowExecutionLogsByConversation((prev) => ({
+            ...prev,
+            [currentConversationId]: !showExecutionLogs
+          }))
+        }, showExecutionLogs ? "숨기기" : "보기")
+      )
+    ),
+    showExecutionLogs
+      ? renderExecutionDetails({
+          e,
+          execution: codingState.execution,
+          humanPath,
+          runDir,
+          emptyMessage: "생성 단계에서는 stdout/stderr가 남지 않았습니다."
+        })
+      : e("div", { className: "coding-output empty-line" }, "생성 단계 실행 로그는 숨김 상태입니다.")
+  );
+  const contentGrid = e("div", { className: "coding-result-body-grid" },
+    e("div", { className: "coding-result-primary-column" },
+      filesPanel,
+      previewPanel
+    ),
+    e("div", { className: "coding-result-secondary-column" },
+      runtimePanel,
+      executionLogsPanel
+    )
+  );
+
+  return e(
+    "section",
+    { className: `coding-result support-card ${panelClassName || ""}`.trim() },
+    result.mode === "multi"
+      ? e(ResultMessageCarousel, {
+          key: `coding-carousel-${currentConversationId}`,
+          e,
+          MarkdownBubbleText,
+          title: "최근 코딩 결과",
+          subtitle: codingState.subtitle,
+          emptyText: "표시할 워커 결과가 없습니다.",
+          entries: carouselEntries,
+          avatarLabel: "DEV",
+          avatarClassName: "coding",
+          containerElement: "div",
+          className: "result-carousel-card result-carousel-inline",
+          headerAction: mergedHeaderAction
+        })
+      : [
+          e("div", { key: "head", className: "coding-result-head" },
+            e("strong", null, "최근 코딩 결과"),
+            e("div", { className: "coding-result-head-actions" },
+              e("span", null, codingState.subtitle),
+              mergedHeaderAction
+            )
+          ),
+          safeSummary
+            ? e("div", { key: "summary", className: "coding-summary markdown-panel" },
+              e(MarkdownBubbleText, { text: safeSummary })
+            )
+            : null
+        ],
+    result.mode === "multi" && multiSnapshot
+      ? renderCodingMultiSummaryCard({
+          e,
+          MarkdownBubbleText,
+          summarySections: multiSnapshot.summarySections
+        })
+      : null,
+    e("div", { className: "coding-result-meta" },
+      `status=${codingState.execution.status || "-"} · exit=${codingState.execution.exitCode ?? "-"} · command=${codingState.execution.command || "(none)"}`
+    ),
+    executionInputPanel,
+    contentGrid
+  );
+}
+
 export function renderCodingResultPanel(props) {
   const {
     e,
@@ -166,10 +775,14 @@ export function renderCodingResultPanel(props) {
     currentConversationId,
     codingResultByConversation,
     filePreviewByConversation,
+    runtimeByConversation,
+    executionInputByConversation,
     showExecutionLogsByConversation,
     sanitizeCodingAssistantText,
     requestWorkspaceFilePreview,
+    requestLatestCodingResultExecution,
     humanPath,
+    setCodingExecutionInputByConversation,
     setShowExecutionLogsByConversation
   } = props;
 
@@ -182,64 +795,110 @@ export function renderCodingResultPanel(props) {
     return null;
   }
 
-  const changedFiles = Array.isArray(result.changedFiles) ? result.changedFiles.filter(Boolean) : [];
-  const preview = filePreviewByConversation[currentConversationId] || null;
-  const runDir = result.execution?.runDirectory || "";
-  const showExecutionLogs = !!showExecutionLogsByConversation[currentConversationId];
-  const safeSummary = sanitizeCodingAssistantText(result.summary || "");
+  const codingState = buildCodingResultState(result);
+  return renderCodingResultCard({
+    ...props,
+    result,
+    codingState
+  });
+}
+
+export function renderCodingResultDock(props) {
+  const {
+    e,
+    rootTab,
+    currentConversationId,
+    codingResultByConversation,
+    runtimeByConversation,
+    executionInputByConversation,
+    requestLatestCodingResultExecution,
+    actions
+  } = props;
+
+  if (rootTab !== "coding" || !currentConversationId) {
+    return null;
+  }
+
+  const result = codingResultByConversation[currentConversationId];
+  if (!result) {
+    return null;
+  }
+
+  const codingState = buildCodingResultState(result);
+  const detail = [codingState.subtitle, codingState.detail].filter(Boolean).join(" · ");
+  const runtime = runtimeByConversation?.[currentConversationId] || null;
+  const executionInput = `${executionInputByConversation?.[currentConversationId] || ""}`;
+  const canExecute = typeof requestLatestCodingResultExecution === "function";
 
   return e(
-    "section",
-    { className: "coding-result support-card" },
-    e("div", { className: "coding-result-head" },
-      e("strong", null, "최근 코딩 결과"),
-      e("span", null, `${result.provider || "-"}/${result.model || "-"} · ${result.language || "-"}`)
+    "div",
+    { className: "compact-support-dock coding-result-dock" },
+    e("div", { className: "compact-support-dock-copy" },
+      e("div", { className: "compact-support-dock-head" },
+        e("strong", null, "최근 코딩 결과"),
+        e("span", { className: `compact-support-dock-status ${codingState.tone}` }, codingState.statusText)
+      ),
+      e("div", { className: "compact-support-dock-detail" }, detail)
     ),
-    e("div", { className: "coding-result-meta" },
-      `status=${result.execution?.status || "-"} · exit=${result.execution?.exitCode ?? "-"} · command=${result.execution?.command || "(none)"}`
-    ),
-    changedFiles.length > 0
-      ? e("div", { className: "coding-files" },
-        e("div", { className: "coding-files-head" }, `생성/수정 파일 (${changedFiles.length})`),
-        e("div", { className: "coding-files-list" },
-          changedFiles.map((pathValue) => {
-            const selected = preview?.path === pathValue;
-            return e(
-              "button",
-              {
-                key: pathValue,
-                className: `file-chip ${selected ? "active" : ""}`,
-                onClick: () => requestWorkspaceFilePreview(pathValue, currentConversationId)
-              },
-              humanPath(pathValue, runDir)
-            );
-          })
-        )
-      )
-      : e("div", { className: "coding-files empty-line" }, "변경 파일이 감지되지 않았습니다."),
-    preview
-      ? e("div", { className: "coding-preview" },
-        e("div", { className: "coding-preview-head" }, `프리뷰: ${humanPath(preview.path, runDir)}`),
-        e("pre", { className: "coding-preview-content" }, preview.content || "")
-      )
-      : e("div", { className: "coding-preview empty-line" }, "파일을 선택하면 프리뷰를 볼 수 있습니다."),
-    e("div", { className: "coding-log-controls" },
+    e("div", { className: "coding-result-inline-actions" },
+      canExecute
+        ? e("button", {
+          type: "button",
+          className: "btn secondary coding-execute-btn",
+          disabled: runtime?.pending,
+          onClick: () => {
+            requestLatestCodingResultExecution(currentConversationId, executionInput);
+            actions.openOverlay();
+          }
+        }, runtime?.pending ? "실행 중..." : "실행")
+        : null,
       e("button", {
+        type: "button",
+        className: "btn secondary compact-support-dock-trigger",
+        onClick: actions.openOverlay,
+        title: "최근 코딩 결과 열기"
+      },
+      e("span", { className: "compact-support-dock-arrow", "aria-hidden": "true" }, "↑"),
+      e("span", null, "열기"))
+    )
+  );
+}
+
+export function renderCodingResultOverlay(props) {
+  const {
+    e,
+    rootTab,
+    open,
+    actions,
+    currentConversationId,
+    codingResultByConversation
+  } = props;
+
+  if (rootTab !== "coding" || !open || !currentConversationId || !codingResultByConversation[currentConversationId]) {
+    return null;
+  }
+
+  return e(
+    "div",
+    {
+      className: "modal support-overlay-modal",
+      onClick: actions.closeOverlay
+    },
+    e("div", {
+      className: "support-overlay-shell",
+      onClick: (event) => event.stopPropagation()
+    },
+    renderCodingResultCard({
+      ...props,
+      result: codingResultByConversation[currentConversationId],
+      codingState: buildCodingResultState(codingResultByConversation[currentConversationId]),
+      panelClassName: "coding-result-modal",
+      headerAction: e("button", {
+        type: "button",
         className: "btn ghost",
-        onClick: () => setShowExecutionLogsByConversation((prev) => ({
-          ...prev,
-          [currentConversationId]: !showExecutionLogs
-        }))
-      }, showExecutionLogs ? "실행 로그 숨기기" : "실행 로그 보기")
-    ),
-    showExecutionLogs
-      ? e("pre", { className: "coding-output" }, `[stdout]\n${result.execution?.stdout || ""}\n\n[stderr]\n${result.execution?.stderr || ""}`)
-      : e("div", { className: "coding-output empty-line" }, "실행 로그는 숨김 상태입니다."),
-    safeSummary
-      ? e("div", { className: "coding-summary markdown-panel" },
-        e(MarkdownBubbleText, { text: safeSummary })
-      )
-      : null
+        onClick: actions.closeOverlay
+      }, "닫기")
+    }))
   );
 }
 
@@ -264,23 +923,25 @@ export function renderChatMultiResultPanel(props) {
   }
 
   const snapshot = buildChatMultiRenderSnapshot(result);
-  const sectionNodes = snapshot.sections.map((section) => e(
-    "div",
-    { key: `chat-multi-${section.provider}`, className: "coding-preview" },
-    e("div", { className: "coding-preview-head" }, section.heading),
-    e("div", { className: "coding-preview-content markdown-panel" },
-      e(MarkdownBubbleText, { text: section.body })
-    )
-  ));
-
   return e(
-    "section",
-    { className: "coding-result support-card" },
-    e("div", { className: "coding-result-head" },
-      e("strong", null, "다중 LLM 상세 결과"),
-      e("span", null, result.updatedUtc || "-")
-    ),
-    ...sectionNodes
+    "div",
+    { className: "chat-multi-result-stack" },
+    e(ResultMessageCarousel, {
+      key: `chat-multi-carousel-${currentConversationId}`,
+      e,
+      MarkdownBubbleText,
+      title: "다중 LLM 상세 결과",
+      subtitle: result.updatedUtc || "-",
+      emptyText: "표시할 다중 LLM 결과가 없습니다.",
+      entries: snapshot.entries,
+      avatarLabel: "AI",
+      avatarClassName: "assistant"
+    }),
+    renderChatMultiSummaryCard({
+      e,
+      MarkdownBubbleText,
+      summarySections: snapshot.summarySections
+    })
   );
 }
 
@@ -289,6 +950,7 @@ export function renderThreadSupportStack(props) {
     e,
     renderChatMultiResult,
     renderCodingResult,
+    renderSafeRefactorPanel,
     memoryPickerOpen,
     renderMemoryPicker
   } = props;
@@ -302,6 +964,11 @@ export function renderThreadSupportStack(props) {
   const codingResult = renderCodingResult();
   if (codingResult) {
     slots.push(e("div", { key: "support-coding", className: "thread-support-slot" }, codingResult));
+  }
+
+  const safeRefactorPanel = renderSafeRefactorPanel();
+  if (safeRefactorPanel) {
+    slots.push(e("div", { key: "support-refactor", className: "thread-support-slot" }, safeRefactorPanel));
   }
 
   if (memoryPickerOpen) {
@@ -324,7 +991,8 @@ export function renderResponsiveWorkspaceSupportPane(props) {
     buildThreadPreviewMeta,
     renderMemoryPicker,
     renderChatMultiResult,
-    renderCodingResult
+    renderCodingResult,
+    renderSafeRefactorPanel
   } = props;
 
   const blocks = [];
@@ -342,6 +1010,11 @@ export function renderResponsiveWorkspaceSupportPane(props) {
   const codingResult = renderCodingResult();
   if (codingResult) {
     blocks.push(e("div", { key: "support-coding", className: "thread-support-slot" }, codingResult));
+  }
+
+  const safeRefactorPanel = renderSafeRefactorPanel();
+  if (safeRefactorPanel) {
+    blocks.push(e("div", { key: "support-refactor", className: "thread-support-slot" }, safeRefactorPanel));
   }
 
   if (blocks.length === 0) {

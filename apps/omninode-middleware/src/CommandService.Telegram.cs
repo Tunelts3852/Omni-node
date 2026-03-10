@@ -40,11 +40,16 @@ public sealed partial class CommandService
 
         if (tokens.Length >= 2 && tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
-            return Task.FromResult<string?>(
-                "usage: /talk [low|high] 또는 /code [low|high]\n"
-                + "- /talk: 대화 탭 권장 환경(오케스트레이션)\n"
-                + "- /code: 코딩 탭 권장 환경(오케스트레이션)"
-            );
+            return Task.FromResult<string?>("""
+                [빠른 프로필]
+                - /talk [low|high] : 대화 위주로 맞춤
+                - /code [low|high] : 코딩 위주로 맞춤
+
+                예시:
+                - /talk low
+                - /code high
+                - 그냥 "코딩용으로 바꿔" 라고 말해도 됩니다.
+                """);
         }
 
         var requestedThinking = tokens.Length >= 2 ? NormalizeThinkingLevel(tokens[1], "auto") : "auto";
@@ -54,13 +59,13 @@ public sealed partial class CommandService
             {
                 ApplyTelegramTalkDefaults(requestedThinking);
                 return Task.FromResult<string?>(
-                    $"ok: profile=talk mode={_telegramLlmPreferences.Mode} thinking={_telegramLlmPreferences.TalkThinkingLevel} orchestration={_telegramLlmPreferences.OrchestrationProvider}:{_telegramLlmPreferences.OrchestrationModel}"
+                    $"텔레그램 프로필을 대화용으로 바꿨습니다. 모드={FormatModeDisplayName(_telegramLlmPreferences.Mode)}, thinking={_telegramLlmPreferences.TalkThinkingLevel}"
                 );
             }
 
             ApplyTelegramCodeDefaults(requestedThinking);
             return Task.FromResult<string?>(
-                $"ok: profile=code mode={_telegramLlmPreferences.Mode} thinking={_telegramLlmPreferences.CodeThinkingLevel} orchestration={_telegramLlmPreferences.OrchestrationProvider}:{_telegramLlmPreferences.OrchestrationModel}"
+                $"텔레그램 프로필을 코딩용으로 바꿨습니다. 모드={FormatModeDisplayName(_telegramLlmPreferences.Mode)}, thinking={_telegramLlmPreferences.CodeThinkingLevel}"
             );
         }
     }
@@ -76,8 +81,10 @@ public sealed partial class CommandService
         _telegramLlmPreferences.OrchestrationProvider = "gemini";
         _telegramLlmPreferences.OrchestrationModel = _config.GeminiModel;
         _telegramLlmPreferences.MultiGroqModel = fastModel;
+        _telegramLlmPreferences.MultiGeminiModel = _config.GeminiModel;
         _telegramLlmPreferences.MultiCopilotModel = DefaultCopilotModel;
         _telegramLlmPreferences.MultiCerebrasModel = _config.CerebrasModel;
+        _telegramLlmPreferences.MultiCodexModel = _config.CodexModel;
         _telegramLlmPreferences.MultiSummaryProvider = "gemini";
         _telegramLlmPreferences.TalkThinkingLevel = NormalizeThinkingLevel(requestedThinking, "low");
     }
@@ -93,8 +100,10 @@ public sealed partial class CommandService
         _telegramLlmPreferences.OrchestrationProvider = "gemini";
         _telegramLlmPreferences.OrchestrationModel = _config.GeminiModel;
         _telegramLlmPreferences.MultiGroqModel = fastModel;
+        _telegramLlmPreferences.MultiGeminiModel = _config.GeminiModel;
         _telegramLlmPreferences.MultiCopilotModel = DefaultCopilotModel;
         _telegramLlmPreferences.MultiCerebrasModel = _config.CerebrasModel;
+        _telegramLlmPreferences.MultiCodexModel = _config.CodexModel;
         _telegramLlmPreferences.MultiSummaryProvider = "gemini";
         _telegramLlmPreferences.CodeThinkingLevel = NormalizeThinkingLevel(requestedThinking, "high");
     }
@@ -120,25 +129,7 @@ public sealed partial class CommandService
         var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
-            return """
-                   사용법
-                   /talk [low|high]
-                   /code [low|high]
-                   /model <groq|gemini|copilot|cerebras>
-                   /llm status
-                   /llm models [groq|gemini|copilot|cerebras|all]
-                   /llm usage
-                   /llm set <groq|copilot> <model-id>
-                   /llm mode <single|orchestration|multi>
-                   /llm single provider <groq|gemini|copilot|cerebras>
-                   /llm single model <model-id>
-                   /llm orchestration provider <auto|groq|gemini|copilot|cerebras>
-                   /llm orchestration model <model-id>
-                   /llm multi groq <model-id>
-                   /llm multi copilot <model-id>
-                   /llm multi cerebras <model-id>
-                   /llm multi summary <auto|groq|gemini|copilot|cerebras>
-                   """;
+            return BuildUnifiedLlmHelpText("telegram");
         }
 
         if (tokens[1].Equals("status", StringComparison.OrdinalIgnoreCase))
@@ -165,23 +156,16 @@ public sealed partial class CommandService
             var pendingText = pendingTools.Length == 0 ? "(none)" : string.Join(", ", pendingTools);
 
             return $"""
-                    [Telegram LLM 설정]
-                    profile={snapshot.Profile}
-                    mode={snapshot.Mode}
-                    single={snapshot.SingleProvider}:{snapshot.SingleModel}
-                    single.groq_auto_upgrade={(snapshot.AutoGroqComplexUpgrade ? "on" : "off")}
-                    orchestration={snapshot.OrchestrationProvider}:{snapshot.OrchestrationModel}
-                    multi.groq={snapshot.MultiGroqModel}
-                    multi.copilot={snapshot.MultiCopilotModel}
-                    multi.cerebras={snapshot.MultiCerebrasModel}
-                    multi.summary={snapshot.MultiSummaryProvider}
-                    thinking.talk={snapshot.TalkThinkingLevel}
-                    thinking.code={snapshot.CodeThinkingLevel}
-                    qwen_upgrade_daily={quota.Used}/{quota.Cap} (day={quota.DayKey})
-                    copilot={copilotStatus.Mode} / {(copilotStatus.Authenticated ? "authenticated" : "unauthenticated")}
-                    tools.total={toolSnapshot.Count}
-                    tools.enabled={enabledText}
-                    tools.pending={pendingText}
+                    {BuildChannelModelStatus("telegram")}
+
+                    [부가 상태]
+                    프로필: {snapshot.Profile}
+                    thinking.talk: {snapshot.TalkThinkingLevel}
+                    thinking.code: {snapshot.CodeThinkingLevel}
+                    qwen 업그레이드 사용량: {quota.Used}/{quota.Cap} (day={quota.DayKey})
+                    Copilot 상태: {copilotStatus.Mode} / {(copilotStatus.Authenticated ? "authenticated" : "unauthenticated")}
+                    사용 가능 도구: {enabledText}
+                    대기 중 도구: {pendingText}
                     """;
         }
 
@@ -189,21 +173,9 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 3)
             {
-                return "usage: /llm mode <single|orchestration|multi>";
+                return "사용법: /llm mode <single|orchestration|multi>";
             }
-
-            var mode = tokens[2].ToLowerInvariant();
-            if (mode != "single" && mode != "orchestration" && mode != "multi")
-            {
-                return "invalid mode. use single|orchestration|multi";
-            }
-
-            lock (_telegramLlmLock)
-            {
-                _telegramLlmPreferences.Mode = mode;
-            }
-
-            return $"ok: telegram llm mode={mode}";
+            return SetChannelMode("telegram", tokens[2].ToLowerInvariant());
         }
 
         if (tokens[1].Equals("models", StringComparison.OrdinalIgnoreCase))
@@ -223,7 +195,7 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 4)
             {
-                return "usage: /llm set <groq|copilot> <model-id>";
+                return "사용법: /llm set <groq|copilot|codex> <model-id>";
             }
 
             var provider = tokens[2].Trim().ToLowerInvariant();
@@ -238,48 +210,31 @@ public sealed partial class CommandService
                 return await SetCopilotModelForTelegramAsync(modelId, cancellationToken);
             }
 
-            return "usage: /llm set <groq|copilot> <model-id>";
+            if (provider == "codex")
+            {
+                var providerSet = SetChannelProvider("telegram", "single", "codex");
+                if (providerSet.StartsWith("지원", StringComparison.OrdinalIgnoreCase)
+                    || providerSet.StartsWith("invalid", StringComparison.OrdinalIgnoreCase))
+                {
+                    return providerSet;
+                }
+
+                return SetChannelModel("telegram", "single", modelId);
+            }
+
+            return "사용법: /llm set <groq|copilot|codex> <model-id>";
         }
 
         if (tokens[1].Equals("single", StringComparison.OrdinalIgnoreCase))
         {
             if (tokens.Length < 4)
             {
-                return "usage: /llm single provider <groq|gemini|copilot|cerebras> | /llm single model <model-id>";
+                return "사용법: /llm single provider <groq|gemini|copilot|cerebras|codex> | /llm single model <model-id>";
             }
 
             if (tokens[2].Equals("provider", StringComparison.OrdinalIgnoreCase))
             {
-                var requested = tokens[3].Trim().ToLowerInvariant();
-                if (requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
-                {
-                    return "invalid provider. use groq|gemini|copilot|cerebras";
-                }
-
-                var provider = NormalizeProvider(requested, allowAuto: false);
-                lock (_telegramLlmLock)
-                {
-                    _telegramLlmPreferences.SingleProvider = provider;
-                    if (provider == "groq")
-                    {
-                        _telegramLlmPreferences.SingleModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
-                        _telegramLlmPreferences.AutoGroqComplexUpgrade = true;
-                    }
-                    else if (provider == "copilot")
-                    {
-                        _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
-                        _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
-                    }
-                    else
-                    {
-                        _telegramLlmPreferences.SingleModel = provider == "cerebras"
-                            ? _config.CerebrasModel
-                            : _config.GeminiModel;
-                        _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
-                    }
-                }
-
-                return $"ok: telegram single provider={provider}";
+                return SetChannelProvider("telegram", "single", tokens[3].Trim().ToLowerInvariant());
             }
 
             if (tokens[2].Equals("model", StringComparison.OrdinalIgnoreCase))
@@ -290,43 +245,22 @@ public sealed partial class CommandService
                     return "usage: /llm single model <model-id>";
                 }
 
-                lock (_telegramLlmLock)
-                {
-                    _telegramLlmPreferences.SingleModel = model;
-                    if (_telegramLlmPreferences.SingleProvider == "groq")
-                    {
-                        _telegramLlmPreferences.AutoGroqComplexUpgrade = model.Equals(DefaultGroqFastModel, StringComparison.OrdinalIgnoreCase);
-                    }
-                }
-
-                return $"ok: telegram single model={model}";
+                return SetChannelModel("telegram", "single", model);
             }
 
-            return "usage: /llm single provider <groq|gemini|copilot|cerebras> | /llm single model <model-id>";
+            return "사용법: /llm single provider <groq|gemini|copilot|cerebras|codex> | /llm single model <model-id>";
         }
 
         if (tokens[1].Equals("orchestration", StringComparison.OrdinalIgnoreCase))
         {
             if (tokens.Length < 4)
             {
-                return "usage: /llm orchestration provider <auto|groq|gemini|copilot|cerebras> | /llm orchestration model <model-id>";
+                return "사용법: /llm orchestration provider <auto|groq|gemini|copilot|cerebras|codex> | /llm orchestration model <model-id>";
             }
 
             if (tokens[2].Equals("provider", StringComparison.OrdinalIgnoreCase))
             {
-                var requested = tokens[3].Trim().ToLowerInvariant();
-                if (requested != "auto" && requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
-                {
-                    return "invalid provider. use auto|groq|gemini|copilot|cerebras";
-                }
-
-                var provider = NormalizeProvider(requested, allowAuto: true);
-                lock (_telegramLlmLock)
-                {
-                    _telegramLlmPreferences.OrchestrationProvider = provider;
-                }
-
-                return $"ok: telegram orchestration provider={provider}";
+                return SetChannelProvider("telegram", "orchestration", tokens[3].Trim().ToLowerInvariant());
             }
 
             if (tokens[2].Equals("model", StringComparison.OrdinalIgnoreCase))
@@ -337,68 +271,63 @@ public sealed partial class CommandService
                     return "usage: /llm orchestration model <model-id>";
                 }
 
-                lock (_telegramLlmLock)
-                {
-                    _telegramLlmPreferences.OrchestrationModel = model;
-                }
-
-                return $"ok: telegram orchestration model={model}";
+                return SetChannelModel("telegram", "orchestration", model);
             }
 
-            return "usage: /llm orchestration provider <auto|groq|gemini|copilot|cerebras> | /llm orchestration model <model-id>";
+            return "사용법: /llm orchestration provider <auto|groq|gemini|copilot|cerebras|codex> | /llm orchestration model <model-id>";
         }
 
         if (tokens[1].Equals("multi", StringComparison.OrdinalIgnoreCase))
         {
             if (tokens.Length < 4)
             {
-                return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+                return "사용법: /llm multi <groq|gemini|copilot|cerebras|codex> <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras|codex>";
             }
 
             var key = tokens[2].ToLowerInvariant();
             var value = string.Join(' ', tokens.Skip(3)).Trim();
             if (string.IsNullOrWhiteSpace(value))
             {
-                return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+                return "사용법: /llm multi <groq|gemini|copilot|cerebras|codex> <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras|codex>";
             }
 
             lock (_telegramLlmLock)
             {
                 if (key == "groq")
                 {
-                    _telegramLlmPreferences.MultiGroqModel = value;
-                    return $"ok: telegram multi groq={value}";
+                    return SetChannelModel("telegram", "multi.groq", value);
+                }
+
+                if (key == "gemini")
+                {
+                    return SetChannelModel("telegram", "multi.gemini", value);
                 }
 
                 if (key == "copilot")
                 {
-                    _telegramLlmPreferences.MultiCopilotModel = value;
-                    return $"ok: telegram multi copilot={value}";
+                    return SetChannelModel("telegram", "multi.copilot", value);
                 }
 
                 if (key == "cerebras")
                 {
-                    _telegramLlmPreferences.MultiCerebrasModel = value;
-                    return $"ok: telegram multi cerebras={value}";
+                    return SetChannelModel("telegram", "multi.cerebras", value);
+                }
+
+                if (key == "codex")
+                {
+                    return SetChannelModel("telegram", "multi.codex", value);
                 }
 
                 if (key == "summary")
                 {
-                    var requested = value.Trim().ToLowerInvariant();
-                    if (requested != "auto" && requested != "groq" && requested != "gemini" && requested != "copilot" && requested != "cerebras")
-                    {
-                        return "invalid summary provider. use auto|groq|gemini|copilot|cerebras";
-                    }
-
-                    _telegramLlmPreferences.MultiSummaryProvider = NormalizeProvider(requested, allowAuto: true);
-                    return $"ok: telegram multi summary={_telegramLlmPreferences.MultiSummaryProvider}";
+                    return SetChannelProvider("telegram", "summary", value.Trim().ToLowerInvariant());
                 }
             }
 
-            return "usage: /llm multi groq <model-id> | /llm multi copilot <model-id> | /llm multi cerebras <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras>";
+            return "사용법: /llm multi <groq|gemini|copilot|cerebras|codex> <model-id> | /llm multi summary <auto|groq|gemini|copilot|cerebras|codex>";
         }
 
-        return "unknown /llm command. use /llm help";
+        return "알 수 없는 /llm 명령입니다. /llm help 또는 자연어 요청을 사용하세요.";
     }
 
     private Task<string?> TryHandleTelegramQuickModelCommandAsync(string text, CancellationToken cancellationToken)
@@ -412,7 +341,7 @@ public sealed partial class CommandService
         var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         if (tokens.Length < 2)
         {
-            return Task.FromResult<string?>("usage: /model <groq|gemini|copilot|cerebras>");
+            return Task.FromResult<string?>("사용법: /model <groq|gemini|copilot|cerebras|codex>");
         }
 
         var key = tokens[1].Trim().ToLowerInvariant();
@@ -425,7 +354,7 @@ public sealed partial class CommandService
                 _telegramLlmPreferences.SingleProvider = "groq";
                 _telegramLlmPreferences.SingleModel = string.IsNullOrWhiteSpace(_config.GroqModel) ? DefaultGroqPrimaryModel : _config.GroqModel;
                 _telegramLlmPreferences.AutoGroqComplexUpgrade = true;
-                return Task.FromResult<string?>($"ok: single=groq:{_telegramLlmPreferences.SingleModel}");
+                return Task.FromResult<string?>($"단일 제공자를 Groq로 바꿨습니다. 현재 모델: {_telegramLlmPreferences.SingleModel}");
             }
 
             if (key == "gemini")
@@ -433,7 +362,7 @@ public sealed partial class CommandService
                 _telegramLlmPreferences.SingleProvider = "gemini";
                 _telegramLlmPreferences.SingleModel = _config.GeminiModel;
                 _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
-                return Task.FromResult<string?>($"ok: single=gemini:{_telegramLlmPreferences.SingleModel}");
+                return Task.FromResult<string?>($"단일 제공자를 Gemini로 바꿨습니다. 현재 모델: {_telegramLlmPreferences.SingleModel}");
             }
 
             if (key == "copilot")
@@ -441,7 +370,7 @@ public sealed partial class CommandService
                 _telegramLlmPreferences.SingleProvider = "copilot";
                 _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
                 _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
-                return Task.FromResult<string?>($"ok: single=copilot:{_telegramLlmPreferences.SingleModel}");
+                return Task.FromResult<string?>($"단일 제공자를 Copilot로 바꿨습니다. 현재 모델: {_telegramLlmPreferences.SingleModel}");
             }
 
             if (key == "cerebras")
@@ -449,14 +378,28 @@ public sealed partial class CommandService
                 _telegramLlmPreferences.SingleProvider = "cerebras";
                 _telegramLlmPreferences.SingleModel = _config.CerebrasModel;
                 _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
-                return Task.FromResult<string?>($"ok: single=cerebras:{_telegramLlmPreferences.SingleModel}");
+                return Task.FromResult<string?>($"단일 제공자를 Cerebras로 바꿨습니다. 현재 모델: {_telegramLlmPreferences.SingleModel}");
+            }
+
+            if (key == "codex")
+            {
+                _telegramLlmPreferences.SingleProvider = "codex";
+                _telegramLlmPreferences.SingleModel = _config.CodexModel;
+                _telegramLlmPreferences.AutoGroqComplexUpgrade = false;
+                return Task.FromResult<string?>($"단일 제공자를 Codex로 바꿨습니다. 현재 모델: {_telegramLlmPreferences.SingleModel}");
             }
         }
 
-        return Task.FromResult<string?>("usage: /model <groq|gemini|copilot|cerebras>");
+        return Task.FromResult<string?>("사용법: /model <groq|gemini|copilot|cerebras|codex>");
     }
 
-    private async Task<string?> TryHandleTelegramNaturalControlCommandAsync(string text, CancellationToken cancellationToken)
+    private async Task<string?> TryHandleTelegramNaturalControlCommandAsync(
+        string text,
+        IReadOnlyList<InputAttachment>? attachments,
+        IReadOnlyList<string>? webUrls,
+        bool webSearchEnabled,
+        CancellationToken cancellationToken
+    )
     {
         var normalized = (text ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(normalized))
@@ -468,7 +411,13 @@ public sealed partial class CommandService
         var pseudoCommand = TryBuildTelegramNaturalPseudoCommand(normalized, lowered);
         if (!string.IsNullOrWhiteSpace(pseudoCommand))
         {
-            var pseudoResult = await ExecuteTelegramPseudoCommandAsync(pseudoCommand, cancellationToken);
+            var pseudoResult = await ExecuteTelegramPseudoCommandAsync(
+                pseudoCommand,
+                attachments,
+                webUrls,
+                webSearchEnabled,
+                cancellationToken
+            );
             if (!string.IsNullOrWhiteSpace(pseudoResult))
             {
                 return pseudoResult;
@@ -479,11 +428,15 @@ public sealed partial class CommandService
         {
             var target = ContainsAny(lowered, "groq", "그록")
                 ? "groq"
+                : ContainsAny(lowered, "gemini", "제미니")
+                    ? "gemini"
                 : ContainsAny(lowered, "copilot", "코파일럿")
                     ? "copilot"
                     : ContainsAny(lowered, "cerebras", "세레브라스", "세레브라")
                         ? "cerebras"
-                    : "all";
+                        : ContainsAny(lowered, "codex", "코덱스")
+                            ? "codex"
+                        : "all";
             return await BuildTelegramModelsReportAsync(target, cancellationToken);
         }
 
@@ -496,6 +449,31 @@ public sealed partial class CommandService
         if (helpTopic != null)
         {
             return BuildTelegramHelpText(helpTopic);
+        }
+
+        var setProviderModel = Regex.Match(normalized, @"(?i)(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스)\s*모델\s*([a-zA-Z0-9._/\-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)");
+        if (setProviderModel.Success)
+        {
+            var provider = ExtractProviderAliasFromNaturalText(setProviderModel.Groups[1].Value, allowAuto: false);
+            var modelId = setProviderModel.Groups[2].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(provider) && !string.IsNullOrWhiteSpace(modelId))
+            {
+                if (provider == "groq")
+                {
+                    return await SetGroqModelForTelegramAsync(modelId, cancellationToken);
+                }
+
+                if (provider == "copilot")
+                {
+                    return await SetCopilotModelForTelegramAsync(modelId, cancellationToken);
+                }
+
+                var providerMessage = SetChannelProvider("telegram", "single", provider);
+                var modelMessage = SetChannelModel("telegram", "single", modelId);
+                return providerMessage.Contains("실패", StringComparison.OrdinalIgnoreCase)
+                    ? providerMessage
+                    : modelMessage;
+            }
         }
 
         var setGroq = Regex.Match(normalized, @"(?i)groq\s*모델\s*([a-zA-Z0-9._/\-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)");
@@ -513,7 +491,13 @@ public sealed partial class CommandService
         return null;
     }
 
-    private async Task<string?> ExecuteTelegramPseudoCommandAsync(string pseudoCommand, CancellationToken cancellationToken)
+    private async Task<string?> ExecuteTelegramPseudoCommandAsync(
+        string pseudoCommand,
+        IReadOnlyList<InputAttachment>? attachments,
+        IReadOnlyList<string>? webUrls,
+        bool webSearchEnabled,
+        CancellationToken cancellationToken
+    )
     {
         var command = (pseudoCommand ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(command))
@@ -541,9 +525,40 @@ public sealed partial class CommandService
             return await TryHandleTelegramLlmControlCommandAsync(command, cancellationToken);
         }
 
+        if (command.StartsWith("/coding", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramCodingCommandAsync(command, attachments, webUrls, webSearchEnabled, cancellationToken);
+        }
+
+        if (command.StartsWith("/refactor", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramRefactorCommandAsync(command, cancellationToken);
+        }
+
         if (command.StartsWith("/memory", StringComparison.OrdinalIgnoreCase))
         {
             return await TryHandleTelegramMemoryCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/doctor", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramDoctorCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/plan", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramPlanCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/task", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramTaskCommandAsync(command, cancellationToken);
+        }
+
+        if (command.StartsWith("/notebook", StringComparison.OrdinalIgnoreCase)
+            || command.StartsWith("/handoff", StringComparison.OrdinalIgnoreCase))
+        {
+            return await TryHandleTelegramNotebookCommandAsync(command, cancellationToken);
         }
 
         if (command.StartsWith("/routine", StringComparison.OrdinalIgnoreCase)
@@ -585,7 +600,7 @@ public sealed partial class CommandService
             return null;
         }
 
-        var commandLike = Regex.Match(normalized, @"(?i)^(help|start|talk|code|model|llm|memory|routine|routines|metrics|kill)\b(.*)$");
+        var commandLike = Regex.Match(normalized, @"(?i)^(help|start|talk|code|model|llm|coding|refactor|memory|doctor|plan|task|notebook|handoff|routine|routines|metrics|kill)\b(.*)$");
         if (commandLike.Success)
         {
             var head = commandLike.Groups[1].Value.ToLowerInvariant();
@@ -620,9 +635,237 @@ public sealed partial class CommandService
             return "/llm mode multi";
         }
 
+        if (ContainsAny(lowered, "최근 코딩 결과", "마지막 코딩 결과", "코딩 결과 보여", "coding result"))
+        {
+            return "/coding last";
+        }
+
+        if (ContainsAny(lowered, "코딩 상태", "코딩 설정", "coding status"))
+        {
+            return "/coding status";
+        }
+
+        if (ContainsAny(lowered, "코딩 파일 목록", "최근 코딩 파일", "coding files"))
+        {
+            return "/coding files";
+        }
+
+        var codingFilePreview = Regex.Match(normalized, @"(?is)(?:코딩 파일|coding file)\s*(?:보여|열어|preview)?\s*[:：]?\s*(.+)$");
+        if (codingFilePreview.Success)
+        {
+            var query = codingFilePreview.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(query))
+            {
+                return $"/coding file {query}";
+            }
+        }
+
+        var codingSingleRun = Regex.Match(normalized, @"(?is)(?:단일|single)\s*코딩(?:으로)?\s*[:：]?\s*(.+)$");
+        if (codingSingleRun.Success)
+        {
+            var request = codingSingleRun.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(request))
+            {
+                return $"/coding single run {request}";
+            }
+        }
+
+        var codingOrchRun = Regex.Match(normalized, @"(?is)(?:오케스트레이션|orchestration)\s*코딩(?:으로)?\s*[:：]?\s*(.*)$");
+        if (codingOrchRun.Success)
+        {
+            var request = codingOrchRun.Groups[1].Value.Trim();
+            return string.IsNullOrWhiteSpace(request)
+                ? "/coding orchestration run"
+                : $"/coding orchestration run {request}";
+        }
+
+        var codingMultiRun = Regex.Match(normalized, @"(?is)(?:다중|multi)\s*코딩(?:으로)?\s*[:：]?\s*(.+)$");
+        if (codingMultiRun.Success)
+        {
+            var request = codingMultiRun.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(request))
+            {
+                return $"/coding multi run {request}";
+            }
+        }
+
+        var codingRun = Regex.Match(normalized, @"(?is)(?:코딩|coding)\s*(?:실행|run)\s*[:：]?\s*(.*)$");
+        if (codingRun.Success)
+        {
+            var request = codingRun.Groups[1].Value.Trim();
+            return string.IsNullOrWhiteSpace(request)
+                ? "/coding run"
+                : $"/coding run {request}";
+        }
+
+        var codingLanguage = Regex.Match(normalized, @"(?is)(?:(단일|single|오케스트레이션|orchestration|다중|multi)\s*)?(?:코딩|coding)\s*(?:언어|language)\s*(?:를)?\s*([a-zA-Z0-9#+._-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)");
+        if (codingLanguage.Success)
+        {
+            var mode = codingLanguage.Groups[1].Value.Trim().ToLowerInvariant() switch
+            {
+                "단일" => "single",
+                "single" => "single",
+                "오케스트레이션" => "orchestration",
+                "orchestration" => "orchestration",
+                "다중" => "multi",
+                "multi" => "multi",
+                _ => string.Empty
+            };
+            var language = codingLanguage.Groups[2].Value.Trim();
+            return string.IsNullOrWhiteSpace(mode)
+                ? $"/coding language {language}"
+                : $"/coding language {mode} {language}";
+        }
+
+        var codingMode = Regex.Match(normalized, @"(?is)(?:코딩|coding)\s*모드.*?(단일|single|오케스트레이션|orchestration|다중|multi).*(?:바꿔|변경|설정)");
+        if (codingMode.Success)
+        {
+            var mode = codingMode.Groups[1].Value.Trim().ToLowerInvariant() switch
+            {
+                "단일" => "single",
+                "single" => "single",
+                "오케스트레이션" => "orchestration",
+                "orchestration" => "orchestration",
+                "다중" => "multi",
+                "multi" => "multi",
+                _ => string.Empty
+            };
+            if (!string.IsNullOrWhiteSpace(mode))
+            {
+                return $"/coding mode {mode}";
+            }
+        }
+
+        var codingProvider = Regex.Match(
+            normalized,
+            @"(?is)(단일|single|오케스트레이션|orchestration|다중|multi)\s*코딩\s*(?:요약\s*)?(?:제공자|provider)\s*(?:를|을)?\s*(auto|자동|groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)"
+        );
+        if (codingProvider.Success)
+        {
+            var mode = codingProvider.Groups[1].Value.Trim().ToLowerInvariant() switch
+            {
+                "단일" => "single",
+                "single" => "single",
+                "오케스트레이션" => "orchestration",
+                "orchestration" => "orchestration",
+                "다중" => "multi",
+                "multi" => "multi",
+                _ => string.Empty
+            };
+            var provider = ExtractProviderAliasFromNaturalText(codingProvider.Groups[2].Value, allowAuto: true);
+            if (!string.IsNullOrWhiteSpace(mode) && !string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/coding {mode} provider {provider}";
+            }
+        }
+
+        var codingModel = Regex.Match(
+            normalized,
+            @"(?is)(단일|single|오케스트레이션|orchestration|다중|multi)\s*코딩\s*(?:모델|model)\s*(?:을|를)?\s*([a-zA-Z0-9._/\-]+)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)"
+        );
+        if (codingModel.Success)
+        {
+            var mode = codingModel.Groups[1].Value.Trim().ToLowerInvariant() switch
+            {
+                "단일" => "single",
+                "single" => "single",
+                "오케스트레이션" => "orchestration",
+                "orchestration" => "orchestration",
+                "다중" => "multi",
+                "multi" => "multi",
+                _ => string.Empty
+            };
+            var modelId = codingModel.Groups[2].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(mode) && !string.IsNullOrWhiteSpace(modelId))
+            {
+                return $"/coding {mode} model {modelId}";
+            }
+        }
+
+        var codingWorker = Regex.Match(
+            normalized,
+            @"(?is)(오케스트레이션|orchestration|다중|multi)\s*코딩\s*(?:워커|worker)\s*(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스)\s*(?:모델|model)?\s*(?:을|를)?\s*([a-zA-Z0-9._/\-]+|none|없음|선택안함|선택 안함)\s*(?:로|으로)?\s*(?:바꿔|변경|설정)"
+        );
+        if (codingWorker.Success)
+        {
+            var mode = codingWorker.Groups[1].Value.Trim().ToLowerInvariant() switch
+            {
+                "오케스트레이션" => "orchestration",
+                "orchestration" => "orchestration",
+                "다중" => "multi",
+                "multi" => "multi",
+                _ => string.Empty
+            };
+            var provider = ExtractProviderAliasFromNaturalText(codingWorker.Groups[2].Value, allowAuto: false);
+            var workerModel = codingWorker.Groups[3].Value.Trim();
+            if (workerModel.Equals("없음", StringComparison.OrdinalIgnoreCase)
+                || workerModel.Equals("선택안함", StringComparison.OrdinalIgnoreCase)
+                || workerModel.Equals("선택 안함", StringComparison.OrdinalIgnoreCase))
+            {
+                workerModel = "none";
+            }
+
+            if (!string.IsNullOrWhiteSpace(mode)
+                && !string.IsNullOrWhiteSpace(provider)
+                && !string.IsNullOrWhiteSpace(workerModel))
+            {
+                return $"/coding {mode} worker {provider} {workerModel}";
+            }
+        }
+
+        if (ContainsAny(lowered, "safe refactor 상태", "refactor 상태", "리팩터 상태"))
+        {
+            return "/refactor status";
+        }
+
+        if (ContainsAny(lowered, "safe refactor 적용", "refactor 적용", "리팩터 적용"))
+        {
+            return "/refactor apply";
+        }
+
+        var refactorRead = Regex.Match(normalized, @"(?is)(?:safe refactor|refactor|리팩터)\s*(?:읽기|read)\s*([^\s]+)(?:\s+([0-9]+))?(?:\s+([0-9]+))?$");
+        if (refactorRead.Success)
+        {
+            var path = refactorRead.Groups[1].Value.Trim();
+            var start = refactorRead.Groups[2].Value.Trim();
+            var end = refactorRead.Groups[3].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                var tail = string.IsNullOrWhiteSpace(start)
+                    ? path
+                    : string.IsNullOrWhiteSpace(end)
+                        ? $"{path} {start}"
+                        : $"{path} {start} {end}";
+                return $"/refactor read {tail}";
+            }
+        }
+
         if (ContainsAny(lowered, "메모리 초기화", "메모리 비우기", "메모리 삭제", "메모리 지워"))
         {
             return "/memory clear";
+        }
+
+        if (ContainsAny(lowered, "메모리 노트", "메모리 저장", "메모리 생성", "메모리 만들어"))
+        {
+            return ContainsAny(lowered, "compact", "압축", "짧게")
+                ? "/memory create compact"
+                : "/memory create";
+        }
+
+        if (ContainsAny(lowered, "doctor 실행", "doctor 결과", "doctor 보여", "환경 진단", "상태 점검", "시스템 점검", "진단 실행", "최근 진단", "마지막 진단"))
+        {
+            var parts = new List<string> { "/doctor" };
+            if (ContainsAny(lowered, "last", "latest", "최근", "마지막"))
+            {
+                parts.Add("last");
+            }
+
+            if (ContainsAny(lowered, "json"))
+            {
+                parts.Add("json");
+            }
+
+            return string.Join(' ', parts);
         }
 
         if (ContainsAny(lowered, "단일 제공자", "single provider", "single 제공자", "단일 provider"))
@@ -652,7 +895,7 @@ public sealed partial class CommandService
             }
         }
 
-        var singleProviderSwitch = Regex.Match(lowered, @"(?:단일|single).*(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라).*(바꿔|변경|설정)");
+        var singleProviderSwitch = Regex.Match(lowered, @"(?:단일|single).*(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스).*(바꿔|변경|설정)");
         if (singleProviderSwitch.Success)
         {
             var provider = ExtractProviderAliasFromNaturalText(singleProviderSwitch.Groups[1].Value, allowAuto: false);
@@ -662,13 +905,24 @@ public sealed partial class CommandService
             }
         }
 
-        var orchestrationProviderSwitch = Regex.Match(lowered, @"(?:오케스트레이션|orchestration|집계).*(auto|자동|groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라).*(바꿔|변경|설정)");
+        var orchestrationProviderSwitch = Regex.Match(lowered, @"(?:오케스트레이션|orchestration|집계).*(auto|자동|groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스).*(바꿔|변경|설정)");
         if (orchestrationProviderSwitch.Success)
         {
             var provider = ExtractProviderAliasFromNaturalText(orchestrationProviderSwitch.Groups[1].Value, allowAuto: true);
             if (!string.IsNullOrWhiteSpace(provider))
             {
                 return $"/llm orchestration provider {provider}";
+            }
+        }
+
+        var quickProviderSwitch = Regex.Match(lowered, @"(groq|그록|gemini|제미니|copilot|코파일럿|cerebras|세레브라스|세레브라|codex|코덱스).*(바꿔|변경|설정)");
+        if (quickProviderSwitch.Success
+            && !ContainsAny(lowered, "단일", "single", "오케스트레이션", "요약", "summary", "다중", "multi"))
+        {
+            var provider = ExtractProviderAliasFromNaturalText(quickProviderSwitch.Groups[1].Value, allowAuto: false);
+            if (!string.IsNullOrWhiteSpace(provider))
+            {
+                return $"/model {provider}";
             }
         }
 
@@ -690,6 +944,12 @@ public sealed partial class CommandService
             return $"/llm multi groq {multiGroqModel.Groups[1].Value}";
         }
 
+        var multiGeminiModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*(?:gemini|제미니)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (multiGeminiModel.Success)
+        {
+            return $"/llm multi gemini {multiGeminiModel.Groups[1].Value}";
+        }
+
         var multiCopilotModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*(?:copilot|코파일럿)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
         if (multiCopilotModel.Success)
         {
@@ -702,9 +962,134 @@ public sealed partial class CommandService
             return $"/llm multi cerebras {multiCerebrasModel.Groups[1].Value}";
         }
 
+        var multiCodexModel = Regex.Match(normalized, @"(?i)(?:다중|multi)\s*(?:codex|코덱스)\s*(?:모델|model)\s*([a-zA-Z0-9._/\-]+)");
+        if (multiCodexModel.Success)
+        {
+            return $"/llm multi codex {multiCodexModel.Groups[1].Value}";
+        }
+
+        if (ContainsAny(lowered, "계획 목록", "plan 목록", "플랜 목록"))
+        {
+            return "/plan list";
+        }
+
+        var planGet = Regex.Match(normalized, @"(?i)(?:계획|plan)\s*(?:상세|보기|get)\s*([a-z0-9_\-]+)");
+        if (planGet.Success)
+        {
+            return $"/plan get {planGet.Groups[1].Value}";
+        }
+
+        var planReview = Regex.Match(normalized, @"(?i)(?:계획|plan)\s*(?:리뷰|검토|review)\s*([a-z0-9_\-]+)");
+        if (planReview.Success)
+        {
+            return $"/plan review {planReview.Groups[1].Value}";
+        }
+
+        var planApprove = Regex.Match(normalized, @"(?i)(?:계획|plan)\s*(?:승인|approve)\s*([a-z0-9_\-]+)");
+        if (planApprove.Success)
+        {
+            return $"/plan approve {planApprove.Groups[1].Value}";
+        }
+
+        var planRun = Regex.Match(normalized, @"(?i)(?:계획|plan)\s*(?:실행|run)\s*([a-z0-9_\-]+)");
+        if (planRun.Success)
+        {
+            return $"/plan run {planRun.Groups[1].Value}";
+        }
+
+        var planCreate = Regex.Match(normalized, @"(?i)(?:계획|plan)\s*(?:생성|만들|추가)\s*[:：]?\s*(.+)$");
+        if (planCreate.Success)
+        {
+            var request = planCreate.Groups[1].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(request))
+            {
+                return $"/plan create {request}";
+            }
+        }
+
+        if (ContainsAny(lowered, "작업 목록", "task 목록", "태스크 목록"))
+        {
+            return "/task list";
+        }
+
+        var taskCreate = Regex.Match(normalized, @"(?i)(?:작업|task)\s*(?:생성|create)\s*([a-z0-9_\-]+)");
+        if (taskCreate.Success)
+        {
+            return $"/task create {taskCreate.Groups[1].Value}";
+        }
+
+        var taskStatus = Regex.Match(normalized, @"(?i)(?:작업|task)\s*(?:상태|status|get)\s*([a-z0-9_\-]+)");
+        if (taskStatus.Success)
+        {
+            return $"/task status {taskStatus.Groups[1].Value}";
+        }
+
+        var taskRun = Regex.Match(normalized, @"(?i)(?:작업|task)\s*(?:실행|run)\s*([a-z0-9_\-]+)");
+        if (taskRun.Success)
+        {
+            return $"/task run {taskRun.Groups[1].Value}";
+        }
+
+        var taskCancel = Regex.Match(normalized, @"(?i)(?:작업|task)\s*(?:취소|중지|cancel)\s*([a-z0-9_\-]+)\s+([a-z0-9_\-]+)");
+        if (taskCancel.Success)
+        {
+            return $"/task cancel {taskCancel.Groups[1].Value} {taskCancel.Groups[2].Value}";
+        }
+
+        var taskOutput = Regex.Match(normalized, @"(?i)(?:작업|task)\s*(?:결과|output)\s*([a-z0-9_\-]+)\s+([a-z0-9_\-]+)");
+        if (taskOutput.Success)
+        {
+            return $"/task output {taskOutput.Groups[1].Value} {taskOutput.Groups[2].Value}";
+        }
+
+        if (ContainsAny(lowered, "노트북 보여", "노트북 열어", "notebook show"))
+        {
+            return "/notebook show";
+        }
+
+        var notebookAppend = Regex.Match(normalized, @"(?i)(?:노트북|notebook)\s*(?:append|추가|기록)\s*(learning|decision|verification|학습|결정|검증)\s*[:：]?\s*(.+)$");
+        if (notebookAppend.Success)
+        {
+            var kind = notebookAppend.Groups[1].Value.ToLowerInvariant() switch
+            {
+                "학습" => "learning",
+                "결정" => "decision",
+                "검증" => "verification",
+                _ => notebookAppend.Groups[1].Value.ToLowerInvariant()
+            };
+            var content = notebookAppend.Groups[2].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(content))
+            {
+                return $"/notebook append {kind} {content}";
+            }
+        }
+
+        if (ContainsAny(lowered, "handoff", "인수인계"))
+        {
+            return "/handoff";
+        }
+
         if (ContainsAny(lowered, "루틴 목록", "루틴 리스트", "routines 목록"))
         {
             return "/routine list";
+        }
+
+        var routineRuns = Regex.Match(normalized, @"(?is)루틴\s*(?:실행\s*이력|이력|runs)\s*([a-z0-9\-]+)");
+        if (routineRuns.Success)
+        {
+            return $"/routine runs {routineRuns.Groups[1].Value}";
+        }
+
+        var routineDetail = Regex.Match(normalized, @"(?is)루틴\s*(?:상세|detail)\s*([a-z0-9\-]+)\s+([0-9]{6,})");
+        if (routineDetail.Success)
+        {
+            return $"/routine detail {routineDetail.Groups[1].Value} {routineDetail.Groups[2].Value}";
+        }
+
+        var routineResend = Regex.Match(normalized, @"(?is)루틴\s*(?:재전송|텔레그램\s*재전송|resend)\s*([a-z0-9\-]+)\s+([0-9]{6,})");
+        if (routineResend.Success)
+        {
+            return $"/routine resend {routineResend.Groups[1].Value} {routineResend.Groups[2].Value}";
         }
 
         var routineRun = Regex.Match(normalized, @"(?i)루틴\s*(?:즉시\s*)?(?:실행|run)\s*([a-z0-9\-]+)");
@@ -741,6 +1126,17 @@ public sealed partial class CommandService
             }
         }
 
+        var routineUpdate = Regex.Match(normalized, @"(?is)루틴\s*(?:수정|업데이트|update)\s*([a-z0-9\-]+)\s*[:：]?\s*(.+)$");
+        if (routineUpdate.Success)
+        {
+            var routineId = routineUpdate.Groups[1].Value.Trim();
+            var request = routineUpdate.Groups[2].Value.Trim();
+            if (!string.IsNullOrWhiteSpace(routineId) && !string.IsNullOrWhiteSpace(request))
+            {
+                return $"/routine update {routineId} {request}";
+            }
+        }
+
         if (ContainsAny(lowered, "메트릭 보여", "메트릭 조회", "시스템 메트릭", "metrics 보여"))
         {
             return "/metrics";
@@ -757,10 +1153,15 @@ public sealed partial class CommandService
         }
 
         var tokens = text.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length >= 2 && tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
+        {
+            return BuildTelegramHelpText("memory");
+        }
+
         if (tokens.Length >= 2 && tokens[1].Equals("clear", StringComparison.OrdinalIgnoreCase))
         {
             var result = ClearMemory("telegram", "telegram");
-            return $"ok: {result}";
+            return $"메모리를 비웠습니다. {result}";
         }
 
         if (tokens.Length >= 2 && tokens[1].Equals("create", StringComparison.OrdinalIgnoreCase))
@@ -774,11 +1175,11 @@ public sealed partial class CommandService
                 cancellationToken
             );
             return created.Ok
-                ? $"ok: {created.Message}"
-                : $"error: {created.Message}";
+                ? $"메모리 노트를 만들었습니다. {created.Message}"
+                : $"메모리 노트 생성 실패: {created.Message}";
         }
 
-        return "usage: /memory clear | /memory create [compact]";
+        return BuildTelegramHelpText("memory");
     }
 
     private static string? ExtractProviderAliasFromNaturalText(string text, bool allowAuto)
@@ -807,6 +1208,11 @@ public sealed partial class CommandService
         if (ContainsAny(lowered, "cerebras", "세레브라스", "세레브라"))
         {
             return "cerebras";
+        }
+
+        if (ContainsAny(lowered, "codex", "코덱스", "openai", "오픈ai", "오픈 ai"))
+        {
+            return "codex";
         }
 
         if (allowAuto && ContainsAny(lowered, "auto", "자동"))
@@ -849,6 +1255,41 @@ public sealed partial class CommandService
             return "routine";
         }
 
+        if (ContainsAny(lowered, "doctor", "진단", "점검"))
+        {
+            return "doctor";
+        }
+
+        if (ContainsAny(lowered, "plan", "계획", "기획"))
+        {
+            return "plan";
+        }
+
+        if (ContainsAny(lowered, "coding", "코딩"))
+        {
+            return "coding";
+        }
+
+        if (ContainsAny(lowered, "refactor", "safe refactor", "리팩터"))
+        {
+            return "refactor";
+        }
+
+        if (ContainsAny(lowered, "task", "작업", "태스크"))
+        {
+            return "task";
+        }
+
+        if (ContainsAny(lowered, "notebook", "노트북", "handoff", "인수인계"))
+        {
+            return "notebook";
+        }
+
+        if (ContainsAny(lowered, "memory", "메모리"))
+        {
+            return "memory";
+        }
+
         if (ContainsAny(lowered, "자연어", "대화", "natural"))
         {
             return "natural";
@@ -879,40 +1320,46 @@ public sealed partial class CommandService
             _telegramLlmPreferences.AutoGroqComplexUpgrade = requested.Equals(DefaultGroqFastModel, StringComparison.OrdinalIgnoreCase);
         }
 
-        return $"ok: groq 모델 변경 완료 -> {requested}";
+        return $"Groq 모델을 {requested}로 바꿨습니다.";
     }
 
-    private async Task<string> SetCopilotModelForTelegramAsync(string modelId, CancellationToken cancellationToken)
+    private Task<string> SetCopilotModelForTelegramAsync(string modelId, CancellationToken cancellationToken)
     {
+        _ = cancellationToken;
         var requested = (modelId ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(requested))
         {
-            return "model-id를 입력하세요. 예: /llm set copilot gpt-5-mini";
+            return Task.FromResult("model-id를 입력하세요. 예: /llm set copilot gpt-5-mini");
         }
 
-        var models = await _copilotWrapper.GetModelsAsync(cancellationToken);
-        if (!models.Any(x => x.Id.Equals(requested, StringComparison.OrdinalIgnoreCase)))
+        if (!_copilotWrapper.TrySetSelectedModel(DefaultCopilotModel))
         {
-            return $"알 수 없는 Copilot 모델: {requested}";
-        }
-
-        if (!_copilotWrapper.TrySetSelectedModel(requested))
-        {
-            return $"Copilot 모델 설정 실패: {requested}";
+            return Task.FromResult($"Copilot 모델 설정 실패: {DefaultCopilotModel}");
         }
 
         lock (_telegramLlmLock)
         {
             _telegramLlmPreferences.SingleProvider = "copilot";
-            _telegramLlmPreferences.SingleModel = requested;
+            _telegramLlmPreferences.SingleModel = DefaultCopilotModel;
         }
 
-        return $"ok: copilot 모델 변경 완료 -> {requested}";
+        if (!requested.Equals(DefaultCopilotModel, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult($"Copilot 모델은 {DefaultCopilotModel}로 고정됩니다. 요청한 `{requested}` 대신 {DefaultCopilotModel}를 사용합니다.");
+        }
+
+        return Task.FromResult($"Copilot 모델을 {DefaultCopilotModel}로 설정했습니다.");
     }
 
     private async Task<string> BuildTelegramModelsReportAsync(string target, CancellationToken cancellationToken)
     {
         var selected = (target ?? "all").Trim().ToLowerInvariant();
+        TelegramLlmPreferences snapshot;
+        lock (_telegramLlmLock)
+        {
+            snapshot = _telegramLlmPreferences.Clone();
+        }
+
         var builder = new StringBuilder();
         var hasSection = false;
         builder.AppendLine("[로컬 시간]");
@@ -925,14 +1372,15 @@ public sealed partial class CommandService
             builder.AppendLine("[Groq 모델]");
             foreach (var model in groqModels.Take(16))
             {
-                builder.AppendLine($"- {model.Id}: tier={model.Tier}, speed={model.SpeedTokensPerSecond} tps, rate={model.RateLimit}, ctx={model.ContextWindow}, max_out={model.MaxCompletionTokens}");
+                builder.AppendLine($"- {model.Id} | 속도={model.SpeedTokensPerSecond} tps | 컨텍스트={model.ContextWindow} | 출력={model.MaxCompletionTokens}");
             }
             if (groqModels.Count > 16)
             {
                 builder.AppendLine($"... +{groqModels.Count - 16}개");
             }
 
-            builder.AppendLine($"selected={_llmRouter.GetSelectedGroqModel()}");
+            builder.AppendLine($"현재 단일 선택: {(snapshot.SingleProvider == "groq" ? snapshot.SingleModel : _llmRouter.GetSelectedGroqModel())}");
+            builder.AppendLine($"현재 다중 선택: {snapshot.MultiGroqModel}");
             builder.AppendLine();
         }
 
@@ -940,9 +1388,11 @@ public sealed partial class CommandService
         {
             hasSection = true;
             builder.AppendLine("[Gemini 모델]");
-            builder.AppendLine($"- 기본={_config.GeminiModel}");
-            builder.AppendLine("- 지원=gemini-3-flash-preview");
-            builder.AppendLine("- 지원=gemini-3.1-flash-lite-preview");
+            builder.AppendLine($"- 기본: {_config.GeminiModel}");
+            builder.AppendLine($"- 현재 단일 선택: {(snapshot.SingleProvider == "gemini" ? snapshot.SingleModel : _config.GeminiModel)}");
+            builder.AppendLine($"- 현재 다중 선택: {(string.IsNullOrWhiteSpace(snapshot.MultiGeminiModel) ? _config.GeminiModel : snapshot.MultiGeminiModel)}");
+            builder.AppendLine("- 대표 지원: gemini-3-flash-preview");
+            builder.AppendLine("- 대표 지원: gemini-3.1-flash-lite-preview");
             builder.AppendLine();
         }
 
@@ -953,46 +1403,54 @@ public sealed partial class CommandService
             builder.AppendLine("[Copilot 모델]");
             foreach (var model in copilotModels.Take(16))
             {
-                builder.AppendLine($"- {model.Id}: provider={model.Provider}, premium={model.PremiumMultiplier}, speed={model.OutputTokensPerSecond}, limit={model.RateLimit}, ctx={model.ContextWindow}");
+                builder.AppendLine($"- {model.Id} | 공급자={model.Provider} | 속도={model.OutputTokensPerSecond} tps | 컨텍스트={model.ContextWindow}");
             }
             if (copilotModels.Count > 16)
             {
                 builder.AppendLine($"... +{copilotModels.Count - 16}개");
             }
 
-            builder.AppendLine($"selected={_copilotWrapper.GetSelectedModel()}");
+            builder.AppendLine($"현재 단일 선택: {(snapshot.SingleProvider == "copilot" ? snapshot.SingleModel : _copilotWrapper.GetSelectedModel())}");
+            builder.AppendLine($"현재 다중 선택: {snapshot.MultiCopilotModel}");
             builder.AppendLine();
         }
 
         if (selected == "all" || selected == "cerebras")
         {
             hasSection = true;
-            TelegramLlmPreferences snapshot;
-            lock (_telegramLlmLock)
-            {
-                snapshot = _telegramLlmPreferences.Clone();
-            }
-
             builder.AppendLine("[Cerebras 모델]");
-            builder.AppendLine($"- default={_config.CerebrasModel}");
-            builder.AppendLine($"- single.selected={(snapshot.SingleProvider == "cerebras" ? snapshot.SingleModel : _config.CerebrasModel)}");
-            builder.AppendLine($"- multi.selected={snapshot.MultiCerebrasModel}");
+            builder.AppendLine($"- 기본: {_config.CerebrasModel}");
+            builder.AppendLine($"- 현재 단일 선택: {(snapshot.SingleProvider == "cerebras" ? snapshot.SingleModel : _config.CerebrasModel)}");
+            builder.AppendLine($"- 현재 다중 선택: {snapshot.MultiCerebrasModel}");
+            builder.AppendLine();
+        }
+
+        if (selected == "all" || selected == "codex")
+        {
+            hasSection = true;
+            builder.AppendLine("[Codex 모델]");
+            builder.AppendLine($"- 기본: {_config.CodexModel}");
+            builder.AppendLine($"- 현재 단일 선택: {(snapshot.SingleProvider == "codex" ? snapshot.SingleModel : _config.CodexModel)}");
+            builder.AppendLine($"- 현재 다중 선택: {snapshot.MultiCodexModel}");
             builder.AppendLine();
         }
 
         if (!hasSection)
         {
-            return "usage: /llm models [groq|gemini|copilot|cerebras|all]";
+            return "사용법: /llm models [groq|gemini|copilot|cerebras|codex|all]";
         }
 
-        builder.AppendLine("모델 변경 예시:");
+        builder.AppendLine("바꾸는 예시:");
         builder.AppendLine("/llm set groq meta-llama/llama-4-scout-17b-16e-instruct");
         builder.AppendLine("/llm set copilot gpt-5-mini");
+        builder.AppendLine("/llm set codex gpt-5.4");
         builder.AppendLine("/llm single provider gemini");
         builder.AppendLine("/llm single model gemini-3.1-flash-lite-preview");
         builder.AppendLine("/llm single provider cerebras");
         builder.AppendLine("/llm single model zai-glm-4.7");
+        builder.AppendLine("/llm multi gemini gemini-3.1-flash-lite-preview");
         builder.AppendLine("/llm multi cerebras zai-glm-4.7");
+        builder.AppendLine("/llm multi codex gpt-5.4");
         return builder.ToString().Trim();
     }
 
@@ -1458,11 +1916,11 @@ public sealed partial class CommandService
                 contextualProfiledInput,
                 "telegram",
                 snapshot.MultiGroqModel,
-                null,
+                snapshot.MultiGeminiModel,
                 snapshot.MultiCopilotModel,
                 snapshot.MultiCerebrasModel,
                 snapshot.MultiSummaryProvider,
-                null,
+                snapshot.MultiCodexModel,
                 normalizedAttachments,
                 cancellationToken
             );
@@ -1474,6 +1932,7 @@ public sealed partial class CommandService
                 ("gemini", multi.GeminiText),
                 ("cerebras", multi.CerebrasText),
                 ("copilot", multi.CopilotText),
+                ("codex", multi.CodexText),
                 ("summary", multi.Summary)
             );
             effectiveGuardFailure = sharedPrepared.GuardFailure;
@@ -1494,6 +1953,7 @@ public sealed partial class CommandService
                 "gemini" => multi.GeminiModel,
                 "cerebras" => multi.CerebrasModel,
                 "copilot" => multi.CopilotModel,
+                "codex" => multi.CodexModel,
                 _ => "-"
             };
             assistantMeta = $"telegram-multi:summary={multi.ResolvedSummaryProvider}";
@@ -1835,26 +2295,42 @@ public sealed partial class CommandService
 
     private static string BuildOrchestrationPrompt(
         string userText,
-        IReadOnlyList<LlmSingleChatResult> workerResults
+        IReadOnlyList<LlmSingleChatResult> workerResults,
+        IReadOnlyDictionary<string, string> roleByProvider
     )
     {
         var builder = new System.Text.StringBuilder();
-        builder.AppendLine("다음은 같은 질문을 여러 LLM이 병렬 처리한 결과입니다.");
+        builder.AppendLine("다음은 오케스트레이션 워커들이 역할을 나눠 처리한 결과입니다.");
         builder.AppendLine($"사용자 질문: {userText}");
         builder.AppendLine();
-        builder.AppendLine("[병렬 결과]");
+        builder.AppendLine("[역할 계획]");
         foreach (var item in workerResults)
         {
+            var role = roleByProvider.TryGetValue(item.Provider, out var assignedRole)
+                ? assignedRole
+                : "보조 워커";
+            builder.AppendLine($"- {item.Provider}:{item.Model} => {role}");
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("[역할별 결과]");
+        foreach (var item in workerResults)
+        {
+            var role = roleByProvider.TryGetValue(item.Provider, out var assignedRole)
+                ? assignedRole
+                : "보조 워커";
             builder.AppendLine($"[{item.Provider}:{item.Model}]");
+            builder.AppendLine($"역할: {role}");
             builder.AppendLine(item.Text);
             builder.AppendLine();
         }
 
         builder.AppendLine("요구사항:");
-        builder.AppendLine("1) 중복되는 내용을 제거하고 하나의 최종 답변으로 통합");
-        builder.AppendLine("2) 사실 충돌이 있으면 보수적으로 정리");
-        builder.AppendLine("3) 한국어로 간결하고 실행 가능하게 답변");
-        builder.AppendLine("4) 마크다운 코드블록은 필요할 때만 사용");
+        builder.AppendLine("1) 역할별 장점을 취합해 하나의 최종 답변으로 통합");
+        builder.AppendLine("2) 사실 충돌이 있으면 가장 보수적이고 검증 친화적인 결론을 선택");
+        builder.AppendLine("3) 내부 역할 분담 과정은 드러내지 말고 사용자에게 바로 쓸 답변만 출력");
+        builder.AppendLine("4) 한국어로 간결하고 실행 가능하게 답변");
+        builder.AppendLine("5) 마크다운 코드블록은 필요할 때만 사용");
         return builder.ToString().Trim();
     }
 
@@ -2069,6 +2545,7 @@ public sealed partial class CommandService
             normalized = NormalizeGeminiWebNumberedListResponse(normalized);
         }
         normalized = NormalizeStructuredLabelBlocks(normalized);
+        normalized = MergeDetachedTelegramDecimalLines(normalized);
         normalized = MergeDetachedTelegramNumberLines(normalized);
         normalized = AddTelegramClaimSpacing(normalized);
         var safeMaxChars = Math.Max(0, maxChars);
@@ -2663,6 +3140,25 @@ public sealed partial class CommandService
         return Regex.Replace(string.Join('\n', output).Trim(), @"\n{3,}", "\n\n");
     }
 
+    private static string MergeDetachedTelegramDecimalLines(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(\d+)\.\s*\n+(?=\d)",
+            "$1.",
+            RegexOptions.CultureInvariant
+        );
+        return Regex.Replace(normalized.Trim(), @"\n{3,}", "\n\n");
+    }
+
     private static string AddTelegramClaimSpacing(string text)
     {
         var normalized = (text ?? string.Empty)
@@ -2804,6 +3300,11 @@ public sealed partial class CommandService
             return false;
         }
 
+        if (LooksLikeStandaloneTelegramTimeLine(trimmed))
+        {
+            return false;
+        }
+
         var match = Regex.Match(
             trimmed,
             @"^(?:[-•▪]\s*)?(?<label>[A-Za-z가-힣0-9()'‘’,.&+\- ]{1,24})\s*[:：]\s*(?<value>.+)$",
@@ -2831,6 +3332,21 @@ public sealed partial class CommandService
         }
 
         return true;
+    }
+
+    private static bool LooksLikeStandaloneTelegramTimeLine(string line)
+    {
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            normalized,
+            @"^(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?(?:(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?)\s+)?\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?(?:\s*(?:AM|PM|am|pm))?$",
+            RegexOptions.CultureInvariant
+        );
     }
 
     private static string? FindNextNonEmptyTelegramLine(string[] lines, int startIndex)
@@ -2932,7 +3448,7 @@ public sealed partial class CommandService
         }
 
         var candidate = raw;
-        candidate = Regex.Replace(candidate, @"([.…]{1,3})(?=[^\s\n])", "$1\n");
+        candidate = Regex.Replace(candidate, @"([.…]{1,3})(?=[^\s\n\d])", "$1\n");
         candidate = Regex.Replace(candidate, @"([.…]{1,3})\s+", "$1\n");
         candidate = Regex.Replace(candidate, @"\s+(?=[^,\n]{6,36},)", "\n");
         candidate = Regex.Replace(candidate, @"\n{2,}", "\n");
@@ -3049,6 +3565,41 @@ public sealed partial class CommandService
             return "routine";
         }
 
+        if (topic is "coding" or "code-run" or "코딩")
+        {
+            return "coding";
+        }
+
+        if (topic is "refactor" or "safe-refactor" or "safe_refactor" or "리팩터")
+        {
+            return "refactor";
+        }
+
+        if (topic is "plan" or "plans" or "planning" or "계획")
+        {
+            return "plan";
+        }
+
+        if (topic is "task" or "tasks" or "작업" or "태스크")
+        {
+            return "task";
+        }
+
+        if (topic is "doctor" or "진단" or "점검")
+        {
+            return "doctor";
+        }
+
+        if (topic is "notebook" or "노트북" or "handoff" or "인수인계")
+        {
+            return "notebook";
+        }
+
+        if (topic is "memory" or "메모리")
+        {
+            return "memory";
+        }
+
         if (topic is "natural" or "대화" or "자연어")
         {
             return "natural";
@@ -3063,40 +3614,27 @@ public sealed partial class CommandService
         if (normalized == "llm")
         {
             return """
-                   [LLM 제어 도움말]
-                   단순 명령(신규):
-                   - /profile <talk|code> [low|high]
-                   - /mode <single|orchestration|multi>
-                   - /provider <single|orchestration|summary> <groq|gemini|copilot|cerebras|auto>
-                   - /model <single|orchestration|multi.groq|multi.copilot|multi.cerebras> <model-id>
-                   - /status model
+                   [LLM 도움말]
+                   그냥 자연어로 먼저 말해도 됩니다.
+                   - "단일 모드로 바꿔"
+                   - "Codex로 바꿔"
+                   - "모델 목록 보여줘"
+                   - "다중 요약 담당을 Gemini로 설정해"
 
-                   프리셋:
+                   자주 쓰는 slash:
                    - /talk [low|high]
                    - /code [low|high]
-
-                   빠른 전환:
-                   - /model groq | /model gemini | /model copilot | /model cerebras
-
-                   상세 제어:
+                   - /model <groq|gemini|copilot|cerebras|codex>
                    - /llm status
-                   - /llm mode <single|orchestration|multi>
-                   - /llm single provider <groq|gemini|copilot|cerebras>
-                   - /llm single model <model-id>
-                   - /llm orchestration provider <auto|groq|gemini|copilot|cerebras>
-                   - /llm orchestration model <model-id>
-                   - /llm multi groq <model-id>
-                   - /llm multi copilot <model-id>
-                   - /llm multi cerebras <model-id>
-                   - /llm multi summary <auto|groq|gemini|copilot|cerebras>
-                   - /llm models [groq|gemini|copilot|cerebras|all]
+                   - /llm models [groq|gemini|copilot|cerebras|codex|all]
                    - /llm usage
-
-                   자연어 예시:
-                   - "llm mode multi"
-                   - "단일 모드로 바꿔"
-                   - "코딩 프리셋 high로"
-                   - "Groq 모델 openai/gpt-oss-120b로 변경"
+                   - /llm mode <single|orchestration|multi>
+                   - /llm single provider <groq|gemini|copilot|cerebras|codex>
+                   - /llm single model <model-id>
+                   - /llm orchestration provider <auto|groq|gemini|copilot|cerebras|codex>
+                   - /llm orchestration model <model-id>
+                   - /llm multi <groq|gemini|copilot|cerebras|codex> <model-id>
+                   - /llm multi summary <auto|groq|gemini|copilot|cerebras|codex>
                    """;
         }
 
@@ -3104,18 +3642,172 @@ public sealed partial class CommandService
         {
             return """
                    [루틴 도움말]
-                   - /routine list
-                   - /routine create <요청>
-                   - /routine run <routine-id>
-                   - /routine on <routine-id>
-                   - /routine off <routine-id>
-                   - /routine delete <routine-id>
-
                    자연어 예시:
                    - "루틴 목록 보여줘"
                    - "루틴 생성: 매일 아침 8시에 뉴스 요약"
+                   - "루틴 수정 rt-20260301093000-ab12cd34 매일 9시에 서버 상태 점검"
                    - "루틴 실행 rt-20260301093000-ab12cd34"
-                   - "루틴 꺼 rt-20260301093000-ab12cd34"
+                   - "루틴 실행 이력 rt-20260301093000-ab12cd34"
+                   - "루틴 재전송 rt-20260301093000-ab12cd34 1741482000000"
+
+                   정확히 제어할 때:
+                   - /routine list
+                   - /routine create <요청>
+                   - /routine update <routine-id> <요청>
+                   - /routine run <routine-id>
+                   - /routine runs <routine-id>
+                   - /routine detail <routine-id> <ts>
+                   - /routine resend <routine-id> <ts>
+                   - /routine on <routine-id>
+                   - /routine off <routine-id>
+                   - /routine delete <routine-id>
+                   """;
+        }
+
+        if (normalized == "coding")
+        {
+            return """
+                   [코딩 도움말]
+                   자연어 예시:
+                   - "단일 코딩으로 로그인 페이지와 API까지 만들어줘"
+                   - "오케스트레이션 코딩으로 지금 워크스페이스 점검하고 개선해줘"
+                   - "다중 코딩으로 같은 요구사항 비교해줘"
+                   - "단일 코딩 제공자를 Codex로 바꿔"
+                   - "다중 코딩 워커 Gemini 모델을 gemini-2.5-pro로 설정해"
+                   - "최근 코딩 결과 보여줘"
+                   - "코딩 파일 1 보여줘"
+
+                   자주 쓰는 slash:
+                   - /coding status
+                   - /coding mode <single|orchestration|multi>
+                   - /coding language [single|orchestration|multi] <language|auto>
+                   - /coding run <요구사항>
+                   - /coding single provider <auto|groq|gemini|copilot|cerebras|codex>
+                   - /coding single model <model-id>
+                   - /coding single run <요구사항>
+                   - /coding orchestration provider <auto|groq|gemini|copilot|cerebras|codex>
+                   - /coding orchestration model <model-id>
+                   - /coding orchestration worker <provider> <model-id|none>
+                   - /coding orchestration run [요구사항]
+                   - /coding multi provider <auto|groq|gemini|copilot|cerebras|codex>
+                   - /coding multi model <model-id>
+                   - /coding multi worker <provider> <model-id|none>
+                   - /coding multi run <요구사항>
+                   - /coding last
+                   - /coding files
+                   - /coding file <번호|경로>
+                   """;
+        }
+
+        if (normalized == "refactor")
+        {
+            return """
+                   [Safe Refactor 도움말]
+                   쉬운 흐름:
+                   1. /refactor read <path> [start] [end]
+                   2. /refactor preview <path> <start> <end>
+                      다음 줄부터 교체 코드를 붙여 넣기
+                   3. /refactor apply
+
+                   예시:
+                   /refactor read apps/omninode-middleware/src/CommandService.Telegram.cs 10 20
+                   /refactor preview apps/omninode-middleware/src/CommandService.Telegram.cs 12 14
+                   새 코드...
+
+                   또는:
+                   /refactor preview 12 14
+                   새 코드...
+
+                   slash 없이도 가능:
+                   refactor preview apps/omninode-middleware/src/CommandService.Telegram.cs 12 14 ::: 새 코드
+
+                   상태 확인:
+                   - /refactor status
+                   """;
+        }
+
+        if (normalized == "doctor")
+        {
+            return """
+                   [진단 도움말]
+                   - /doctor
+                   - /doctor last
+                   - /doctor json
+                   - /doctor last json
+
+                   자연어 예시:
+                   - "환경 진단해줘"
+                   - "최근 진단 보여줘"
+                   - "doctor 결과를 json으로 보여줘"
+                   """;
+        }
+
+        if (normalized == "plan")
+        {
+            return """
+                   [계획 도움말]
+                   자연어 예시:
+                   - "계획 목록 보여줘"
+                   - "계획 생성: doctor 기능 구현"
+                   - "계획 리뷰 plan_20260308103000001"
+
+                   정확히 제어할 때:
+                   - /plan list
+                   - /plan get <plan-id>
+                   - /plan create [--mode fast|interview] [--constraint <제약>]... <요청>
+                   - /plan review <plan-id>
+                   - /plan approve <plan-id>
+                   - /plan run <plan-id>
+                   """;
+        }
+
+        if (normalized == "task")
+        {
+            return """
+                   [작업 도움말]
+                   자연어 예시:
+                   - "작업 목록 보여줘"
+                   - "작업 상태 graph_20260308123500001"
+                   - "작업 실행 graph_20260308123500001"
+
+                   정확히 제어할 때:
+                   - /task list
+                   - /task create <plan-id>
+                   - /task status <graph-id>
+                   - /task run <graph-id>
+                   - /task cancel <graph-id> <task-id>
+                   - /task output <graph-id> <task-id>
+                   """;
+        }
+
+        if (normalized == "notebook" || normalized == "handoff")
+        {
+            return """
+                   [노트북 도움말]
+                   자연어 예시:
+                   - "노트북 보여줘"
+                   - "노트북에 decision 계획은 task graph로 실행한다고 기록해줘"
+                   - "인수인계 문서 만들어줘"
+
+                   정확히 제어할 때:
+                   - /notebook show [project-key]
+                   - /notebook append <learning|decision|verification> <내용>
+                   - /handoff [project-key]
+                   """;
+        }
+
+        if (normalized == "memory")
+        {
+            return """
+                   [메모리 도움말]
+                   자연어 예시:
+                   - "메모리 초기화해줘"
+                   - "메모리 노트 만들어줘"
+                   - "메모리 compact로 저장해줘"
+
+                   정확히 제어할 때:
+                   - /memory clear
+                   - /memory create [compact]
                    """;
         }
 
@@ -3123,18 +3815,20 @@ public sealed partial class CommandService
         {
             return """
                    [자연어 제어 도움말]
-                   슬래시(/) 없이도 대부분의 설정 명령을 처리합니다.
-                   자연어 입력은 LLM 해석 + 서버 규칙 검증 후 실행됩니다.
+                   슬래시 없이도 대부분의 제어를 처리합니다.
 
                    지원 예시:
-                   - "llm status"
                    - "단일 모드로 바꿔"
-                   - "오케스트레이션 모드로 변경"
-                   - "메모리 초기화"
+                   - "Codex로 바꿔"
+                   - "단일 코딩으로 로그인 페이지 만들어줘"
+                   - "최근 코딩 결과 보여줘"
+                   - "리팩터 상태 보여줘"
                    - "모델 목록 보여줘"
-                   - "사용량/과금 보여줘"
-                   - "메트릭 보여줘"
-                   - "루틴 목록"
+                   - "메모리 초기화"
+                   - "환경 진단해줘"
+                   - "계획 목록 보여줘"
+                   - "작업 상태 graph_..."
+                   - "노트북 보여줘"
                    - "루틴 생성: 매일 09:00 서버 상태 점검"
 
                    보안 정책:
@@ -3143,35 +3837,44 @@ public sealed partial class CommandService
         }
 
         return """
-               Omni-node Telegram 도움말
+               [Omni-node Telegram 도움말]
+               먼저 자연어로 말해도 됩니다.
+               - "단일 모드로 바꿔"
+               - "Codex로 바꿔"
+               - "단일 코딩으로 로그인 페이지 만들어줘"
+               - "단일 코딩 제공자를 Codex로 바꿔"
+               - "최근 코딩 결과 보여줘"
+               - "환경 진단해줘"
+               - "루틴 목록 보여줘"
+               - "노트북 보여줘"
 
-               [핵심]
-               - /metrics
-               - /kill <pid>
+               자주 쓰는 slash:
                - /talk [low|high]
                - /code [low|high]
-               - /model <groq|gemini|copilot|cerebras>
+               - /coding status
+               - /coding run <요구사항>
+               - /coding last
+               - /refactor read <path>
+               - /model <groq|gemini|copilot|cerebras|codex>
                - /llm status
-               - /llm usage
-               - /memory clear
-               - /memory create [compact]
+               - /doctor
                - /routine list
-               - /routine create <요청>
+               - /plan list
+               - /task list
+               - /notebook show
+               - /memory create [compact]
 
-               [기본 정책]
-               - Groq 기본: meta-llama/llama-4-scout-17b-16e-instruct
-               - 한도 근접/429 시: qwen/qwen3-32b -> llama-3.1-8b-instant 순서로 자동 전환
-               - 응답 길이: 최대 2000자
-
-               [추가 도움말]
+               더 보기:
                - /help llm
+               - /help coding
+               - /help refactor
+               - /help doctor
                - /help routine
+               - /help plan
+               - /help task
+               - /help notebook
+               - /help memory
                - /help natural
-
-               [자연어/멀티모달]
-               - 슬래시 없이도 설정 명령 입력 가능
-               - 이미지/파일 첨부 + 질문 가능(모델 지원 시 분석)
-               - URL 포함 질문 시 웹 참조 기반 요약 가능
                """;
     }
 

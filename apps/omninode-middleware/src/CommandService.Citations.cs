@@ -888,7 +888,7 @@ public sealed partial class CommandService
                 continue;
             }
 
-            if (trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractDisplaySourceLineValue(trimmed, out _))
             {
                 var match = HttpUrlRegex.Match(trimmed);
                 if (match.Success)
@@ -1045,7 +1045,7 @@ public sealed partial class CommandService
                 continue;
             }
 
-            if (trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractDisplaySourceLineValue(trimmed, out _))
             {
                 var match = HttpUrlRegex.Match(trimmed);
                 if (!match.Success)
@@ -1178,9 +1178,8 @@ public sealed partial class CommandService
         foreach (var line in normalized.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var trimmed = line.Trim();
-            if (trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractDisplaySourceLineValue(trimmed, out var candidate))
             {
-                var candidate = trimmed["출처:".Length..].Trim();
                 if (!string.IsNullOrWhiteSpace(candidate))
                 {
                     yield return candidate;
@@ -1206,12 +1205,10 @@ public sealed partial class CommandService
         foreach (var line in normalized.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var trimmed = line.Trim();
-            if (!trimmed.StartsWith("출처:", StringComparison.OrdinalIgnoreCase))
+            if (!TryExtractDisplaySourceLineValue(trimmed, out var candidate))
             {
                 continue;
             }
-
-            var candidate = trimmed["출처:".Length..].Trim();
             if (!string.IsNullOrWhiteSpace(candidate))
             {
                 yield return candidate;
@@ -1263,6 +1260,127 @@ public sealed partial class CommandService
         normalized = Regex.Replace(normalized, @"\s+", string.Empty);
         normalized = Regex.Replace(normalized, @"[^\p{L}\p{N}]", string.Empty);
         return normalized;
+    }
+
+    private static IReadOnlyList<string> FilterVisibleDisplaySources(IEnumerable<string> sources)
+    {
+        return sources
+            .SelectMany(value =>
+            {
+                var normalized = NormalizeDisplaySourceCandidate(value);
+                if (normalized.Length == 0)
+                {
+                    return Array.Empty<string>();
+                }
+
+                var split = normalized.Split(new[] { ',', '·', ';', '|', '/' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                return split.Length == 0 ? new[] { normalized } : split;
+            })
+            .Select(NormalizeDisplaySourceCandidate)
+            .Where(value => value.Length > 0 && !ShouldHideDisplaySource(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool TryExtractDisplaySourceLineValue(string? line, out string value)
+    {
+        value = string.Empty;
+        var trimmed = (line ?? string.Empty).Trim();
+        if (trimmed.Length == 0)
+        {
+            return false;
+        }
+
+        var match = Regex.Match(
+            trimmed,
+            @"^(?:\*\*)?\s*출처\s*[:：]\s*(?:\*\*)?\s*(?<value>.+)$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        if (!match.Success)
+        {
+            return false;
+        }
+
+        value = match.Groups["value"].Value.Trim();
+        return value.Length > 0;
+    }
+
+    private static bool IsDisplaySourceLine(string? line)
+    {
+        return TryExtractDisplaySourceLineValue(line, out _);
+    }
+
+    private static string FilterVisibleDisplaySourceLine(string? sourceLine)
+    {
+        var normalized = NormalizeDisplaySourceCandidate(sourceLine);
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var candidates = normalized
+            .Split(new[] { ',', '·', ';', '|', '/' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (candidates.Length == 0)
+        {
+            return ShouldHideDisplaySource(normalized) ? string.Empty : normalized;
+        }
+
+        var visible = FilterVisibleDisplaySources(candidates);
+        return visible.Count == 0 ? string.Empty : string.Join(", ", visible);
+    }
+
+    private static string NormalizeDisplaySourceCandidate(string? value)
+    {
+        var normalized = (value ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(normalized, @"^\s*출처\s*링크\s*:\s*", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        normalized = normalized.Replace("**", string.Empty, StringComparison.Ordinal);
+        normalized = normalized.Trim().Trim(',', ';', '|', '/');
+        return normalized;
+    }
+
+    private static bool ShouldHideDisplaySource(string? value)
+    {
+        var normalized = NormalizeDisplaySourceCandidate(value);
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (Uri.TryCreate(normalized, UriKind.Absolute, out var absoluteUri))
+        {
+            return IsHiddenDisplaySourceHost(absoluteUri.Host);
+        }
+
+        var hostCandidate = Regex.Replace(normalized, @"^https?://", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var cutIndex = hostCandidate.IndexOfAny(new[] { '/', '?', '#', ' ' });
+        if (cutIndex >= 0)
+        {
+            hostCandidate = hostCandidate[..cutIndex];
+        }
+
+        return IsHiddenDisplaySourceHost(hostCandidate);
+    }
+
+    private static bool IsHiddenDisplaySourceHost(string? host)
+    {
+        var normalized = (host ?? string.Empty).Trim().Trim('.').ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        if (normalized.StartsWith("www.", StringComparison.Ordinal))
+        {
+            normalized = normalized[4..];
+        }
+
+        return normalized.Equals("vietnam.vn", StringComparison.Ordinal)
+            || normalized.EndsWith(".vietnam.vn", StringComparison.Ordinal);
     }
 
     private static bool LooksLikeListOutputRequest(string input)

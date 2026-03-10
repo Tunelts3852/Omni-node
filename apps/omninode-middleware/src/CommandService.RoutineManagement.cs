@@ -19,13 +19,22 @@ public sealed partial class CommandService
         if (tokens.Length == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
             return """
-                   루틴 명령어
+                   [루틴 명령]
+                   자연어 예시:
+                   - "루틴 목록 보여줘"
+                   - "루틴 생성: 매일 아침 8시에 뉴스 요약"
+                   - "루틴 실행 rt-20260301093000-ab12cd34"
+
+                   정확히 제어할 때:
                    /routine list
                    /routine create <요청>
                    /routine create browser --model <model> [--url <start-url>] <요청>
                    /routine update <routine-id> <요청>
                    /routine update <routine-id> browser --model <model> [--url <start-url>] <요청>
                    /routine run <routine-id>
+                   /routine runs <routine-id>
+                   /routine detail <routine-id> <ts>
+                   /routine resend <routine-id> <ts>
                    /routine on <routine-id>
                    /routine off <routine-id>
                    /routine delete <routine-id>
@@ -56,7 +65,7 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 3)
             {
-                return "usage: /routine create <요청>";
+                return "사용법: /routine create <요청>";
             }
 
             RoutineActionResult created;
@@ -102,7 +111,7 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 4)
             {
-                return "usage: /routine update <routine-id> <요청>";
+                return "사용법: /routine update <routine-id> <요청>";
             }
 
             var routineId = tokens[2];
@@ -169,10 +178,87 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 3)
             {
-                return "usage: /routine run <routine-id>";
+                return "사용법: /routine run <routine-id>";
             }
 
             var result = await RunRoutineNowAsync(tokens[2], source, cancellationToken);
+            return FormatRoutineActionResult(result);
+        }
+
+        if (action == "runs")
+        {
+            if (tokens.Length < 3)
+            {
+                return "사용법: /routine runs <routine-id>";
+            }
+
+            var summary = ListRoutines().FirstOrDefault(item => item.Id.Equals(tokens[2], StringComparison.OrdinalIgnoreCase));
+            if (summary == null)
+            {
+                return "루틴을 찾을 수 없습니다.";
+            }
+
+            var runs = (summary.Runs ?? Array.Empty<RoutineRunSummary>()).Take(12).ToArray();
+            if (runs.Length == 0)
+            {
+                return $"루틴 `{summary.Id}` 의 실행 이력이 아직 없습니다.";
+            }
+
+            var builder = new StringBuilder();
+            builder.AppendLine($"[루틴 실행 이력] {summary.Id}");
+            foreach (var run in runs)
+            {
+                var telegramText = string.IsNullOrWhiteSpace(run.TelegramStatus) ? "-" : run.TelegramStatus;
+                var compactSummary = TrimForOutput(run.Summary ?? string.Empty, 120);
+                builder.AppendLine($"- ts={run.Ts} | {run.RunAtLocal} | {run.Status} | {run.Source} | telegram={telegramText}");
+                if (!string.IsNullOrWhiteSpace(compactSummary))
+                {
+                    builder.AppendLine($"  {compactSummary}");
+                }
+            }
+
+            builder.AppendLine();
+            builder.AppendLine("상세: /routine detail <routine-id> <ts>");
+            builder.AppendLine("재전송: /routine resend <routine-id> <ts>");
+            return builder.ToString().Trim();
+        }
+
+        if (action == "detail")
+        {
+            if (tokens.Length < 4 || !long.TryParse(tokens[3], out var detailTs))
+            {
+                return "사용법: /routine detail <routine-id> <ts>";
+            }
+
+            var detail = GetRoutineRunDetail(tokens[2], detailTs);
+            if (!detail.Ok)
+            {
+                return $"루틴 상세 오류: {detail.Error ?? "실행 이력을 찾지 못했습니다."}";
+            }
+
+            var content = TrimForOutput(detail.Content ?? string.Empty, 2600);
+            return $"""
+                    [루틴 실행 상세]
+                    id={detail.RoutineId}
+                    title={detail.Title}
+                    ts={detail.Ts}
+                    status={detail.Status}
+                    source={detail.Source}
+                    telegram={detail.TelegramStatus ?? "-"}
+                    artifact={detail.ArtifactPath ?? "-"}
+
+                    {content}
+                    """;
+        }
+
+        if (action == "resend")
+        {
+            if (tokens.Length < 4 || !long.TryParse(tokens[3], out var resendTs))
+            {
+                return "사용법: /routine resend <routine-id> <ts>";
+            }
+
+            var result = await ResendRoutineRunToTelegramAsync(tokens[2], resendTs, cancellationToken);
             return FormatRoutineActionResult(result);
         }
 
@@ -180,7 +266,7 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 3)
             {
-                return $"usage: /routine {action} <routine-id>";
+                return $"사용법: /routine {action} <routine-id>";
             }
 
             var enabled = action == "on";
@@ -192,14 +278,14 @@ public sealed partial class CommandService
         {
             if (tokens.Length < 3)
             {
-                return "usage: /routine delete <routine-id>";
+                return "사용법: /routine delete <routine-id>";
             }
 
             var result = DeleteRoutine(tokens[2]);
             return FormatRoutineActionResult(result);
         }
 
-        return "unknown /routine command. use /routine help";
+        return "알 수 없는 /routine 명령입니다. /routine help를 확인하세요.";
     }
 
     private async Task<string?> TryHandleNaturalRoutineRequestAsync(string text, string source, CancellationToken cancellationToken)

@@ -17,6 +17,9 @@ public sealed partial class WebSocketGateway
                + $"\"copilot\":\"{EscapeJson(result.CopilotText)}\","
                + $"\"codex\":\"{EscapeJson(result.CodexText)}\","
                + $"\"summary\":\"{EscapeJson(result.Summary)}\","
+               + $"\"commonSummary\":\"{EscapeJson(result.Summary)}\","
+               + $"\"commonCore\":\"{EscapeJson(result.CommonCore)}\","
+               + $"\"differences\":\"{EscapeJson(result.Differences)}\","
                + $"\"groqModel\":\"{EscapeJson(result.GroqModel)}\","
                + $"\"geminiModel\":\"{EscapeJson(result.GeminiModel)}\","
                + $"\"cerebrasModel\":\"{EscapeJson(result.CerebrasModel)}\","
@@ -75,6 +78,7 @@ public sealed partial class WebSocketGateway
         }
 
         builder.Append("],");
+        builder.Append($"\"latestCodingResult\":{BuildConversationCodingResultJson(conversation.LatestCodingResult)},");
         builder.Append("\"messages\":[");
         for (var i = 0; i < conversation.Messages.Count; i++)
         {
@@ -271,7 +275,81 @@ public sealed partial class WebSocketGateway
             builder.Append("\"code\":\"\",");
             builder.Append("\"rawResponse\":\"\",");
             builder.Append($"\"execution\":{BuildExecutionJson(worker.Execution)},");
-            builder.Append($"\"changedFiles\":{BuildStringArrayJson(worker.ChangedFiles)}");
+            builder.Append($"\"changedFiles\":{BuildStringArrayJson(worker.ChangedFiles)},");
+            builder.Append($"\"role\":\"{EscapeJson(worker.Role)}\",");
+            builder.Append($"\"summary\":\"{EscapeJson(worker.Summary)}\"");
+            builder.Append("}");
+        }
+
+        builder.Append("]");
+        return builder.ToString();
+    }
+
+    private static string BuildConversationCodingResultJson(ConversationCodingResultSnapshot? result)
+    {
+        if (result == null)
+        {
+            return "null";
+        }
+
+        return "{"
+               + "\"type\":\"coding_result\","
+               + $"\"mode\":\"{EscapeJson(result.Mode)}\","
+               + $"\"conversationId\":\"{EscapeJson(result.ConversationId)}\","
+               + $"\"provider\":\"{EscapeJson(result.Provider)}\","
+               + $"\"model\":\"{EscapeJson(result.Model)}\","
+               + $"\"language\":\"{EscapeJson(result.Language)}\","
+               + "\"code\":\"\","
+               + $"\"summary\":\"{EscapeJson(result.Summary)}\","
+               + $"\"commonSummary\":\"{EscapeJson(result.CommonSummary)}\","
+               + $"\"commonPoints\":\"{EscapeJson(result.CommonPoints)}\","
+               + $"\"differences\":\"{EscapeJson(result.Differences)}\","
+               + $"\"recommendation\":\"{EscapeJson(result.Recommendation)}\","
+               + $"\"execution\":{BuildExecutionJson(result.Execution)},"
+               + $"\"workers\":{BuildCodingWorkerSnapshotsJson(result.Workers)},"
+               + $"\"changedFiles\":{BuildStringArrayJson(result.ChangedFiles)}"
+               + "}";
+    }
+
+    private static string BuildCodingExecutionResultJson(CodingResultExecutionResult result)
+    {
+        return "{"
+               + "\"type\":\"coding_execute_result\","
+               + $"\"ok\":{(result.Ok ? "true" : "false")},"
+               + $"\"conversationId\":\"{EscapeJson(result.ConversationId)}\","
+               + $"\"language\":\"{EscapeJson(result.Language)}\","
+               + $"\"runMode\":\"{EscapeJson(result.RunMode)}\","
+               + $"\"message\":\"{EscapeJson(result.Message)}\","
+               + $"\"targetProvider\":\"{EscapeJson(result.TargetProvider)}\","
+               + $"\"targetModel\":\"{EscapeJson(result.TargetModel)}\","
+               + $"\"previewUrl\":\"{EscapeJson(result.PreviewUrl)}\","
+               + $"\"previewEntry\":\"{EscapeJson(result.PreviewEntry)}\","
+               + $"\"execution\":{(result.Execution == null ? "null" : BuildExecutionJson(result.Execution))}"
+               + "}";
+    }
+
+    private static string BuildCodingWorkerSnapshotsJson(IReadOnlyList<CodingWorkerResultSnapshot> workers)
+    {
+        var builder = new StringBuilder();
+        builder.Append("[");
+        for (var i = 0; i < workers.Count; i++)
+        {
+            if (i > 0)
+            {
+                builder.Append(",");
+            }
+
+            var worker = workers[i];
+            builder.Append("{");
+            builder.Append($"\"provider\":\"{EscapeJson(worker.Provider)}\",");
+            builder.Append($"\"model\":\"{EscapeJson(worker.Model)}\",");
+            builder.Append($"\"language\":\"{EscapeJson(worker.Language)}\",");
+            builder.Append("\"code\":\"\",");
+            builder.Append("\"rawResponse\":\"\",");
+            builder.Append($"\"execution\":{BuildExecutionJson(worker.Execution)},");
+            builder.Append($"\"changedFiles\":{BuildStringArrayJson(worker.ChangedFiles)},");
+            builder.Append($"\"role\":\"{EscapeJson(worker.Role)}\",");
+            builder.Append($"\"summary\":\"{EscapeJson(worker.Summary)}\"");
             builder.Append("}");
         }
 

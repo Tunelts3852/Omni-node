@@ -55,9 +55,7 @@ public sealed class TelegramClient : IDisposable
 
     public async Task<bool> SendMessageAsync(string text, CancellationToken cancellationToken)
     {
-        var botToken = _runtimeSettings.GetTelegramBotToken();
-        var chatId = _runtimeSettings.GetTelegramChatId();
-        if (string.IsNullOrWhiteSpace(botToken) || string.IsNullOrWhiteSpace(chatId))
+        if (!TryGetConfiguredRoute(out var botToken, out var chatId))
         {
             Console.WriteLine($"[telegram] not configured, skipped message: {text}");
             return false;
@@ -76,29 +74,34 @@ public sealed class TelegramClient : IDisposable
             var htmlChunks = SplitTelegramHtmlMessageSafely(htmlCandidate, 3900);
             if (htmlChunks.Count > 0)
             {
-                var htmlFailed = false;
-                for (var index = 0; index < htmlChunks.Count; index += 1)
-                {
-                    var chunk = htmlChunks[index];
-                    var htmlResult = await SendMessageCoreAsync(endpoint, chatId, chunk, "HTML", enableSourcePreview, cancellationToken);
-                    if (htmlResult.Ok)
-                    {
-                        continue;
-                    }
-
-                    htmlFailed = true;
-                    if (ShouldLogSendError())
-                    {
-                        Console.Error.WriteLine(
-                            $"[telegram] sendMessage failed chunk={index + 1}/{htmlChunks.Count} html=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
-                        );
-                    }
-                    break;
-                }
-
-                if (!htmlFailed)
+                var htmlResult = await SendChunksAsync(
+                    endpoint,
+                    chatId,
+                    htmlChunks,
+                    "HTML",
+                    enableSourcePreview,
+                    cancellationToken
+                );
+                if (htmlResult.Success)
                 {
                     return true;
+                }
+
+                if (ShouldLogSendError())
+                {
+                    Console.Error.WriteLine(
+                        $"[telegram] sendMessage failed chunk={htmlResult.FailedIndex + 1}/{htmlChunks.Count} html=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
+                    );
+                }
+
+                if (htmlResult.SentCount > 0)
+                {
+                    if (ShouldLogSendError())
+                    {
+                        Console.Error.WriteLine("[telegram] fallback suppressed after partial html delivery to avoid duplicate telegram messages.");
+                    }
+
+                    return false;
                 }
             }
         }
@@ -110,47 +113,53 @@ public sealed class TelegramClient : IDisposable
             var htmlChunks = SplitTelegramHtmlMessageSafely(styledHtmlCandidate, 3900);
             if (htmlChunks.Count > 0)
             {
-                var htmlFailed = false;
-                for (var index = 0; index < htmlChunks.Count; index += 1)
-                {
-                    var chunk = htmlChunks[index];
-                    var htmlResult = await SendMessageCoreAsync(endpoint, chatId, chunk, "HTML", enableSourcePreview, cancellationToken);
-                    if (htmlResult.Ok)
-                    {
-                        continue;
-                    }
-
-                    htmlFailed = true;
-                    if (ShouldLogSendError())
-                    {
-                        Console.Error.WriteLine(
-                            $"[telegram] sendMessage failed chunk={index + 1}/{htmlChunks.Count} html-label=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
-                        );
-                    }
-                    break;
-                }
-
-                if (!htmlFailed)
+                var htmlResult = await SendChunksAsync(
+                    endpoint,
+                    chatId,
+                    htmlChunks,
+                    "HTML",
+                    enableSourcePreview,
+                    cancellationToken
+                );
+                if (htmlResult.Success)
                 {
                     return true;
+                }
+
+                if (ShouldLogSendError())
+                {
+                    Console.Error.WriteLine(
+                        $"[telegram] sendMessage failed chunk={htmlResult.FailedIndex + 1}/{htmlChunks.Count} html-label=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
+                    );
+                }
+
+                if (htmlResult.SentCount > 0)
+                {
+                    if (ShouldLogSendError())
+                    {
+                        Console.Error.WriteLine("[telegram] fallback suppressed after partial html-label delivery to avoid duplicate telegram messages.");
+                    }
+
+                    return false;
                 }
             }
         }
 
         var chunks = SplitTelegramMessage(plainWithPreviewUrl, 3900);
-        for (var index = 0; index < chunks.Count; index += 1)
+        var plainResult = await SendChunksAsync(
+            endpoint,
+            chatId,
+            chunks,
+            null,
+            enableSourcePreview,
+            cancellationToken
+        );
+        if (!plainResult.Success)
         {
-            var chunk = chunks[index];
-            var plainResult = await SendMessageCoreAsync(endpoint, chatId, chunk, null, enableSourcePreview, cancellationToken);
-            if (plainResult.Ok)
-            {
-                continue;
-            }
-
             if (ShouldLogSendError())
             {
                 Console.Error.WriteLine(
-                    $"[telegram] sendMessage failed chunk={index + 1}/{chunks.Count} plain=({plainResult.StatusCode}) {plainResult.ErrorBody}"
+                    $"[telegram] sendMessage failed chunk={plainResult.FailedIndex + 1}/{chunks.Count} plain=({plainResult.StatusCode}) {plainResult.ErrorBody}"
                 );
             }
 
@@ -158,6 +167,228 @@ public sealed class TelegramClient : IDisposable
         }
 
         return true;
+    }
+
+    public async Task<int?> SendProgressMessageAsync(string text, CancellationToken cancellationToken)
+    {
+        if (!TryGetConfiguredRoute(out var botToken, out var chatId))
+        {
+            return null;
+        }
+
+        var endpoint = $"https://api.telegram.org/bot{botToken}/sendMessage";
+        var result = await SendMessageCoreDetailedAsync(
+            endpoint,
+            chatId,
+            NormalizeTelegramText(text),
+            null,
+            false,
+            cancellationToken
+        );
+        return result.Ok && result.MessageId > 0 ? result.MessageId : null;
+    }
+
+    public async Task<(bool Success, bool FirstChunkDelivered)> ReplaceMessageAsync(int messageId, string text, CancellationToken cancellationToken)
+    {
+        if (messageId <= 0)
+        {
+            return (false, false);
+        }
+
+        if (!TryGetConfiguredRoute(out var botToken, out var chatId))
+        {
+            return (false, false);
+        }
+
+        var sendEndpoint = $"https://api.telegram.org/bot{botToken}/sendMessage";
+        var editEndpoint = $"https://api.telegram.org/bot{botToken}/editMessageText";
+        var normalized = NormalizeTelegramText(text);
+        var sourceLinkHtml = TryBuildSingleSourceLinkHtml(normalized);
+        var sourcePreviewUrl = ExtractFirstUrlFromText(sourceLinkHtml);
+        var enableSourcePreview = !string.IsNullOrWhiteSpace(sourceLinkHtml);
+        var plainWithPreviewUrl = AppendPreviewUrlToPlainText(normalized, sourcePreviewUrl);
+        var htmlCandidate = BuildTelegramHtmlWithAlignedTables(normalized);
+        htmlCandidate = AppendSourceLinkHtml(htmlCandidate, sourceLinkHtml);
+        if (!string.IsNullOrWhiteSpace(htmlCandidate))
+        {
+            var htmlChunks = SplitTelegramHtmlMessageSafely(htmlCandidate, 3900);
+            if (htmlChunks.Count > 0)
+            {
+                var htmlResult = await ReplaceFirstChunkAndSendTailAsync(
+                    editEndpoint,
+                    sendEndpoint,
+                    chatId,
+                    messageId,
+                    htmlChunks,
+                    "HTML",
+                    enableSourcePreview,
+                    cancellationToken
+                );
+                if (htmlResult.Success)
+                {
+                    return (true, true);
+                }
+
+                if (ShouldLogSendError())
+                {
+                    Console.Error.WriteLine(
+                        $"[telegram] editMessage failed chunk={htmlResult.FailedIndex + 1}/{htmlChunks.Count} html=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
+                    );
+                }
+
+                if (htmlResult.FirstChunkDelivered)
+                {
+                    return (false, true);
+                }
+            }
+        }
+
+        var styledHtmlCandidate = BuildTelegramHtmlWithLabelStyling(normalized);
+        styledHtmlCandidate = AppendSourceLinkHtml(styledHtmlCandidate, sourceLinkHtml);
+        if (!string.IsNullOrWhiteSpace(styledHtmlCandidate))
+        {
+            var htmlChunks = SplitTelegramHtmlMessageSafely(styledHtmlCandidate, 3900);
+            if (htmlChunks.Count > 0)
+            {
+                var htmlResult = await ReplaceFirstChunkAndSendTailAsync(
+                    editEndpoint,
+                    sendEndpoint,
+                    chatId,
+                    messageId,
+                    htmlChunks,
+                    "HTML",
+                    enableSourcePreview,
+                    cancellationToken
+                );
+                if (htmlResult.Success)
+                {
+                    return (true, true);
+                }
+
+                if (ShouldLogSendError())
+                {
+                    Console.Error.WriteLine(
+                        $"[telegram] editMessage failed chunk={htmlResult.FailedIndex + 1}/{htmlChunks.Count} html-label=({htmlResult.StatusCode}) {htmlResult.ErrorBody}"
+                    );
+                }
+
+                if (htmlResult.FirstChunkDelivered)
+                {
+                    return (false, true);
+                }
+            }
+        }
+
+        var plainChunks = SplitTelegramMessage(plainWithPreviewUrl, 3900);
+        var plainResult = await ReplaceFirstChunkAndSendTailAsync(
+            editEndpoint,
+            sendEndpoint,
+            chatId,
+            messageId,
+            plainChunks,
+            null,
+            enableSourcePreview,
+            cancellationToken
+        );
+        if (!plainResult.Success && ShouldLogSendError())
+        {
+            Console.Error.WriteLine(
+                $"[telegram] editMessage failed chunk={plainResult.FailedIndex + 1}/{plainChunks.Count} plain=({plainResult.StatusCode}) {plainResult.ErrorBody}"
+            );
+        }
+
+        return (plainResult.Success, plainResult.FirstChunkDelivered);
+    }
+
+    public async Task<bool> SendTypingAsync(CancellationToken cancellationToken)
+    {
+        if (!TryGetConfiguredRoute(out var botToken, out var chatId))
+        {
+            return false;
+        }
+
+        var endpoint = $"https://api.telegram.org/bot{botToken}/sendChatAction";
+        var builder = new StringBuilder();
+        builder.Append("{");
+        builder.Append($"\"chat_id\":\"{EscapeJson(chatId)}\",");
+        builder.Append("\"action\":\"typing\"");
+        builder.Append("}");
+        using var content = new StringContent(builder.ToString(), Encoding.UTF8, "application/json");
+        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+        return response.IsSuccessStatusCode;
+    }
+
+    private async Task<(bool Success, int SentCount, int FailedIndex, int StatusCode, string ErrorBody)> SendChunksAsync(
+        string endpoint,
+        string chatId,
+        IReadOnlyList<string> chunks,
+        string? parseMode,
+        bool enableLinkPreview,
+        CancellationToken cancellationToken
+    )
+    {
+        var sentCount = 0;
+        for (var index = 0; index < chunks.Count; index += 1)
+        {
+            var chunk = chunks[index];
+            var result = await SendMessageCoreAsync(endpoint, chatId, chunk, parseMode, enableLinkPreview, cancellationToken);
+            if (!result.Ok)
+            {
+                return (false, sentCount, index, result.StatusCode, result.ErrorBody);
+            }
+
+            sentCount += 1;
+        }
+
+        return (true, sentCount, -1, 200, string.Empty);
+    }
+
+    private async Task<(bool Success, bool FirstChunkDelivered, int FailedIndex, int StatusCode, string ErrorBody)> ReplaceFirstChunkAndSendTailAsync(
+        string editEndpoint,
+        string sendEndpoint,
+        string chatId,
+        int messageId,
+        IReadOnlyList<string> chunks,
+        string? parseMode,
+        bool enableLinkPreview,
+        CancellationToken cancellationToken
+    )
+    {
+        if (chunks.Count == 0)
+        {
+            return (true, false, -1, 200, string.Empty);
+        }
+
+        var firstChunkResult = await EditMessageCoreAsync(
+            editEndpoint,
+            chatId,
+            messageId,
+            chunks[0],
+            parseMode,
+            enableLinkPreview,
+            cancellationToken
+        );
+        if (!firstChunkResult.Ok)
+        {
+            return (false, false, 0, firstChunkResult.StatusCode, firstChunkResult.ErrorBody);
+        }
+
+        if (chunks.Count == 1)
+        {
+            return (true, true, -1, 200, string.Empty);
+        }
+
+        var tailResult = await SendChunksAsync(
+            sendEndpoint,
+            chatId,
+            chunks.Skip(1).ToArray(),
+            parseMode,
+            enableLinkPreview,
+            cancellationToken
+        );
+        return tailResult.Success
+            ? (true, true, -1, 200, string.Empty)
+            : (false, true, tailResult.FailedIndex + 1, tailResult.StatusCode, tailResult.ErrorBody);
     }
 
     public async Task<IReadOnlyList<TelegramUpdate>> GetUpdatesAsync(long offset, CancellationToken cancellationToken)
@@ -375,7 +606,42 @@ public sealed class TelegramClient : IDisposable
         CancellationToken cancellationToken
     )
     {
+        var detailed = await SendMessageCoreDetailedAsync(endpoint, chatId, text, parseMode, enableLinkPreview, cancellationToken);
+        return (detailed.Ok, detailed.StatusCode, detailed.ErrorBody);
+    }
+
+    private async Task<(bool Ok, int StatusCode, string ErrorBody, int MessageId)> SendMessageCoreDetailedAsync(
+        string endpoint,
+        string chatId,
+        string text,
+        string? parseMode,
+        bool enableLinkPreview,
+        CancellationToken cancellationToken
+    )
+    {
         var requestBody = BuildTelegramSendBody(chatId, text, parseMode, enableLinkPreview);
+        using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
+        using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return (false, (int)response.StatusCode, body, 0);
+        }
+
+        return (true, (int)response.StatusCode, string.Empty, ExtractMessageId(body));
+    }
+
+    private async Task<(bool Ok, int StatusCode, string ErrorBody)> EditMessageCoreAsync(
+        string endpoint,
+        string chatId,
+        int messageId,
+        string text,
+        string? parseMode,
+        bool enableLinkPreview,
+        CancellationToken cancellationToken
+    )
+    {
+        var requestBody = BuildTelegramEditBody(chatId, messageId, text, parseMode, enableLinkPreview);
         using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
         using var response = await _httpClient.PostAsync(endpoint, content, cancellationToken);
         if (response.IsSuccessStatusCode)
@@ -401,6 +667,60 @@ public sealed class TelegramClient : IDisposable
 
         builder.Append("}");
         return builder.ToString();
+    }
+
+    private static string BuildTelegramEditBody(string chatId, int messageId, string text, string? parseMode, bool enableLinkPreview)
+    {
+        var builder = new StringBuilder();
+        builder.Append("{");
+        builder.Append($"\"chat_id\":\"{EscapeJson(chatId)}\",");
+        builder.Append($"\"message_id\":{Math.Max(0, messageId)},");
+        builder.Append($"\"text\":\"{EscapeJson(text)}\",");
+        builder.Append($"\"disable_web_page_preview\":{(enableLinkPreview ? "false" : "true")}");
+        if (!string.IsNullOrWhiteSpace(parseMode))
+        {
+            builder.Append($",\"parse_mode\":\"{EscapeJson(parseMode)}\"");
+        }
+
+        builder.Append("}");
+        return builder.ToString();
+    }
+
+    private bool TryGetConfiguredRoute(out string botToken, out string chatId)
+    {
+        botToken = _runtimeSettings.GetTelegramBotToken() ?? string.Empty;
+        chatId = _runtimeSettings.GetTelegramChatId() ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(botToken) && !string.IsNullOrWhiteSpace(chatId);
+    }
+
+    private static int ExtractMessageId(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            if (!doc.RootElement.TryGetProperty("ok", out var okElement) || !okElement.GetBoolean())
+            {
+                return 0;
+            }
+
+            if (!doc.RootElement.TryGetProperty("result", out var resultElement)
+                || resultElement.ValueKind != JsonValueKind.Object)
+            {
+                return 0;
+            }
+
+            if (!resultElement.TryGetProperty("message_id", out var messageIdElement)
+                || !messageIdElement.TryGetInt32(out var messageId))
+            {
+                return 0;
+            }
+
+            return messageId;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     private static string NormalizeTelegramText(string text)
@@ -670,7 +990,8 @@ public sealed class TelegramClient : IDisposable
             var fallbackUrl = Regex.Match(normalized, @"https?://[^\s<>\""]+", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
             if (fallbackUrl.Success
                 && Uri.TryCreate(fallbackUrl.Value.Trim(), UriKind.Absolute, out var fallbackUri)
-                && (fallbackUri.Scheme == Uri.UriSchemeHttp || fallbackUri.Scheme == Uri.UriSchemeHttps))
+                && (fallbackUri.Scheme == Uri.UriSchemeHttp || fallbackUri.Scheme == Uri.UriSchemeHttps)
+                && !IsHiddenTelegramSourceHost(fallbackUri.Host))
             {
                 return $"<a href=\"{EscapeHtmlForTelegram(fallbackUri.AbsoluteUri)}\">출처 링크: {EscapeHtmlForTelegram(fallbackUri.Host)}</a>\n{EscapeHtmlForTelegram(fallbackUri.AbsoluteUri)}";
             }
@@ -681,7 +1002,8 @@ public sealed class TelegramClient : IDisposable
         var urlMatch = Regex.Match(sourceLine, @"https?://[^\s,\]]+", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
         if (urlMatch.Success
             && Uri.TryCreate(urlMatch.Value.Trim(), UriKind.Absolute, out var explicitUri)
-            && (explicitUri.Scheme == Uri.UriSchemeHttp || explicitUri.Scheme == Uri.UriSchemeHttps))
+            && (explicitUri.Scheme == Uri.UriSchemeHttp || explicitUri.Scheme == Uri.UriSchemeHttps)
+            && !IsHiddenTelegramSourceHost(explicitUri.Host))
         {
             var label = explicitUri.Host;
             return $"<a href=\"{EscapeHtmlForTelegram(explicitUri.AbsoluteUri)}\">출처 링크: {EscapeHtmlForTelegram(label)}</a>\n{EscapeHtmlForTelegram(explicitUri.AbsoluteUri)}";
@@ -699,7 +1021,18 @@ public sealed class TelegramClient : IDisposable
 
         foreach (var candidateLabel in candidates)
         {
+            if (IsHiddenTelegramSourceHost(candidateLabel))
+            {
+                continue;
+            }
+
             if (!TryResolveSourceUrl(candidateLabel, out var resolvedUrl))
+            {
+                continue;
+            }
+
+            if (Uri.TryCreate(resolvedUrl, UriKind.Absolute, out var resolvedUri)
+                && IsHiddenTelegramSourceHost(resolvedUri.Host))
             {
                 continue;
             }
@@ -708,6 +1041,30 @@ public sealed class TelegramClient : IDisposable
         }
 
         return string.Empty;
+    }
+
+    private static bool IsHiddenTelegramSourceHost(string? hostOrLabel)
+    {
+        var normalized = (hostOrLabel ?? string.Empty).Trim().Trim('.').ToLowerInvariant();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        normalized = Regex.Replace(normalized, @"^https?://", string.Empty, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        var cutIndex = normalized.IndexOfAny(new[] { '/', '?', '#', ' ' });
+        if (cutIndex >= 0)
+        {
+            normalized = normalized[..cutIndex];
+        }
+
+        if (normalized.StartsWith("www.", StringComparison.Ordinal))
+        {
+            normalized = normalized[4..];
+        }
+
+        return normalized.Equals("vietnam.vn", StringComparison.Ordinal)
+            || normalized.EndsWith(".vietnam.vn", StringComparison.Ordinal);
     }
 
     private static bool TryResolveSourceUrl(string sourceLabel, out string url)
@@ -1012,6 +1369,11 @@ public sealed class TelegramClient : IDisposable
             return false;
         }
 
+        if (LooksLikeStandaloneTelegramTimeLine(normalized))
+        {
+            return false;
+        }
+
         var match = Regex.Match(
             normalized,
             @"^(?<lead>(?:[-•▪]\s+)?)\s*(?<prefix>(?:No\.\d+|\d+[.)])\s*)?(?:(?:\*\*(?<labelMd>[A-Za-z가-힣0-9()'‘’,.&+_\-/\s]{1,120})\s*[:：]\*\*)|(?<labelPlain>[A-Za-z가-힣0-9()'‘’,.&+_\-/\s]{1,120})\s*[:：])\s*(?<value>.*)$",
@@ -1036,6 +1398,21 @@ public sealed class TelegramClient : IDisposable
         label = parsedLabel;
         value = NormalizeTelegramStructuredLabelValue(match.Groups["value"].Value);
         return true;
+    }
+
+    private static bool LooksLikeStandaloneTelegramTimeLine(string line)
+    {
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return false;
+        }
+
+        return Regex.IsMatch(
+            normalized,
+            @"^(?:[-•▪]\s*)?(?:(?:No\.\d+|\d+[.)])\s*)?(?:(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?)\s+)?\d{1,2}\s*:\s*\d{2}(?:\s*:\s*\d{2})?(?:\s*(?:AM|PM|am|pm))?$",
+            RegexOptions.CultureInvariant
+        );
     }
 
     private static string BuildTelegramRenderedTableHtml(IReadOnlyList<string[]> rows)

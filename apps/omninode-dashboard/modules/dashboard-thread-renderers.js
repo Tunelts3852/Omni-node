@@ -86,8 +86,8 @@ export function renderThreadModebar(props) {
     e("div", { className: "thread-modebar-copy" },
       e("div", { className: "thread-mode-kicker" }, rootTab === "coding" ? "코딩 워크플로" : "응답 전략"),
       e("div", { className: "thread-mode-hint" }, rootTab === "coding"
-        ? "단일 실행부터 오케스트레이션, 다중 코딩까지 한 흐름으로 관리합니다."
-        : "단일 답변, 오케스트레이션, 다중 LLM을 대화 흐름 안에서 전환합니다.")
+        ? "단일 완주, 역할 분담형 오케스트레이션, 모델별 독립 완주 비교를 한 흐름으로 관리합니다."
+        : "단일 답변, 역할 분담형 오케스트레이션, 모델별 비교형 다중 LLM을 대화 흐름 안에서 전환합니다.")
     ),
     renderModeTabs()
   );
@@ -177,6 +177,77 @@ export function renderThreadHeader(props) {
   );
 }
 
+function normalizeInlineCarouselIndex(index, entryCount) {
+  if (!Number.isFinite(entryCount) || entryCount <= 0) {
+    return 0;
+  }
+
+  const numericIndex = Number.isFinite(Number(index)) ? Number(index) : 0;
+  const normalized = numericIndex % entryCount;
+  return normalized < 0 ? normalized + entryCount : normalized;
+}
+
+function InlineResultCarousel(props) {
+  const { useEffect, useState } = React;
+  const {
+    e,
+    MarkdownBubbleText,
+    entries,
+    kicker,
+    title,
+    subtitle
+  } = props;
+  const safeEntries = Array.isArray(entries) ? entries.filter(Boolean) : [];
+  const [selectedIndex, setSelectedIndex] = useState(0);
+
+  useEffect(() => {
+    setSelectedIndex((prev) => normalizeInlineCarouselIndex(prev, safeEntries.length));
+  }, [safeEntries.length]);
+
+  if (safeEntries.length === 0) {
+    return e("div", { className: "empty-line" }, "모델별 결과가 없습니다.");
+  }
+
+  const activeIndex = normalizeInlineCarouselIndex(selectedIndex, safeEntries.length);
+  const activeEntry = safeEntries[activeIndex];
+  const canNavigate = safeEntries.length > 1;
+
+  return e(
+    "div",
+    { className: "multi-inline-carousel" },
+    e("div", { className: "bubble-meta" }, kicker || "모델별 비교"),
+    e("div", { className: "result-carousel-head thread-inline-carousel-head" },
+      e("div", { className: "result-carousel-copy" },
+        e("strong", null, title || "결과 비교"),
+        e("span", { className: "result-carousel-subtitle" }, activeEntry.meta || subtitle || "모델별 비교")
+      ),
+      e("div", { className: "result-carousel-nav" },
+        e("button", {
+          type: "button",
+          className: "btn ghost result-carousel-nav-btn",
+          onClick: () => setSelectedIndex((prev) => normalizeInlineCarouselIndex(prev - 1, safeEntries.length)),
+          disabled: !canNavigate,
+          title: "이전 모델"
+        }, "<"),
+        e("div", { className: "result-carousel-current" },
+          e("div", { className: "result-carousel-current-label" }, activeEntry.heading || "-"),
+          e("div", { className: "result-carousel-current-index" }, `${activeIndex + 1} / ${safeEntries.length}`)
+        ),
+        e("button", {
+          type: "button",
+          className: "btn ghost result-carousel-nav-btn",
+          onClick: () => setSelectedIndex((prev) => normalizeInlineCarouselIndex(prev + 1, safeEntries.length)),
+          disabled: !canNavigate,
+          title: "다음 모델"
+        }, ">")
+      )
+    ),
+    e("div", { className: `thread-inline-carousel-body${activeEntry.tone === "error" ? " is-error" : ""}` },
+      e(MarkdownBubbleText, { text: activeEntry.body || "-" })
+    )
+  );
+}
+
 export function renderMessagesPanel(props) {
   const {
     e,
@@ -190,7 +261,9 @@ export function renderMessagesPanel(props) {
     isConversationBoundEntryVisible,
     elapsedSeconds,
     sanitizeCodingAssistantText,
-    messageListRef
+    messageListRef,
+    parseChatMultiComparisonMessage,
+    parseCodingMultiComparisonMessage
   } = props;
 
   const optimisticUserEntry = optimisticUserByKey[currentKey];
@@ -211,6 +284,8 @@ export function renderMessagesPanel(props) {
   const iterationLabel = progress?.maxIterations > 0
     ? `내부 반복 ${progress.iteration || 0}/${progress.maxIterations}`
     : "";
+  const isChatMultiMode = currentKey === "chat:multi";
+  const isCodingMultiMode = currentKey === "coding:multi";
   return e(
     "div",
     { className: "message-list", ref: messageListRef },
@@ -221,6 +296,22 @@ export function renderMessagesPanel(props) {
           ? sanitizeCodingAssistantText(item.text || "")
           : (item.text || "");
         const isUser = item.role === "user";
+        const inlineMulti = !isUser && isChatMultiMode && typeof parseChatMultiComparisonMessage === "function"
+          ? parseChatMultiComparisonMessage(item.text || "")
+          : (!isUser && isCodingMultiMode && typeof parseCodingMultiComparisonMessage === "function"
+              ? parseCodingMultiComparisonMessage(item.text || "")
+              : null);
+        const inlineCarouselConfig = isChatMultiMode
+          ? {
+              kicker: "모델별 답변 비교",
+              title: "다중 LLM",
+              subtitle: "모델별 비교"
+            }
+          : {
+              kicker: "모델별 코딩 비교",
+              title: "다중 코딩",
+              subtitle: "모델별 독립 완주 결과"
+            };
         return e(
           "div",
           { key: `${item.createdUtc || index}-${index}`, className: `message-row ${isUser ? "user" : "assistant"}` },
@@ -229,9 +320,20 @@ export function renderMessagesPanel(props) {
             : null,
           e(
             "div",
-            { className: `bubble ${isUser ? "user" : "assistant"}` },
-            item.meta ? e("div", { className: "bubble-meta" }, item.meta) : null,
-            e(MarkdownBubbleText, { text: bubbleText })
+            { className: `bubble ${isUser ? "user" : "assistant"}${inlineMulti ? " bubble-multi-inline" : ""}` },
+            inlineMulti
+              ? e(InlineResultCarousel, {
+                  e,
+                  MarkdownBubbleText,
+                  entries: inlineMulti.entries,
+                  kicker: inlineCarouselConfig.kicker,
+                  title: inlineCarouselConfig.title,
+                  subtitle: inlineCarouselConfig.subtitle
+                })
+              : [
+                  item.meta ? e("div", { key: "meta", className: "bubble-meta" }, item.meta) : null,
+                  e(MarkdownBubbleText, { key: "body", text: bubbleText })
+                ]
           ),
           isUser
             ? e("div", { className: "message-avatar self" }, "ME")

@@ -27,6 +27,13 @@ import {
   createGuardAlertDispatchState,
   createSettingsState
 } from "./modules/settings-state.js";
+import { createDoctorState } from "./modules/doctor-state.js";
+import { createPlansState } from "./modules/plans-state.js";
+import { createContextState } from "./modules/context-state.js";
+import { createRoutingPolicyState } from "./modules/routing-policy-state.js";
+import { createTaskGraphState } from "./modules/task-graph-state.js";
+import { createRefactorState } from "./modules/refactor-state.js";
+import { createNotebooksState } from "./modules/notebooks-state.js";
 import {
   createChatState,
   createConversationState
@@ -47,16 +54,56 @@ import {
   sendWsPayload
 } from "./modules/ws-client.js";
 import {
+  requestDoctorLast,
+  requestDoctorRun
+} from "./modules/ws-doctor.js";
+import {
+  requestCommandsList,
+  requestContextScan,
+  requestSkillsList
+} from "./modules/ws-context.js";
+import {
+  requestPlanApprove,
+  requestPlanCreate,
+  requestPlanGet,
+  requestPlanList,
+  requestPlanReview,
+  requestPlanRun
+} from "./modules/ws-plans.js";
+import {
+  requestRoutingDecisionGetLast,
+  requestRoutingPolicyGet,
+  requestRoutingPolicyReset,
+  requestRoutingPolicySave
+} from "./modules/ws-routing.js";
+import {
+  requestTaskCancel,
+  requestTaskGraphCreate,
+  requestTaskGraphGet,
+  requestTaskGraphList,
+  requestTaskGraphRun,
+  requestTaskOutput
+} from "./modules/ws-tasks.js";
+import {
+  requestAstReplace,
+  requestRefactorApply,
+  requestLspRename,
+  requestRefactorPreview,
+  requestRefactorRead
+} from "./modules/ws-refactor.js";
+import {
+  requestHandoffCreate,
+  requestNotebookAppend,
+  requestNotebookGet
+} from "./modules/ws-notebooks.js";
+import {
   handleConversationMemoryMessage,
   handleExecutionFlowMessage,
   handleRoutineMessage
 } from "./modules/dashboard-message-handlers.js";
 import {
   renderChatMultiResultPanel,
-  renderCodingResultPanel,
-  renderComposerInputBar as renderComposerInputBarModule,
-  renderResponsiveWorkspaceSupportPane as renderResponsiveWorkspaceSupportPaneModule,
-  renderThreadSupportStack as renderThreadSupportStackModule
+  renderCodingResultPanel
 } from "./modules/dashboard-workspace-renderers.js";
 import {
   renderMessagesPanel as renderMessagesPanelModule,
@@ -65,16 +112,107 @@ import {
   renderThreadModebar as renderThreadModebarModule
 } from "./modules/dashboard-thread-renderers.js";
 import {
-  renderChatComposerPanel as renderChatComposerPanelModule,
-  renderCodingComposerPanel as renderCodingComposerPanelModule
-} from "./modules/dashboard-composer-renderers.js";
-import {
   renderConversationPanel as renderConversationPanelModule,
   renderMemoryPicker as renderMemoryPickerModule
 } from "./modules/dashboard-sidebar-renderers.js";
 import { renderRoutineTab as renderRoutineTabModule } from "./modules/dashboard-routine-renderers.js";
 import { renderToolControlPanel as renderToolControlPanelModule } from "./modules/dashboard-ops-renderers.js";
 import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dashboard-settings-renderers.js";
+import {
+  attachLatencyMetaToConversation,
+  buildConversationAvatarText,
+  buildTimeWindowKeys,
+  formatDecimal,
+  formatConversationUpdatedLabel,
+  localUtcOffsetLabel,
+  toneForCategory
+} from "./modules/dashboard-formatters.js";
+import {
+  buildGuardAlertPipelineEvent,
+  buildGuardAlertRuleResult,
+  buildGuardObsEvent,
+  buildGuardRetryTimelineEntry,
+  buildGuardRetryTimelineSnapshot,
+  buildProviderRuntimeEventsFromMessage,
+  formatGuardAlertThreshold,
+  GUARD_ALERT_PIPELINE_FIELD_ROWS,
+  GUARD_ALERT_RULES,
+  GUARD_OBS_CHANNEL_KEYS,
+  GUARD_RETRY_TIMELINE_API_REFRESH_MS,
+  GUARD_RETRY_TIMELINE_BUCKET_MINUTES,
+  GUARD_RETRY_TIMELINE_CHANNELS,
+  GUARD_RETRY_TIMELINE_MAX_BUCKET_ROWS,
+  GUARD_RETRY_TIMELINE_MAX_ENTRIES,
+  GUARD_RETRY_TIMELINE_WINDOW_MINUTES,
+  inferToolResultAction,
+  inferToolResultDomain,
+  inferToolResultGroup,
+  inferToolResultStatus,
+  normalizeGuardNumber,
+  normalizeGuardRetryTimelineSnapshot,
+  OPS_DOMAIN_FILTERS,
+  PROVIDER_RUNTIME_KEYS,
+  severityRank,
+  summarizeProviderRuntimeEntry,
+  TOOL_DOMAIN_FILTERS,
+  TOOL_RESULT_FILTERS,
+  TOOL_RESULT_GROUPS,
+  TOOL_RESULT_TYPES
+} from "./modules/dashboard-observability.js";
+import {
+  buildChatMultiRenderSnapshot,
+  buildCodingMultiRenderSnapshot,
+  normalizeChatMultiResultMessage,
+  parseChatMultiComparisonMessage,
+  parseCodingMultiComparisonMessage
+} from "./modules/dashboard-chat-multi.js";
+import { createMarkdownSupport } from "./modules/dashboard-markdown.js";
+import {
+  autoResizeComposerTextarea,
+  createResponsiveSectionTabsRenderer
+} from "./modules/dashboard-ui-helpers.js";
+import {
+  buildNextAttachments,
+  buildRichInputPayload,
+  clearAttachmentDraft,
+  hasDraggedFiles
+} from "./modules/dashboard-attachments.js";
+import {
+  buildDashboardModelOptionSets,
+  buildSettingsModelTableState
+} from "./modules/dashboard-model-data.js";
+import {
+  buildGuardAlertSummary,
+  buildGuardObsStats,
+  buildGuardRetryTimelineRows,
+  buildOpsDomainStats,
+  buildOpsFlowItems,
+  buildProviderHealthRows,
+  buildProviderHealthSummary,
+  buildProviderRuntimeRows,
+  buildProviderRuntimeStats,
+  buildToolDomainStats,
+  buildToolResultStats,
+  filterOpsFlowItems,
+  filterToolResultItems
+} from "./modules/dashboard-derived-state.js";
+import {
+  buildCodingResultRendererProps as buildCodingResultRendererPropsModule,
+  buildSafeRefactorRendererProps as buildSafeRefactorRendererPropsModule,
+  renderChatComposer as renderChatComposerShell,
+  renderCodingComposer as renderCodingComposerShell,
+  renderCodingResultDock as renderCodingResultDockShell,
+  renderCodingResultOverlay as renderCodingResultOverlayShell,
+  renderComposerInputBar as renderComposerInputBarShell,
+  renderGlobalNav as renderGlobalNavModule,
+  renderModeTabs as renderModeTabsModule,
+  renderResponsiveWorkspaceSupportPane as renderResponsiveWorkspaceSupportPaneShell,
+  renderSafeRefactorDock as renderSafeRefactorDockShell,
+  renderSafeRefactorOverlay as renderSafeRefactorOverlayShell,
+  renderSafeRefactorPanel as renderSafeRefactorPanelShell,
+  renderThreadSupportStack as renderThreadSupportStackShell,
+  renderWorkspace as renderWorkspaceShell
+} from "./modules/dashboard-shell-renderers.js";
 
 (function () {
   const { useEffect, useMemo, useRef, useState } = React;
@@ -111,1805 +249,17 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
   const ROUTINE_STATE_DEFAULTS = createRoutineState({
     defaultMobilePanes: DEFAULT_MOBILE_PANES
   });
-  const markdownRenderer = (() => {
-    try {
-      if (typeof window === "undefined" || typeof window.markdownit !== "function") {
-        return null;
-      }
-
-      const renderer = window.markdownit({
-        html: false,
-        linkify: true,
-        breaks: true,
-        typographer: true
-      });
-
-      if (typeof window.markdownitFootnote === "function") {
-        renderer.use(window.markdownitFootnote);
-      }
-
-      const originalLinkOpen = renderer.renderer.rules.link_open
-        || ((tokens, idx, options, env, self) => self.renderToken(tokens, idx, options));
-      renderer.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-        tokens[idx].attrSet("target", "_blank");
-        tokens[idx].attrSet("rel", "noopener noreferrer");
-        return originalLinkOpen(tokens, idx, options, env, self);
-      };
-
-      return renderer;
-    } catch (_err) {
-      return null;
-    }
-  })();
-  const CATEGORY_TONES = ["blue", "teal", "green", "amber", "red", "indigo"];
-  const TOOL_RESULT_TYPES = new Set([
-    "sessions_list_result",
-    "sessions_history_result",
-    "sessions_send_result",
-    "sessions_spawn_result",
-    "web_search_result",
-    "web_fetch_result",
-    "memory_search_result",
-    "memory_get_result",
-    "cron_result",
-    "browser_result",
-    "canvas_result",
-    "nodes_result",
-    "telegram_stub_result"
-  ]);
-  const TOOL_RESULT_GROUPS = [
-    { key: "sessions", label: "sessions" },
-    { key: "cron", label: "cron" },
-    { key: "browser", label: "browser" },
-    { key: "canvas", label: "canvas" },
-    { key: "nodes", label: "nodes" },
-    { key: "web", label: "web(rag)" },
-    { key: "memory", label: "memory(rag)" },
-    { key: "telegram", label: "telegram(stub)" }
-  ];
-  const TOOL_RESULT_GROUP_BY_TYPE = {
-    sessions_list_result: "sessions",
-    sessions_history_result: "sessions",
-    sessions_send_result: "sessions",
-    sessions_spawn_result: "sessions",
-    web_search_result: "web",
-    web_fetch_result: "web",
-    memory_search_result: "memory",
-    memory_get_result: "memory",
-    cron_result: "cron",
-    browser_result: "browser",
-    canvas_result: "canvas",
-    nodes_result: "nodes",
-    telegram_stub_result: "telegram"
+  const chatMultiUtils = {
+    normalizeChatMultiResultMessage,
+    parseChatMultiComparisonMessage,
+    parseCodingMultiComparisonMessage,
+    buildCodingMultiRenderSnapshot,
+    buildChatMultiRenderSnapshot
   };
-  const TOOL_RESULT_FILTERS = [
-    { key: "all", label: "전체" },
-    { key: "sessions", label: "sessions" },
-    { key: "cron", label: "cron" },
-    { key: "browser", label: "browser" },
-    { key: "canvas", label: "canvas" },
-    { key: "nodes", label: "nodes" },
-    { key: "web", label: "web(rag)" },
-    { key: "memory", label: "memory(rag)" },
-    { key: "telegram", label: "telegram(stub)" },
-    { key: "errors", label: "오류" }
-  ];
-  const TOOL_RESULT_DOMAIN_BY_GROUP = {
-    sessions: "tool",
-    cron: "tool",
-    browser: "tool",
-    canvas: "tool",
-    nodes: "tool",
-    telegram: "tool",
-    web: "rag",
-    memory: "rag"
-  };
-  const TOOL_DOMAIN_FILTERS = [
-    { key: "all", label: "전체 도메인" },
-    { key: "tool", label: "tool" },
-    { key: "rag", label: "rag" }
-  ];
-  const OPS_DOMAIN_FILTERS = [
-    { key: "all", label: "전체 도메인" },
-    { key: "provider", label: "provider" },
-    { key: "tool", label: "tool" },
-    { key: "rag", label: "rag" }
-  ];
-  const PROVIDER_RUNTIME_KEYS = ["groq", "gemini", "cerebras", "copilot", "codex", "auto", "unknown"];
-  const GUARD_OBS_CHANNEL_KEYS = ["chat", "coding", "telegram", "search", "other"];
-  const GUARD_RETRY_TIMELINE_SCHEMA_VERSION = "guard_retry_timeline.v1";
-  const GUARD_RETRY_TIMELINE_CHANNELS = ["chat", "coding", "telegram"];
-  const GUARD_RETRY_TIMELINE_BUCKET_MINUTES = 5;
-  const GUARD_RETRY_TIMELINE_WINDOW_MINUTES = 60;
-  const GUARD_RETRY_TIMELINE_MAX_ENTRIES = 512;
-  const GUARD_RETRY_TIMELINE_MAX_BUCKET_ROWS = 12;
-  const GUARD_RETRY_TIMELINE_API_REFRESH_MS = 15000;
-  const GUARD_OBS_MESSAGE_TYPES = new Set([
-    "llm_chat_result",
-    "llm_chat_multi_result",
-    "coding_result",
-    "telegram_stub_result",
-    "web_search_result"
-  ]);
-  const GUARD_ALERT_RULES = [
-    {
-      id: "guard_blocked_rate",
-      label: "guard 차단 비율",
-      metricType: "rate",
-      numeratorKey: "blockedTotal",
-      warn: 0.45,
-      critical: 0.65,
-      minTotal: 8
-    },
-    {
-      id: "retry_required_rate",
-      label: "retryRequired 비율",
-      metricType: "rate",
-      numeratorKey: "retryRequiredTotal",
-      warn: 0.45,
-      critical: 0.7,
-      minTotal: 8
-    },
-    {
-      id: "count_lock_unsatisfied_rate",
-      label: "count-lock 미충족 비율",
-      metricType: "rate",
-      numeratorKey: "countLockUnsatisfiedTotal",
-      warn: 0.1,
-      critical: 0.2,
-      minTotal: 4
-    },
-    {
-      id: "citation_validation_failed_rate",
-      label: "citation fail 비율",
-      metricType: "rate",
-      numeratorKey: "citationValidationFailedTotal",
-      warn: 0.1,
-      critical: 0.2,
-      minTotal: 4
-    },
-    {
-      id: "telegram_guard_meta_blocked_count",
-      label: "telegram_guard_meta 차단 건수",
-      metricType: "count",
-      valueKey: "telegramGuardMetaBlockedTotal",
-      warn: 1,
-      critical: 2,
-      minTotal: 1
-    }
-  ];
-  const GUARD_ALERT_PIPELINE_SCHEMA_VERSION = "guard_alert_event.v1";
-  const GUARD_ALERT_PIPELINE_EVENT_TYPE = "omninode.guard_alert.summary";
-  const GUARD_ALERT_PIPELINE_FIELD_ROWS = [
-    {
-      path: "schemaVersion",
-      type: "string",
-      required: "Y",
-      description: "고정값 guard_alert_event.v1"
-    },
-    {
-      path: "eventType",
-      type: "string",
-      required: "Y",
-      description: "고정값 omninode.guard_alert.summary"
-    },
-    {
-      path: "emittedAtUtc",
-      type: "string(ISO-8601)",
-      required: "Y",
-      description: "이벤트 생성 시각(UTC)"
-    },
-    {
-      path: "keySourcePolicy",
-      type: "string",
-      required: "Y",
-      description: "keychain|secure_file_600"
-    },
-    {
-      path: "geminiKeyRequiredFor",
-      type: "string[]",
-      required: "Y",
-      description: "test/validation/regression/production_run"
-    },
-    {
-      path: "alertSummary",
-      type: "object",
-      required: "Y",
-      description: "경보 최악 등급/트리거/표본부족 집계"
-    },
-    {
-      path: "guardMetrics",
-      type: "object",
-      required: "Y",
-      description: "guard/retry/count-lock/citation/telegram 핵심 카운터"
-    },
-    {
-      path: "guardMetrics.countLockUnsatisfiedByChannel",
-      type: "object",
-      required: "Y",
-      description: "채널별 count-lock 미충족 건수(chat/coding/telegram/search/other)"
-    },
-    {
-      path: "guardMetrics.countLockUnsatisfiedRateByChannel",
-      type: "object",
-      required: "Y",
-      description: "채널별 count-lock 미충족 비율(chat/coding/telegram/search/other)"
-    },
-    {
-      path: "guardAlertRows[]",
-      type: "object[]",
-      required: "Y",
-      description: "규칙별 observed/warn/critical/status"
-    },
-    {
-      path: "retryTimeline",
-      type: "object",
-      required: "Y",
-      description: "채널 공통 retryAttempt/retryMaxAttempts/retryStopReason 5분 버킷 시계열"
-    },
-    {
-      path: "retryTop",
-      type: "object",
-      required: "N",
-      description: "retryAction/retryReason/retryStopReason 상위 집계"
-    }
-  ];
-  const chatMultiUtils = (typeof globalThis !== "undefined" && globalThis.OmniChatMultiUtils)
-    ? globalThis.OmniChatMultiUtils
-    : {
-        _toText(value) {
-          if (typeof value === "string") {
-            return value;
-          }
-          if (value === null || value === undefined) {
-            return "";
-          }
-          return `${value}`;
-        },
-        _toMetaText(value) {
-          return this._toText(value).trim();
-        },
-        normalizeChatMultiResultMessage(msg) {
-          return {
-            groq: this._toText(msg && msg.groq),
-            gemini: this._toText(msg && msg.gemini),
-            cerebras: this._toText(msg && msg.cerebras),
-            copilot: this._toText(msg && msg.copilot),
-            codex: this._toText(msg && msg.codex),
-            summary: this._toText(msg && msg.summary),
-            groqModel: this._toMetaText(msg && msg.groqModel),
-            geminiModel: this._toMetaText(msg && msg.geminiModel),
-            cerebrasModel: this._toMetaText(msg && msg.cerebrasModel),
-            copilotModel: this._toMetaText(msg && msg.copilotModel),
-            codexModel: this._toMetaText(msg && msg.codexModel),
-            requestedSummaryProvider: this._toMetaText(msg && msg.requestedSummaryProvider),
-            resolvedSummaryProvider: this._toMetaText(msg && msg.resolvedSummaryProvider)
-          };
-        },
-        buildChatMultiDisplayLabels(value) {
-          const result = this.normalizeChatMultiResultMessage(value);
-          return {
-            groqLabel: result && result.groqModel ? `Groq (${result.groqModel})` : "Groq",
-            geminiLabel: result && result.geminiModel ? `Gemini (${result.geminiModel})` : "Gemini",
-            cerebrasLabel: result && result.cerebrasModel ? `Cerebras (${result.cerebrasModel})` : "Cerebras",
-            copilotLabel: result && result.copilotModel ? `Copilot (${result.copilotModel})` : "Copilot",
-            codexLabel: result && result.codexModel ? `Codex (${result.codexModel})` : "Codex",
-            summaryLabel: result && (result.requestedSummaryProvider || result.resolvedSummaryProvider)
-              ? `요약 (요청=${result.requestedSummaryProvider || "-"}, 실제=${result.resolvedSummaryProvider || "-"})`
-              : "요약"
-          };
-        },
-        buildChatMultiRenderSnapshot(value) {
-          const normalized = this.normalizeChatMultiResultMessage(value);
-          const labels = this.buildChatMultiDisplayLabels(normalized);
-          const sections = [
-            { provider: "groq", heading: labels.groqLabel, body: normalized.groq || "-" },
-            { provider: "gemini", heading: labels.geminiLabel, body: normalized.gemini || "-" },
-            { provider: "cerebras", heading: labels.cerebrasLabel, body: normalized.cerebras || "-" },
-            { provider: "copilot", heading: labels.copilotLabel, body: normalized.copilot || "-" }
-          ];
-          if ((normalized.codex || "").trim() || (normalized.codexModel || "").trim()) {
-            sections.push({ provider: "codex", heading: labels.codexLabel, body: normalized.codex || "-" });
-          }
-          sections.push({ provider: "summary", heading: labels.summaryLabel, body: normalized.summary || "-" });
-          return {
-            normalized,
-            labels,
-            sections
-          };
-        }
-      };
-
-  function hashText(value) {
-    const text = (value || "").trim();
-    let hash = 0;
-    for (let i = 0; i < text.length; i += 1) {
-      hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
-    }
-    return hash;
-  }
-
-  function toneForCategory(category) {
-    if (!category) {
-      return "blue";
-    }
-
-    const idx = hashText(category) % CATEGORY_TONES.length;
-    return CATEGORY_TONES[idx];
-  }
-
-  function localUtcOffsetLabel() {
-    const minutes = -new Date().getTimezoneOffset();
-    const sign = minutes >= 0 ? "+" : "-";
-    const abs = Math.abs(minutes);
-    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-    const mm = String(abs % 60).padStart(2, "0");
-    return `UTC${sign}${hh}:${mm}`;
-  }
-
-  function pad2(value) {
-    return String(value).padStart(2, "0");
-  }
-
-  function buildTimeWindowKeys(timestamp) {
-    const now = new Date(timestamp || Date.now());
-    const yyyy = now.getFullYear();
-    const mm = pad2(now.getMonth() + 1);
-    const dd = pad2(now.getDate());
-    const hh = pad2(now.getHours());
-    const mi = pad2(now.getMinutes());
-    return {
-      minute: `${yyyy}${mm}${dd}${hh}${mi}`,
-      hour: `${yyyy}${mm}${dd}${hh}`,
-      day: `${yyyy}${mm}${dd}`
-    };
-  }
-
-  function formatDecimal(value, digits) {
-    const parsed = Number.parseFloat(`${value ?? ""}`);
-    if (!Number.isFinite(parsed)) {
-      return "-";
-    }
-    return parsed.toFixed(digits);
-  }
-
-  function formatLatencySeconds(ms) {
-    const numeric = Number(ms);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      return "-";
-    }
-    return `${formatDecimal(numeric / 1000, numeric >= 1000 ? 2 : 3)}s`;
-  }
-
-  function normalizeLatencyMetrics(raw) {
-    if (!raw || typeof raw !== "object") {
-      return null;
-    }
-
-    const normalized = {
-      decisionMs: Number(raw.decisionMs || 0),
-      promptBuildMs: Number(raw.promptBuildMs || 0),
-      firstChunkMs: Number(raw.firstChunkMs || 0),
-      fullResponseMs: Number(raw.fullResponseMs || 0),
-      sanitizeMs: Number(raw.sanitizeMs || 0),
-      serverTotalMs: Number(raw.serverTotalMs || 0),
-      decisionPath: `${raw.decisionPath || ""}`.trim()
-    };
-
-    if (!Number.isFinite(normalized.serverTotalMs) || normalized.serverTotalMs <= 0) {
-      normalized.serverTotalMs = Math.max(
-        0,
-        normalized.decisionMs + normalized.promptBuildMs + normalized.fullResponseMs + normalized.sanitizeMs
-      );
-    }
-
-    return normalized;
-  }
-
-  function formatLatencyMeta(latency) {
-    const normalized = normalizeLatencyMetrics(latency);
-    if (!normalized || normalized.serverTotalMs <= 0) {
-      return "";
-    }
-
-    const parts = [
-      `server ${formatLatencySeconds(normalized.serverTotalMs)}`,
-      `first ${formatLatencySeconds(normalized.firstChunkMs)}`,
-      `full ${formatLatencySeconds(normalized.fullResponseMs)}`
-    ];
-    if (normalized.decisionMs > 0) {
-      parts.push(`decision ${normalized.decisionMs}ms`);
-    }
-    if (normalized.sanitizeMs > 0) {
-      parts.push(`sanitize ${normalized.sanitizeMs}ms`);
-    }
-    return parts.join(" · ");
-  }
-
-  function attachLatencyMetaToConversation(conversation, msg) {
-    if (!conversation || !Array.isArray(conversation.messages)) {
-      return conversation;
-    }
-
-    const latencyMeta = formatLatencyMeta(msg && msg.latency);
-    if (!latencyMeta) {
-      return conversation;
-    }
-
-    const messages = conversation.messages.slice();
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      const item = messages[i];
-      if (!item || item.role !== "assistant") {
-        continue;
-      }
-
-      const baseMeta = `${item.meta || ""}`.trim();
-      if (baseMeta.includes("server ") || baseMeta.includes("first ")) {
-        return conversation;
-      }
-
-      messages[i] = {
-        ...item,
-        meta: baseMeta ? `${baseMeta} · ${latencyMeta}` : latencyMeta
-      };
-      return { ...conversation, messages };
-    }
-
-    return conversation;
-  }
-
-  function escapeHtml(value) {
-    return `${value ?? ""}`
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
-  }
-
-  function countMatches(text, regex) {
-    if (!text) {
-      return 0;
-    }
-    const matches = text.match(regex);
-    return matches ? matches.length : 0;
-  }
-
-  function canonicalizeMarkdownTableRow(line) {
-    const trimmed = `${line ?? ""}`.trim();
-    if (!trimmed.includes("|")) {
-      return "";
-    }
-    if (/^https?:\/\//i.test(trimmed)) {
-      return "";
-    }
-
-    let candidate = trimmed;
-    if (!candidate.startsWith("|")) {
-      candidate = `| ${candidate}`;
-    }
-    if (!candidate.endsWith("|")) {
-      candidate = `${candidate} |`;
-    }
-
-    const cells = candidate
-      .slice(1, -1)
-      .split("|")
-      .map((cell) => `${cell ?? ""}`.trim());
-    if (cells.length < 2 || cells.every((cell) => !cell)) {
-      return "";
-    }
-
-    return `| ${cells.join(" | ")} |`;
-  }
-
-  function canonicalizeMarkdownTableSeparatorLine(line, expectedCells = 0) {
-    const dashVariantsRegex = /[\u2014\u2013\u2011\u2212\u2500\u2012]/g;
-    const normalizedRow = canonicalizeMarkdownTableRow(line);
-    if (!normalizedRow) {
-      return "";
-    }
-
-    const rawCells = normalizedRow
-      .slice(1, -1)
-      .split("|")
-      .map((cell) => `${cell ?? ""}`.trim());
-    if (rawCells.length < 2) {
-      return "";
-    }
-    if (expectedCells > 0 && rawCells.length !== expectedCells) {
-      return "";
-    }
-
-    const normalizedCells = [];
-    for (const cell of rawCells) {
-      const compact = `${cell ?? ""}`.replace(/\s+/g, "").replace(dashVariantsRegex, "-");
-      if (!/^:?-+:?$/.test(compact)) {
-        return "";
-      }
-
-      const leadingColon = compact.startsWith(":") ? ":" : "";
-      const trailingColon = compact.endsWith(":") ? ":" : "";
-      const dashCount = Math.max(3, countMatches(compact, /-/g));
-      normalizedCells.push(`${leadingColon}${"-".repeat(dashCount)}${trailingColon}`);
-    }
-
-    return `| ${normalizedCells.join(" | ")} |`;
-  }
-
-  function normalizeMarkdownTableBlocks(text) {
-    if (!text) {
-      return "";
-    }
-
-    const lines = `${text ?? ""}`.split("\n");
-    let changed = false;
-
-    for (let i = 0; i + 1 < lines.length; i += 1) {
-      const headerRow = canonicalizeMarkdownTableRow(lines[i]);
-      if (!headerRow) {
-        continue;
-      }
-
-      const headerCells = headerRow
-        .slice(1, -1)
-        .split("|")
-        .map((cell) => `${cell ?? ""}`.trim());
-      const separatorRow = canonicalizeMarkdownTableSeparatorLine(lines[i + 1], headerCells.length);
-      if (!separatorRow) {
-        continue;
-      }
-
-      if (lines[i] !== headerRow) {
-        lines[i] = headerRow;
-        changed = true;
-      }
-      if (lines[i + 1] !== separatorRow) {
-        lines[i + 1] = separatorRow;
-        changed = true;
-      }
-
-      for (let j = i + 2; j < lines.length; j += 1) {
-        const bodyRow = canonicalizeMarkdownTableRow(lines[j]);
-        if (!bodyRow) {
-          break;
-        }
-
-        if (lines[j] !== bodyRow) {
-          lines[j] = bodyRow;
-          changed = true;
-        }
-      }
-    }
-
-    return changed ? lines.join("\n") : text;
-  }
-
-  function hasMarkdownTableBlock(text) {
-    const lines = `${text ?? ""}`.split("\n");
-    for (let i = 0; i + 1 < lines.length; i += 1) {
-      const headerRow = canonicalizeMarkdownTableRow(lines[i]);
-      if (!headerRow) {
-        continue;
-      }
-
-      const headerCells = headerRow
-        .slice(1, -1)
-        .split("|")
-        .map((cell) => `${cell ?? ""}`.trim());
-      if (canonicalizeMarkdownTableSeparatorLine(lines[i + 1], headerCells.length)) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function normalizeMarkdownTableSeparators(text) {
-    if (!text) {
-      return "";
-    }
-
-    const dashVariantsRegex = /[\u2014\u2013\u2011\u2212\u2500\u2012]/g;
-    const lines = text.split("\n");
-    let changed = false;
-
-    const normalizedLines = lines.map((line) => {
-      const trimmed = `${line ?? ""}`.trim();
-      if (!trimmed.includes("|")) {
-        return line;
-      }
-
-      let candidate = trimmed;
-      if (!candidate.startsWith("|")) {
-        candidate = `|${candidate}`;
-      }
-      if (!candidate.endsWith("|")) {
-        candidate = `${candidate}|`;
-      }
-
-      if (!/^\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]+\s*(\|\s*[:\-\u2014\u2013\u2011\u2212\u2500\u2012]+\s*)+\|$/.test(candidate)) {
-        return line;
-      }
-
-      const rawCells = candidate
-        .slice(1, -1)
-        .split("|")
-        .map((cell) => `${cell ?? ""}`.trim());
-      if (rawCells.length < 2) {
-        return line;
-      }
-
-      const normalizedCells = [];
-      for (const cell of rawCells) {
-        const compact = `${cell ?? ""}`.replace(/\s+/g, "").replace(dashVariantsRegex, "-");
-        if (!/^:?-+:?$/.test(compact)) {
-          return line;
-        }
-
-        const leadingColon = compact.startsWith(":") ? ":" : "";
-        const trailingColon = compact.endsWith(":") ? ":" : "";
-        const dashCount = Math.max(3, countMatches(compact, /-/g));
-        normalizedCells.push(`${leadingColon}${"-".repeat(dashCount)}${trailingColon}`);
-      }
-
-      const leadingMatch = `${line ?? ""}`.match(/^\s*/);
-      const leadingWhitespace = leadingMatch ? leadingMatch[0] : "";
-      const rebuilt = `${leadingWhitespace}| ${normalizedCells.join(" | ")} |`;
-      if (rebuilt !== line) {
-        changed = true;
-      }
-
-      return rebuilt;
-    });
-
-    return changed ? normalizedLines.join("\n") : text;
-  }
-
-  function isMarkdownTableRow(line) {
-    return !!canonicalizeMarkdownTableRow(line);
-  }
-
-  function collapseMarkdownTableBlankLines(text) {
-    if (!text) {
-      return "";
-    }
-
-    const lines = text.split("\n");
-    if (lines.length < 3) {
-      return text;
-    }
-
-    const compact = [];
-    const findNextNonEmpty = (startIndex) => {
-      for (let i = Math.max(0, startIndex); i < lines.length; i += 1) {
-        if (`${lines[i] ?? ""}`.trim().length > 0) {
-          return lines[i];
-        }
-      }
-      return "";
-    };
-
-    lines.forEach((line, index) => {
-      if (`${line ?? ""}`.trim().length === 0) {
-        const prev = compact.length > 0 ? compact[compact.length - 1] : "";
-        const next = findNextNonEmpty(index + 1);
-        if (isMarkdownTableRow(prev) && isMarkdownTableRow(next)) {
-          return;
-        }
-      }
-      compact.push(line);
-    });
-
-    return compact.join("\n");
-  }
-
-  function isMarkdownTableSeparatorLine(line) {
-    return !!canonicalizeMarkdownTableSeparatorLine(line);
-  }
-
-  function renderFallbackInlineMarkdown(value) {
-    let html = escapeHtml(`${value ?? ""}`);
-    html = html.replace(/\*\*([^*\n][\s\S]*?)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/__([^_\n][\s\S]*?)__/g, "<strong>$1</strong>");
-    return html;
-  }
-
-  function autoResizeComposerTextarea(node) {
-    if (!node) {
-      return;
-    }
-
-    node.style.height = "0px";
-    const nextHeight = Math.min(Math.max(node.scrollHeight, 46), 168);
-    node.style.height = `${nextHeight}px`;
-    node.style.overflowY = node.scrollHeight > 168 ? "auto" : "hidden";
-  }
-
-  function splitMarkdownTableCells(line) {
-    const normalizedRow = canonicalizeMarkdownTableRow(line);
-    if (!normalizedRow) {
-      return [];
-    }
-
-    return normalizedRow
-      .slice(1, -1)
-      .split("|")
-      .map((cell) => renderFallbackInlineMarkdown(`${cell ?? ""}`.trim()));
-  }
-
-  function renderTableAwareFallbackHtml(text) {
-    const lines = `${text ?? ""}`.split("\n");
-    const chunks = [];
-    let i = 0;
-
-    while (i < lines.length) {
-      const line = lines[i];
-      if (isMarkdownTableRow(line) && i + 1 < lines.length && isMarkdownTableSeparatorLine(lines[i + 1])) {
-        const headerCells = splitMarkdownTableCells(line);
-        i += 2;
-        const bodyRows = [];
-        while (i < lines.length && isMarkdownTableRow(lines[i])) {
-          bodyRows.push(splitMarkdownTableCells(lines[i]));
-          i += 1;
-        }
-
-        if (headerCells.length >= 2) {
-          let tableHtml = "<table><thead><tr>";
-          headerCells.forEach((cell) => {
-            tableHtml += `<th>${cell}</th>`;
-          });
-          tableHtml += "</tr></thead><tbody>";
-          bodyRows.forEach((cells) => {
-            tableHtml += "<tr>";
-            for (let ci = 0; ci < headerCells.length; ci += 1) {
-              tableHtml += `<td>${cells[ci] ?? ""}</td>`;
-            }
-            tableHtml += "</tr>";
-          });
-          tableHtml += "</tbody></table>";
-          chunks.push(tableHtml);
-          continue;
-        }
-      }
-
-      if (`${line ?? ""}`.trim().length === 0) {
-        chunks.push("<br>");
-      } else {
-        chunks.push(renderFallbackInlineMarkdown(line));
-      }
-      i += 1;
-    }
-
-    return chunks.join("<br>").replace(/(?:<br>){3,}/g, "<br><br>");
-  }
-
-  function normalizeStructuredMarkdownArtifacts(value) {
-    let text = `${value ?? ""}`;
-    text = text.replace(
-      /(^|\n)(\d+\.)\s*\n+(?=\s*(?:\*\*[^*\n]+:\*\*|[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:\s))/g,
-      "$1$2 "
-    );
-    text = text.replace(
-      /(^|\n)((?:\*\*[^*\n]+:\*\*)|(?:[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:))\s+\*\*\s+/g,
-      "$1$2 "
-    );
-    text = text.replace(
-      /(^|\n)((?:\*\*[^*\n]+:\*\*)|(?:[A-Za-z가-힣0-9('‘’][A-Za-z가-힣0-9()'‘’,.&+_/\-·\s]{0,80}:))\s+\*\*(?=\n|$)/g,
-      "$1$2"
-    );
-    text = text.replace(
-      /(^|\n)(?<lead>[-•▪]\s*)?(?<body>\d+[.)]\s*[^\n:*|]+)(?=\n|$)/g,
-      (match, prefix, lead, body) => {
-        const normalizedLead = `${lead ?? ""}`;
-        const normalizedBody = `${body ?? ""}`.trim();
-        if (!normalizedBody || /\*\*/.test(normalizedBody)) {
-          return `${prefix}${normalizedLead}${normalizedBody}`;
-        }
-
-        const headline = normalizedBody.replace(/^\d+[.)]\s*/, "").trim();
-        if (!headline
-          || headline.length < 2
-          || headline.length > 140
-          || /[:：|]/.test(headline)
-          || /https?:\/\//i.test(headline)
-          || /^(출처|요약|핵심)/i.test(headline)
-          || /(니다\.|습니다\.|다\.|요\.|[?!.])$/.test(headline)) {
-          return `${prefix}${normalizedLead}${normalizedBody}`;
-        }
-
-        return `${prefix}${normalizedLead}**${normalizedBody}**`;
-      }
-    );
-    return text;
-  }
-
-  function normalizeMarkdownSource(value) {
-    let text = `${value ?? ""}`.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-    const rawLineBreakCount = countMatches(text, /\n/g);
-
-    if (rawLineBreakCount <= 1 && /\\n/.test(text)) {
-      text = text
-        .replace(/\\r\\n/g, "\n")
-        .replace(/\\n/g, "\n")
-        .replace(/\\t/g, "  ");
-    }
-
-    text = normalizeStructuredMarkdownArtifacts(text);
-    text = normalizeMarkdownTableSeparators(text);
-    text = normalizeMarkdownTableBlocks(text);
-    text = collapseMarkdownTableBlankLines(text);
-
-    const markdownSignalCount =
-      countMatches(text, /(^|\s)#{1,6}\s/gm)
-      + countMatches(text, /(^|\s)>\s/gm)
-      + countMatches(text, /(^|\s)(?:[-*+])\s/gm)
-      + countMatches(text, /(^|\s)\d+\.\s/gm)
-      + countMatches(text, /```/g)
-      + countMatches(text, /\|\s*[-:]{3,}\s*\|/g)
-      + countMatches(text, /\[[^\]]+\]\([^)]+\)/g);
-
-    if (countMatches(text, /\n/g) <= 2 && markdownSignalCount >= 2) {
-      text = text
-        .replace(/\s+(?=#{1,6}\s)/g, "\n")
-        .replace(/\s+(?=>\s)/g, "\n")
-        .replace(/\s+(?=\d+\.\s)/g, "\n")
-        .replace(/\s+(?=[*+-]\s)/g, "\n");
-
-      if (/\|\s*[-:]{3,}\s*\|/.test(text)) {
-        text = text
-          .replace(/\|\s+\|/g, "|\n|")
-          .replace(/\n{3,}/g, "\n\n");
-      }
-    }
-
-    text = text
-      .replace(/[ \t]+\n/g, "\n")
-      .replace(/([^\n])\n(?=(#{1,6}\s|[-*+]\s|\d+\.\s|>\s))/g, "$1\n\n")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-
-    return text;
-  }
-
-  function renderMarkdownToSafeHtml(value) {
-    const text = normalizeMarkdownSource(value);
-    let html = "";
-
-    if (markdownRenderer) {
-      html = markdownRenderer.render(text);
-      if (hasMarkdownTableBlock(text) && !/<table[\s>]/i.test(html)) {
-        html = renderTableAwareFallbackHtml(text);
-      }
-    } else {
-      html = renderTableAwareFallbackHtml(text);
-    }
-
-    if (typeof window !== "undefined" && window.DOMPurify && typeof window.DOMPurify.sanitize === "function") {
-      html = window.DOMPurify.sanitize(html, {
-        USE_PROFILES: { html: true },
-        ADD_TAGS: ["table", "thead", "tbody", "tr", "th", "td", "img", "hr", "sup", "sub"],
-        ADD_ATTR: ["target", "rel", "class", "id"]
-      });
-    }
-
-    return html;
-  }
-
-  function MarkdownBubbleText(props) {
-    const hostRef = useRef(null);
-    const html = useMemo(() => renderMarkdownToSafeHtml(props && props.text ? props.text : ""), [props && props.text]);
-
-    useEffect(() => {
-      if (!hostRef.current) {
-        return;
-      }
-
-      if (typeof window !== "undefined" && typeof window.renderMathInElement === "function") {
-        try {
-          window.renderMathInElement(hostRef.current, {
-            delimiters: [
-              { left: "$$", right: "$$", display: true },
-              { left: "$", right: "$", display: false },
-              { left: "\\(", right: "\\)", display: false },
-              { left: "\\[", right: "\\]", display: true }
-            ],
-            ignoredTags: ["script", "noscript", "style", "textarea", "pre", "code"],
-            throwOnError: false,
-            strict: "ignore"
-          });
-        } catch (_err) {
-        }
-      }
-    }, [html]);
-
-    return e("div", {
-      className: "bubble-text markdown",
-      ref: hostRef,
-      dangerouslySetInnerHTML: { __html: html }
-    });
-  }
-
-  function inferToolResultGroup(type) {
-    return TOOL_RESULT_GROUP_BY_TYPE[type] || "unknown";
-  }
-
-  function inferToolResultDomain(group) {
-    return TOOL_RESULT_DOMAIN_BY_GROUP[group] || "tool";
-  }
-
-  function inferToolResultAction(msg) {
-    if (msg && typeof msg.action === "string" && msg.action.trim()) {
-      return msg.action.trim();
-    }
-
-    switch (msg && msg.type) {
-      case "sessions_list_result":
-        return "list";
-      case "sessions_history_result":
-        return "history";
-      case "sessions_send_result":
-        return "send";
-      case "sessions_spawn_result":
-        return "spawn";
-      case "web_search_result":
-        return "search";
-      case "web_fetch_result":
-        return "fetch";
-      case "memory_search_result":
-        return "search";
-      case "memory_get_result":
-        return "get";
-      case "telegram_stub_result":
-        return "command";
-      default:
-        return "-";
-    }
-  }
-
-  function inferToolResultStatus(msg) {
-    if (!msg || typeof msg !== "object") {
-      return { label: "-", tone: "neutral", hasError: false };
-    }
-
-    const errorText = typeof msg.error === "string" ? msg.error.trim() : "";
-    const rawStatus = typeof msg.status === "string" ? msg.status.trim() : "";
-    const lowerStatus = rawStatus.toLowerCase();
-    const hasOkField = typeof msg.ok === "boolean";
-    const okValue = hasOkField ? msg.ok : null;
-
-    if (errorText) {
-      return { label: rawStatus || "error", tone: "error", hasError: true };
-    }
-
-    if (hasOkField) {
-      if (okValue) {
-        return { label: rawStatus || "ok", tone: "ok", hasError: false };
-      }
-      return { label: rawStatus || "failed", tone: "error", hasError: true };
-    }
-
-    if (rawStatus) {
-      if (
-        lowerStatus.includes("error")
-        || lowerStatus.includes("fail")
-        || lowerStatus.includes("timeout")
-        || lowerStatus.includes("denied")
-        || lowerStatus.includes("invalid")
-        || lowerStatus.includes("unavailable")
-      ) {
-        return { label: rawStatus, tone: "error", hasError: true };
-      }
-
-      if (
-        lowerStatus === "ok"
-        || lowerStatus === "accepted"
-        || lowerStatus === "success"
-        || lowerStatus === "running"
-        || lowerStatus === "ready"
-      ) {
-        return { label: rawStatus, tone: "ok", hasError: false };
-      }
-
-      if (
-        lowerStatus === "pending"
-        || lowerStatus === "queued"
-        || lowerStatus === "processing"
-        || lowerStatus === "loading"
-      ) {
-        return { label: rawStatus, tone: "warn", hasError: false };
-      }
-
-      return { label: rawStatus, tone: "neutral", hasError: false };
-    }
-
-    if (msg.type === "sessions_list_result") {
-      return { label: "ok", tone: "ok", hasError: false };
-    }
-
-    if (msg.type === "web_search_result") {
-      if (msg.disabled === true) {
-        return { label: "disabled", tone: "warn", hasError: false };
-      }
-      return { label: "ok", tone: "ok", hasError: false };
-    }
-
-    if (msg.type === "web_fetch_result") {
-      if (msg.disabled === true) {
-        return { label: "disabled", tone: "warn", hasError: false };
-      }
-      if (typeof msg.status === "number" && msg.status >= 400) {
-        return { label: `http_${msg.status}`, tone: "error", hasError: true };
-      }
-      return { label: "ok", tone: "ok", hasError: false };
-    }
-
-    if (msg.type === "memory_search_result" || msg.type === "memory_get_result") {
-      if (msg.disabled === true) {
-        return { label: "disabled", tone: "warn", hasError: false };
-      }
-      return { label: "ok", tone: "ok", hasError: false };
-    }
-
-    if (msg.type === "cron_result" && msg.action === "status") {
-      return { label: msg.enabled ? "enabled" : "disabled", tone: msg.enabled ? "ok" : "warn", hasError: false };
-    }
-
-    if (msg.disabled === true) {
-      return { label: "disabled", tone: "warn", hasError: false };
-    }
-
-    return { label: "-", tone: "neutral", hasError: false };
-  }
-
-  function normalizeProviderName(value) {
-    const lowered = `${value ?? ""}`.trim().toLowerCase();
-    if (!lowered) {
-      return "unknown";
-    }
-    if (lowered.includes("groq")) {
-      return "groq";
-    }
-    if (lowered.includes("gemini")) {
-      return "gemini";
-    }
-    if (lowered.includes("cerebras")) {
-      return "cerebras";
-    }
-    if (lowered.includes("copilot")) {
-      return "copilot";
-    }
-    if (lowered.includes("codex")) {
-      return "codex";
-    }
-    if (lowered === "auto") {
-      return "auto";
-    }
-    return "unknown";
-  }
-
-  function hasFailureCue(text) {
-    const lowered = `${text ?? ""}`.trim().toLowerCase();
-    if (!lowered) {
-      return false;
-    }
-    return /(error|fail|timeout|denied|invalid|unavailable|unsupported|exception|오류|실패|미지원|중단|quota)/i.test(lowered);
-  }
-
-  function inferProviderExecutionStatusFromExecution(execution) {
-    const raw = execution && typeof execution.status === "string" ? execution.status.trim() : "";
-    const lowered = raw.toLowerCase();
-    if (!raw) {
-      return { label: "success", tone: "ok", hasError: false };
-    }
-    if (/(error|fail|timeout|cancel|killed|aborted)/i.test(lowered)) {
-      return { label: raw, tone: "error", hasError: true };
-    }
-    if (/(running|pending|queued|processing)/i.test(lowered)) {
-      return { label: raw, tone: "warn", hasError: false };
-    }
-    return { label: raw, tone: "ok", hasError: false };
-  }
-
-  function summarizeProviderRuntimeEntry(entry) {
-    const scope = entry && entry.scope ? entry.scope : "runtime";
-    const mode = entry && entry.mode ? entry.mode : "-";
-    const provider = entry && entry.provider ? entry.provider : "unknown";
-    const statusLabel = entry && entry.statusLabel ? entry.statusLabel : "-";
-    const model = entry && entry.model ? entry.model : "-";
-    const detail = entry && entry.detail ? entry.detail : "";
-    return `${scope}.${mode} ${provider}/${model} ${statusLabel}${detail ? ` ${detail}` : ""}`;
-  }
-
-  function buildProviderRuntimeEventsFromMessage(msg) {
-    if (!msg || typeof msg !== "object" || typeof msg.type !== "string") {
-      return [];
-    }
-
-    if (msg.type === "llm_chat_result") {
-      const provider = normalizeProviderName(msg.provider);
-      return [{
-        provider,
-        scope: "chat",
-        mode: msg.mode || "single",
-        model: `${msg.model || ""}`.trim(),
-        statusLabel: "success",
-        statusTone: "ok",
-        hasError: false,
-        detail: msg.route ? `route=${msg.route}` : ""
-      }];
-    }
-
-    if (msg.type === "llm_chat_multi_result") {
-      const providers = [
-        { key: "groq", model: msg.groqModel, text: msg.groq },
-        { key: "gemini", model: msg.geminiModel, text: msg.gemini },
-        { key: "cerebras", model: msg.cerebrasModel, text: msg.cerebras },
-        { key: "copilot", model: msg.copilotModel, text: msg.copilot },
-        { key: "codex", model: msg.codexModel, text: msg.codex }
-      ];
-      const events = [];
-      providers.forEach((item) => {
-        const model = `${item.model || ""}`.trim();
-        const text = `${item.text || ""}`.trim();
-        if (!model && !text) {
-          return;
-        }
-        const failed = hasFailureCue(text);
-        events.push({
-          provider: item.key,
-          scope: "chat",
-          mode: "multi",
-          model,
-          statusLabel: failed ? "failed" : "success",
-          statusTone: failed ? "error" : "ok",
-          hasError: failed,
-          detail: `chars=${text.length}`
-        });
-      });
-      return events;
-    }
-
-    if (msg.type === "coding_progress") {
-      const provider = normalizeProviderName(msg.provider);
-      const detailText = `${msg.phase || ""} ${msg.message || ""}`.trim();
-      const stageText = `${msg.stageTitle || ""}`.trim();
-      const finished = !!msg.done;
-      const failed = finished && hasFailureCue(detailText);
-      const statusLabel = finished ? (failed ? "failed" : "success") : "progress";
-      const statusTone = finished ? (failed ? "error" : "ok") : "warn";
-      return [{
-        provider,
-        scope: msg.scope || "coding",
-        mode: msg.mode || "single",
-        model: `${msg.model || ""}`.trim(),
-        statusLabel,
-        statusTone,
-        hasError: failed,
-        detail: `${stageText ? `stage=${stageText} ` : ""}phase=${msg.phase || "-"} iter=${Number.isFinite(msg.iteration) ? msg.iteration : "-"}`
-      }];
-    }
-
-    if (msg.type === "coding_result") {
-      const events = [];
-      const mainStatus = inferProviderExecutionStatusFromExecution(msg.execution);
-      events.push({
-        provider: normalizeProviderName(msg.provider),
-        scope: "coding",
-        mode: msg.mode || "single",
-        model: `${msg.model || ""}`.trim(),
-        statusLabel: mainStatus.label,
-        statusTone: mainStatus.tone,
-        hasError: mainStatus.hasError,
-        detail: `exit=${Number.isFinite(msg && msg.execution && msg.execution.exitCode) ? msg.execution.exitCode : "-"}`
-      });
-      if (Array.isArray(msg.workers)) {
-        msg.workers.forEach((worker) => {
-          if (!worker || typeof worker !== "object") {
-            return;
-          }
-          const workerStatus = inferProviderExecutionStatusFromExecution(worker.execution);
-          events.push({
-            provider: normalizeProviderName(worker.provider),
-            scope: "coding",
-            mode: `${msg.mode || "single"}-worker`,
-            model: `${worker.model || ""}`.trim(),
-            statusLabel: workerStatus.label,
-            statusTone: workerStatus.tone,
-            hasError: workerStatus.hasError,
-            detail: `worker=${normalizeProviderName(worker.provider)}`
-          });
-        });
-      }
-      return events;
-    }
-
-    if (msg.type === "error") {
-      const raw = `${msg.message || ""}`.trim();
-      if (!raw) {
-        return [];
-      }
-      if (!/(chat|coding|provider|groq|gemini|cerebras|copilot)/i.test(raw)) {
-        return [];
-      }
-      return [{
-        provider: normalizeProviderName(raw),
-        scope: /coding/i.test(raw) ? "coding" : "chat",
-        mode: "error",
-        model: "",
-        statusLabel: "failed",
-        statusTone: "error",
-        hasError: true,
-        detail: raw
-      }];
-    }
-
-    return [];
-  }
-
-  function normalizeGuardToken(value) {
-    const normalized = `${value ?? ""}`.trim().toLowerCase();
-    if (!normalized) {
-      return "-";
-    }
-    return normalized.replace(/\s+/g, "_");
-  }
-
-  function isCountLockUnsatisfiedToken(value) {
-    return value === "count_lock_unsatisfied"
-      || value === "count_lock_unsatisfied_after_retries"
-      || value === "target_count_mismatch";
-  }
-
-  function normalizeGuardNumber(value) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric < 0) {
-      return 0;
-    }
-    return Math.floor(numeric);
-  }
-
-  function formatGuardAlertThreshold(metricType, value) {
-    if (metricType === "rate") {
-      return `${formatDecimal(Number(value || 0) * 100, 1)}%`;
-    }
-    return `${normalizeGuardNumber(value)}건`;
-  }
-
-  function severityRank(severity) {
-    if (severity === "critical") {
-      return 3;
-    }
-    if (severity === "warn") {
-      return 2;
-    }
-    if (severity === "ok") {
-      return 1;
-    }
-    return 0;
-  }
-
-  function buildGuardAlertRuleResult(rule, metrics) {
-    const total = normalizeGuardNumber(metrics && metrics.total);
-    const minTotal = normalizeGuardNumber(rule && rule.minTotal);
-    const metricType = rule && rule.metricType === "rate" ? "rate" : "count";
-    const warn = Number(rule && rule.warn);
-    const critical = Number(rule && rule.critical);
-    const warnThreshold = Number.isFinite(warn) && warn >= 0 ? warn : 0;
-    const criticalThreshold = Number.isFinite(critical) && critical >= 0 ? critical : warnThreshold;
-
-    let observed = 0;
-    let numeratorValue = 0;
-    let denominatorLabel = "-";
-    if (metricType === "rate") {
-      const numerator = normalizeGuardNumber(metrics && metrics[rule.numeratorKey]);
-      numeratorValue = numerator;
-      observed = total > 0 ? numerator / total : 0;
-      denominatorLabel = `${total}건`;
-    } else {
-      observed = normalizeGuardNumber(metrics && metrics[rule.valueKey]);
-      numeratorValue = observed;
-      denominatorLabel = `표본 ${total}건`;
-    }
-
-    if (total < minTotal) {
-      return {
-        id: rule.id,
-        label: rule.label,
-        metricType,
-        observed,
-        numeratorValue,
-        sampleCount: total,
-        minTotal,
-        warnThreshold,
-        criticalThreshold,
-        valueLabel: metricType === "rate"
-          ? `${formatGuardAlertThreshold("rate", observed)} (${denominatorLabel})`
-          : formatGuardAlertThreshold("count", observed),
-        warnLabel: formatGuardAlertThreshold(metricType, warnThreshold),
-        criticalLabel: formatGuardAlertThreshold(metricType, criticalThreshold),
-        statusLabel: "sample_pending",
-        statusTone: "neutral",
-        severity: "neutral",
-        note: `표본 부족 (${total}/${minTotal})`
-      };
-    }
-
-    let severity = "ok";
-    if (observed >= criticalThreshold) {
-      severity = "critical";
-    } else if (observed >= warnThreshold) {
-      severity = "warn";
-    }
-
-    const statusTone = severity === "critical"
-      ? "error"
-      : (severity === "warn" ? "warn" : "ok");
-
-    return {
-      id: rule.id,
-      label: rule.label,
-      metricType,
-      observed,
-      numeratorValue,
-      sampleCount: total,
-      minTotal,
-      warnThreshold,
-      criticalThreshold,
-      valueLabel: metricType === "rate"
-        ? `${formatGuardAlertThreshold("rate", observed)} (${denominatorLabel})`
-        : formatGuardAlertThreshold("count", observed),
-      warnLabel: formatGuardAlertThreshold(metricType, warnThreshold),
-      criticalLabel: formatGuardAlertThreshold(metricType, criticalThreshold),
-      statusLabel: severity,
-      statusTone,
-      severity,
-      note: metricType === "rate" ? `분모 ${denominatorLabel}` : denominatorLabel
-    };
-  }
-
-  function normalizeUtcIso(value) {
-    const parsed = Date.parse(`${value || ""}`);
-    if (!Number.isFinite(parsed)) {
-      return null;
-    }
-    return new Date(parsed).toISOString();
-  }
-
-  function pickTopRetryStopReason(stopReasonCounts) {
-    const entries = Object.entries(stopReasonCounts || {});
-    if (entries.length === 0) {
-      return "-";
-    }
-
-    entries.sort((a, b) => {
-      if (b[1] !== a[1]) {
-        return b[1] - a[1];
-      }
-      return a[0].localeCompare(b[0]);
-    });
-    return entries[0][0] || "-";
-  }
-
-  function buildGuardRetryTimelineEntry(event, capturedAt) {
-    if (!event || typeof event !== "object") {
-      return null;
-    }
-
-    if (!GUARD_RETRY_TIMELINE_CHANNELS.includes(event.channel)) {
-      return null;
-    }
-
-    const capturedAtUtc = normalizeUtcIso(capturedAt);
-    if (!capturedAtUtc) {
-      return null;
-    }
-
-    return {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      capturedAt: capturedAtUtc,
-      channel: event.channel,
-      retryRequired: !!event.retryRequired,
-      retryAttempt: normalizeGuardNumber(event.retryAttempt),
-      retryMaxAttempts: normalizeGuardNumber(event.retryMaxAttempts),
-      retryStopReason: normalizeGuardToken(event.retryStopReason)
-    };
-  }
-
-  function buildGuardRetryTimelineSnapshot(entries, options = {}) {
-    const configuredChannels = Array.isArray(options.channels)
-      ? options.channels.filter((channel) => GUARD_OBS_CHANNEL_KEYS.includes(channel))
-      : [];
-    const channels = configuredChannels.length > 0
-      ? configuredChannels
-      : GUARD_RETRY_TIMELINE_CHANNELS.slice();
-    const bucketMinutes = Math.max(
-      1,
-      normalizeGuardNumber(options.bucketMinutes) || GUARD_RETRY_TIMELINE_BUCKET_MINUTES
-    );
-    const windowMinutes = Math.max(
-      bucketMinutes,
-      normalizeGuardNumber(options.windowMinutes) || GUARD_RETRY_TIMELINE_WINDOW_MINUTES
-    );
-    const maxBucketRows = Math.max(
-      1,
-      normalizeGuardNumber(options.maxBucketRows) || GUARD_RETRY_TIMELINE_MAX_BUCKET_ROWS
-    );
-    const bucketSizeMs = bucketMinutes * 60 * 1000;
-    const nowMs = Date.now();
-    const windowStartMs = nowMs - (windowMinutes * 60 * 1000);
-
-    const byChannel = {};
-    channels.forEach((channel) => {
-      byChannel[channel] = {
-        channel,
-        totalSamples: 0,
-        retryRequiredSamples: 0,
-        maxRetryAttempt: 0,
-        maxRetryMaxAttempts: 0,
-        lastRetryStopReason: "-",
-        buckets: new Map()
-      };
-    });
-
-    if (Array.isArray(entries)) {
-      entries.forEach((entry) => {
-        const channel = `${entry && entry.channel ? entry.channel : ""}`;
-        if (!Object.prototype.hasOwnProperty.call(byChannel, channel)) {
-          return;
-        }
-
-        const capturedAtUtc = normalizeUtcIso(entry && entry.capturedAt);
-        if (!capturedAtUtc) {
-          return;
-        }
-
-        const capturedAtMs = Date.parse(capturedAtUtc);
-        if (!Number.isFinite(capturedAtMs) || capturedAtMs < windowStartMs) {
-          return;
-        }
-
-        const retryRequired = !!(entry && entry.retryRequired);
-        const retryAttempt = normalizeGuardNumber(entry && entry.retryAttempt);
-        const retryMaxAttempts = normalizeGuardNumber(entry && entry.retryMaxAttempts);
-        const retryStopReason = normalizeGuardToken(entry && entry.retryStopReason);
-        const bucketStartMs = Math.floor(capturedAtMs / bucketSizeMs) * bucketSizeMs;
-        const bucketStartUtc = new Date(bucketStartMs).toISOString();
-        const channelTarget = byChannel[channel];
-        channelTarget.totalSamples += 1;
-        if (retryRequired) {
-          channelTarget.retryRequiredSamples += 1;
-        }
-        channelTarget.maxRetryAttempt = Math.max(channelTarget.maxRetryAttempt, retryAttempt);
-        channelTarget.maxRetryMaxAttempts = Math.max(channelTarget.maxRetryMaxAttempts, retryMaxAttempts);
-        if (channelTarget.lastRetryStopReason === "-" && retryStopReason !== "-") {
-          channelTarget.lastRetryStopReason = retryStopReason;
-        }
-
-        let bucketTarget = channelTarget.buckets.get(bucketStartUtc);
-        if (!bucketTarget) {
-          bucketTarget = {
-            bucketStartUtc,
-            bucketStartMs,
-            samples: 0,
-            retryRequiredCount: 0,
-            maxRetryAttempt: 0,
-            maxRetryMaxAttempts: 0,
-            stopReasonCounts: {}
-          };
-          channelTarget.buckets.set(bucketStartUtc, bucketTarget);
-        }
-
-        bucketTarget.samples += 1;
-        if (retryRequired) {
-          bucketTarget.retryRequiredCount += 1;
-        }
-        bucketTarget.maxRetryAttempt = Math.max(bucketTarget.maxRetryAttempt, retryAttempt);
-        bucketTarget.maxRetryMaxAttempts = Math.max(bucketTarget.maxRetryMaxAttempts, retryMaxAttempts);
-        if (retryStopReason !== "-") {
-          bucketTarget.stopReasonCounts[retryStopReason] = (bucketTarget.stopReasonCounts[retryStopReason] || 0) + 1;
-        }
-      });
-    }
-
-    return {
-      schemaVersion: GUARD_RETRY_TIMELINE_SCHEMA_VERSION,
-      generatedAtUtc: new Date().toISOString(),
-      bucketMinutes,
-      windowMinutes,
-      channels: channels.map((channel) => {
-        const channelTarget = byChannel[channel];
-        const buckets = Array.from(channelTarget.buckets.values())
-          .sort((a, b) => b.bucketStartMs - a.bucketStartMs)
-          .slice(0, maxBucketRows)
-          .map((bucket) => ({
-            bucketStartUtc: bucket.bucketStartUtc,
-            samples: bucket.samples,
-            retryRequiredCount: bucket.retryRequiredCount,
-            maxRetryAttempt: bucket.maxRetryAttempt,
-            maxRetryMaxAttempts: bucket.maxRetryMaxAttempts,
-            topRetryStopReason: pickTopRetryStopReason(bucket.stopReasonCounts),
-            uniqueRetryStopReasons: Object.keys(bucket.stopReasonCounts).length
-          }));
-
-        return {
-          channel,
-          totalSamples: channelTarget.totalSamples,
-          retryRequiredSamples: channelTarget.retryRequiredSamples,
-          maxRetryAttempt: channelTarget.maxRetryAttempt,
-          maxRetryMaxAttempts: channelTarget.maxRetryMaxAttempts,
-          lastRetryStopReason: channelTarget.lastRetryStopReason,
-          buckets
-        };
-      })
-    };
-  }
-
-  function normalizeGuardRetryTimelineSnapshot(snapshot, defaults = {}) {
-    if (!snapshot || typeof snapshot !== "object") {
-      return null;
-    }
-
-    const channels = Array.isArray(defaults.channels)
-      ? defaults.channels.filter((channel) => GUARD_RETRY_TIMELINE_CHANNELS.includes(channel))
-      : GUARD_RETRY_TIMELINE_CHANNELS.slice();
-    const fallbackBucketMinutes = Math.max(
-      1,
-      normalizeGuardNumber(defaults.bucketMinutes) || GUARD_RETRY_TIMELINE_BUCKET_MINUTES
-    );
-    const fallbackWindowMinutes = Math.max(
-      fallbackBucketMinutes,
-      normalizeGuardNumber(defaults.windowMinutes) || GUARD_RETRY_TIMELINE_WINDOW_MINUTES
-    );
-    const fallbackMaxBucketRows = Math.max(
-      1,
-      normalizeGuardNumber(defaults.maxBucketRows) || GUARD_RETRY_TIMELINE_MAX_BUCKET_ROWS
-    );
-    const maxBucketRows = Math.max(1, Math.min(fallbackMaxBucketRows, 288));
-    const bucketMinutes = Math.max(
-      1,
-      normalizeGuardNumber(snapshot.bucketMinutes) || fallbackBucketMinutes
-    );
-    const windowMinutes = Math.max(
-      bucketMinutes,
-      normalizeGuardNumber(snapshot.windowMinutes) || fallbackWindowMinutes
-    );
-    const generatedAtUtc = normalizeUtcIso(snapshot.generatedAtUtc) || new Date().toISOString();
-    const byChannel = {};
-
-    channels.forEach((channel) => {
-      byChannel[channel] = {
-        channel,
-        totalSamples: 0,
-        retryRequiredSamples: 0,
-        maxRetryAttempt: 0,
-        maxRetryMaxAttempts: 0,
-        lastRetryStopReason: "-",
-        buckets: []
-      };
-    });
-
-    if (Array.isArray(snapshot.channels)) {
-      snapshot.channels.forEach((channelRow) => {
-        const channel = `${channelRow && channelRow.channel ? channelRow.channel : ""}`;
-        if (!Object.prototype.hasOwnProperty.call(byChannel, channel)) {
-          return;
-        }
-
-        const target = byChannel[channel];
-        target.totalSamples = normalizeGuardNumber(channelRow && channelRow.totalSamples);
-        target.retryRequiredSamples = normalizeGuardNumber(channelRow && channelRow.retryRequiredSamples);
-        target.maxRetryAttempt = normalizeGuardNumber(channelRow && channelRow.maxRetryAttempt);
-        target.maxRetryMaxAttempts = normalizeGuardNumber(channelRow && channelRow.maxRetryMaxAttempts);
-        target.lastRetryStopReason = normalizeGuardToken(channelRow && channelRow.lastRetryStopReason);
-
-        if (!Array.isArray(channelRow && channelRow.buckets)) {
-          return;
-        }
-
-        target.buckets = channelRow.buckets
-          .map((bucket) => {
-            const bucketStartUtc = normalizeUtcIso(bucket && bucket.bucketStartUtc);
-            if (!bucketStartUtc) {
-              return null;
-            }
-            return {
-              bucketStartUtc,
-              samples: normalizeGuardNumber(bucket && bucket.samples),
-              retryRequiredCount: normalizeGuardNumber(bucket && bucket.retryRequiredCount),
-              maxRetryAttempt: normalizeGuardNumber(bucket && bucket.maxRetryAttempt),
-              maxRetryMaxAttempts: normalizeGuardNumber(bucket && bucket.maxRetryMaxAttempts),
-              topRetryStopReason: normalizeGuardToken(bucket && bucket.topRetryStopReason),
-              uniqueRetryStopReasons: normalizeGuardNumber(bucket && bucket.uniqueRetryStopReasons)
-            };
-          })
-          .filter(Boolean)
-          .sort((a, b) => (a.bucketStartUtc < b.bucketStartUtc ? 1 : -1))
-          .slice(0, maxBucketRows);
-      });
-    }
-
-    return {
-      schemaVersion: `${snapshot.schemaVersion || GUARD_RETRY_TIMELINE_SCHEMA_VERSION}`,
-      generatedAtUtc,
-      bucketMinutes,
-      windowMinutes,
-      channels: channels.map((channel) => byChannel[channel])
-    };
-  }
-
-  function buildGuardAlertPipelineEvent(guardObsStats, guardAlertSummary, guardRetryTimeline, options = {}) {
-    const emittedAtUtc = typeof options.emittedAtUtc === "string" && options.emittedAtUtc.trim()
-      ? options.emittedAtUtc.trim()
-      : new Date().toISOString();
-    const normalizeTopRows = (rows) => {
-      if (!Array.isArray(rows)) {
-        return [];
-      }
-      return rows.slice(0, 6).map((item) => ({
-        name: `${item && item.name ? item.name : "-"}`,
-        count: normalizeGuardNumber(item && item.count)
-      }));
-    };
-    const countLockUnsatisfiedByChannel = {};
-    const countLockUnsatisfiedRateByChannel = {};
-    GUARD_OBS_CHANNEL_KEYS.forEach((channel) => {
-      const channelStat = guardObsStats && guardObsStats.byChannel && guardObsStats.byChannel[channel];
-      const count = normalizeGuardNumber(channelStat && channelStat.count);
-      const countLockUnsatisfied = normalizeGuardNumber(channelStat && channelStat.countLockUnsatisfiedCount);
-      countLockUnsatisfiedByChannel[channel] = countLockUnsatisfied;
-      countLockUnsatisfiedRateByChannel[channel] = count > 0
-        ? Number((countLockUnsatisfied / count).toFixed(6))
-        : 0;
-    });
-
-    return {
-      schemaVersion: GUARD_ALERT_PIPELINE_SCHEMA_VERSION,
-      eventType: GUARD_ALERT_PIPELINE_EVENT_TYPE,
-      emittedAtUtc,
-      source: "omninode-dashboard",
-      pipelineTargets: ["webhook", "log_collector"],
-      keySourcePolicy: "keychain|secure_file_600",
-      geminiKeyRequiredFor: ["test", "validation", "regression", "production_run"],
-      alertSummary: {
-        status: `${guardAlertSummary && guardAlertSummary.statusLabel ? guardAlertSummary.statusLabel : "sample_pending"}`,
-        tone: `${guardAlertSummary && guardAlertSummary.statusTone ? guardAlertSummary.statusTone : "neutral"}`,
-        triggeredCount: normalizeGuardNumber(guardAlertSummary && guardAlertSummary.triggeredCount),
-        samplePendingCount: normalizeGuardNumber(guardAlertSummary && guardAlertSummary.samplePendingCount)
-      },
-      guardMetrics: {
-        total: normalizeGuardNumber(guardObsStats && guardObsStats.total),
-        blockedTotal: normalizeGuardNumber(guardObsStats && guardObsStats.blockedTotal),
-        retryRequiredTotal: normalizeGuardNumber(guardObsStats && guardObsStats.retryRequiredTotal),
-        countLockUnsatisfiedTotal: normalizeGuardNumber(guardObsStats && guardObsStats.countLockUnsatisfiedTotal),
-        countLockUnsatisfiedByChannel,
-        countLockUnsatisfiedRateByChannel,
-        citationValidationFailedTotal: normalizeGuardNumber(guardObsStats && guardObsStats.citationValidationFailedTotal),
-        citationMappingRetryTotal: normalizeGuardNumber(guardObsStats && guardObsStats.citationMappingRetryTotal),
-        citationMappingCountTotal: normalizeGuardNumber(guardObsStats && guardObsStats.citationMappingCountTotal),
-        telegramGuardMetaBlockedTotal: normalizeGuardNumber(guardObsStats && guardObsStats.telegramGuardMetaBlockedTotal)
-      },
-      guardAlertRows: (Array.isArray(guardObsStats && guardObsStats.guardAlertRows) ? guardObsStats.guardAlertRows : []).map((row) => ({
-        id: `${row && row.id ? row.id : "-"}`,
-        label: `${row && row.label ? row.label : "-"}`,
-        metricType: row && row.metricType === "rate" ? "rate" : "count",
-        observed: Number.isFinite(Number(row && row.observed)) ? Number(row.observed) : 0,
-        numeratorValue: normalizeGuardNumber(row && row.numeratorValue),
-        sampleCount: normalizeGuardNumber(row && row.sampleCount),
-        minTotal: normalizeGuardNumber(row && row.minTotal),
-        warnThreshold: Number.isFinite(Number(row && row.warnThreshold)) ? Number(row.warnThreshold) : 0,
-        criticalThreshold: Number.isFinite(Number(row && row.criticalThreshold)) ? Number(row.criticalThreshold) : 0,
-        status: `${row && row.statusLabel ? row.statusLabel : "sample_pending"}`,
-        severity: `${row && row.severity ? row.severity : "neutral"}`,
-        note: `${row && row.note ? row.note : "-"}`
-      })),
-      retryTimeline: (guardRetryTimeline && typeof guardRetryTimeline === "object")
-        ? guardRetryTimeline
-        : {
-            schemaVersion: GUARD_RETRY_TIMELINE_SCHEMA_VERSION,
-            generatedAtUtc: new Date().toISOString(),
-            bucketMinutes: GUARD_RETRY_TIMELINE_BUCKET_MINUTES,
-            windowMinutes: GUARD_RETRY_TIMELINE_WINDOW_MINUTES,
-            channels: []
-          },
-      retryTop: {
-        actions: normalizeTopRows(guardObsStats && guardObsStats.topRetryActions),
-        reasons: normalizeTopRows(guardObsStats && guardObsStats.topRetryReasons),
-        stopReasons: normalizeTopRows(guardObsStats && guardObsStats.topRetryStopReasons)
-      }
-    };
-  }
-
-  function inferGuardChannel(type) {
-    if (type === "llm_chat_result" || type === "llm_chat_multi_result") {
-      return "chat";
-    }
-    if (type === "coding_result") {
-      return "coding";
-    }
-    if (type === "telegram_stub_result") {
-      return "telegram";
-    }
-    if (type === "web_search_result") {
-      return "search";
-    }
-    return "other";
-  }
-
-  function buildGuardObsEvent(msg) {
-    if (!msg || typeof msg !== "object" || !GUARD_OBS_MESSAGE_TYPES.has(msg.type)) {
-      return null;
-    }
-
-    const channel = inferGuardChannel(msg.type);
-    const guardCategory = normalizeGuardToken(msg.guardCategory);
-    const guardReason = normalizeGuardToken(msg.guardReason);
-    const retryAction = normalizeGuardToken(msg.retryAction);
-    const retryReason = normalizeGuardToken(msg.retryReason);
-    const retryStopReason = normalizeGuardToken(msg.retryStopReason);
-    const retryRequired = !!msg.retryRequired;
-    const retryAttempt = normalizeGuardNumber(msg.retryAttempt);
-    const retryMaxAttempts = normalizeGuardNumber(msg.retryMaxAttempts);
-    const citationMappingCount = Array.isArray(msg.citationMappings) ? msg.citationMappings.length : 0;
-    const citationValidationPassed = (msg.citationValidation && typeof msg.citationValidation.passed === "boolean")
-      ? !!msg.citationValidation.passed
-      : null;
-    const citationValidationReason = normalizeGuardToken(msg.citationValidation && msg.citationValidation.reasonCode);
-    const hasGuardFailure = guardCategory !== "-" || guardReason !== "-";
-    const hasCountLockUnsatisfied =
-      isCountLockUnsatisfiedToken(retryStopReason)
-      || isCountLockUnsatisfiedToken(guardReason);
-    const hasCitationValidationFailure = citationValidationPassed === false
-      || citationValidationReason === "citation_validation_failed"
-      || retryReason === "citation_validation_failed";
-    const isCitationMappingRetry = retryAction === "retry_with_citation_mapping"
-      || retryReason === "citation_mapping";
-    const summaryParts = [
-      `${channel}/${msg.type}`
-    ];
-
-    if (hasGuardFailure) {
-      summaryParts.push(`guard=${guardCategory}:${guardReason}`);
-    }
-    if (retryAction !== "-") {
-      summaryParts.push(`retry=${retryAction}`);
-    }
-    if (retryStopReason !== "-") {
-      summaryParts.push(`stop=${retryStopReason}`);
-    }
-    if (hasCountLockUnsatisfied) {
-      summaryParts.push("countLock=unsatisfied");
-    }
-    if (citationValidationPassed === true) {
-      summaryParts.push("citation=pass");
-    } else if (citationValidationPassed === false) {
-      summaryParts.push("citation=fail");
-    }
-    if (citationMappingCount > 0) {
-      summaryParts.push(`mapping=${citationMappingCount}`);
-    }
-
-    return {
-      channel,
-      type: msg.type,
-      guardCategory,
-      guardReason,
-      retryRequired,
-      retryAction,
-      retryReason,
-      retryAttempt,
-      retryMaxAttempts,
-      retryStopReason,
-      citationMappingCount,
-      citationValidationPassed,
-      citationValidationReason,
-      hasGuardFailure,
-      hasCountLockUnsatisfied,
-      hasCitationValidationFailure,
-      isCitationMappingRetry,
-      summary: summaryParts.join(" ")
-    };
-  }
+  const { MarkdownBubbleText } = createMarkdownSupport({
+    React,
+    window: typeof window !== "undefined" ? window : undefined
+  });
 
   function App() {
     const [rootTab, setRootTab] = useState("chat");
@@ -1946,6 +296,15 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     const [geminiUsage, setGeminiUsage] = useState(() => createGeminiUsageState());
     const [copilotPremiumUsage, setCopilotPremiumUsage] = useState(() => createCopilotPremiumUsageState());
     const [copilotLocalUsage, setCopilotLocalUsage] = useState(() => createCopilotLocalUsageState());
+    const [doctorState, setDoctorState] = useState(() => createDoctorState());
+    const [plansState, setPlansState] = useState(() => createPlansState());
+    const [contextState, setContextState] = useState(() => createContextState());
+    const [routingPolicyState, setRoutingPolicyState] = useState(() => createRoutingPolicyState());
+    const [taskGraphState, setTaskGraphState] = useState(() => createTaskGraphState());
+    const [refactorState, setRefactorState] = useState(() => createRefactorState());
+    const [codingResultOverlayOpen, setCodingResultOverlayOpen] = useState(false);
+    const [safeRefactorOverlayOpen, setSafeRefactorOverlayOpen] = useState(false);
+    const [notebooksState, setNotebooksState] = useState(() => createNotebooksState());
 
     const [conversationLists, setConversationLists] = useState(() => ({ ...CONVERSATION_STATE_DEFAULTS.conversationLists }));
     const [activeConversationByKey, setActiveConversationByKey] = useState(() => ({ ...CONVERSATION_STATE_DEFAULTS.activeConversationByKey }));
@@ -1972,6 +331,8 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     const [optimisticUserByKey, setOptimisticUserByKey] = useState(() => ({ ...CONVERSATION_STATE_DEFAULTS.optimisticUserByKey }));
     const [codingProgressByKey, setCodingProgressByKey] = useState(() => ({ ...CODING_STATE_DEFAULTS.progressByKey }));
     const [filePreviewByConversation, setFilePreviewByConversation] = useState(() => ({ ...CODING_STATE_DEFAULTS.filePreviewByConversation }));
+    const [codingRuntimeByConversation, setCodingRuntimeByConversation] = useState(() => ({ ...CODING_STATE_DEFAULTS.runtimeByConversation }));
+    const [codingExecutionInputByConversation, setCodingExecutionInputByConversation] = useState(() => ({ ...CODING_STATE_DEFAULTS.executionInputByConversation }));
     const [showExecutionLogsByConversation, setShowExecutionLogsByConversation] = useState(() => ({ ...CODING_STATE_DEFAULTS.showExecutionLogsByConversation }));
     const [attachmentsByKey, setAttachmentsByKey] = useState(() => ({ ...CONVERSATION_STATE_DEFAULTS.attachmentsByKey }));
     const [attachmentPanelOpenByKey, setAttachmentPanelOpenByKey] = useState(() => ({ ...CONVERSATION_STATE_DEFAULTS.attachmentPanelOpenByKey }));
@@ -2250,22 +611,7 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       });
     }
 
-    function renderResponsiveSectionTabs(items, activeKey, onSelect, extraClassName = "") {
-      return e(
-        "div",
-        { className: `responsive-section-tabs ${extraClassName}`.trim() },
-        items.map((item) => e(
-          "button",
-          {
-            key: item.key,
-            type: "button",
-            className: `responsive-section-tab-btn ${activeKey === item.key ? "active" : ""}`,
-            onClick: () => onSelect(item.key)
-          },
-          item.label
-        ))
-      );
-    }
+    const renderResponsiveSectionTabs = createResponsiveSectionTabsRenderer(e);
 
     function toggleThreadInfoPanel() {
       const next = !threadInfoOpen;
@@ -2289,17 +635,6 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       }
     }
 
-    function hasDraggedFiles(dataTransfer) {
-      if (!dataTransfer) {
-        return false;
-      }
-
-      const types = Array.from(dataTransfer.types || []);
-      return (dataTransfer.files && dataTransfer.files.length > 0)
-        || types.includes("Files")
-        || types.includes("application/x-moz-file");
-    }
-
     function setAttachmentDragActive(key, active) {
       const normalizedKey = `${key || currentKey}`.trim() || currentKey;
       setAttachmentDragActiveByKey((prev) => {
@@ -2319,255 +654,23 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       attachmentDragDepthRef.current = 0;
       setAttachmentDragActive(key || currentKeyRef.current || currentKey, false);
     }
-
-    function formatConversationUpdatedLabel(updatedUtc) {
-      const raw = `${updatedUtc || ""}`.trim();
-      if (!raw) {
-        return "";
-      }
-
-      const parsed = new Date(raw);
-      if (Number.isNaN(parsed.getTime())) {
-        return "";
-      }
-
-      const now = new Date();
-      const sameDay = parsed.toDateString() === now.toDateString();
-      if (sameDay) {
-        return parsed.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
-      }
-
-      const sameYear = parsed.getFullYear() === now.getFullYear();
-      return sameYear
-        ? parsed.toLocaleDateString("ko-KR", { month: "numeric", day: "numeric" })
-        : parsed.toLocaleDateString("ko-KR", { year: "numeric", month: "numeric", day: "numeric" });
-    }
-
-    function buildConversationAvatarText(item) {
-      const seeds = [
-        item && item.title ? `${item.title}` : "",
-        item && item.project ? `${item.project}` : "",
-        item && item.category ? `${item.category}` : "",
-        "O"
-      ];
-
-      for (const seed of seeds) {
-        const chars = Array.from(seed.trim());
-        const hit = chars.find((char) => /[A-Za-z가-힣0-9]/.test(char));
-        if (hit) {
-          return hit.toUpperCase();
-        }
-      }
-
-      return "O";
-    }
-    const toolResultStats = useMemo(() => {
-      const byGroup = {};
-      TOOL_RESULT_GROUPS.forEach((group) => {
-        byGroup[group.key] = {
-          count: 0,
-          errorCount: 0,
-          lastAction: "-",
-          lastStatus: "-"
-        };
-      });
-
-      let errors = 0;
-      for (const item of toolResultItems) {
-        if (item.hasError) {
-          errors += 1;
-        }
-
-        const target = byGroup[item.group];
-        if (!target) {
-          continue;
-        }
-
-        if (target.count === 0) {
-          target.lastAction = item.action || "-";
-          target.lastStatus = item.statusLabel || "-";
-        }
-        target.count += 1;
-        if (item.hasError) {
-          target.errorCount += 1;
-        }
-      }
-
-      return {
-        total: toolResultItems.length,
-        errors,
-        byGroup
-      };
-    }, [toolResultItems]);
-    const providerRuntimeStats = useMemo(() => {
-      const byProvider = {};
-      PROVIDER_RUNTIME_KEYS.forEach((provider) => {
-        byProvider[provider] = {
-          count: 0,
-          successCount: 0,
-          errorCount: 0,
-          progressCount: 0,
-          lastStatus: "-",
-          lastScope: "-",
-          lastMode: "-"
-        };
-      });
-
-      for (const item of providerRuntimeItems) {
-        const provider = byProvider[item.provider] ? item.provider : "unknown";
-        const target = byProvider[provider];
-        if (target.count === 0) {
-          target.lastStatus = item.statusLabel || "-";
-          target.lastScope = item.scope || "-";
-          target.lastMode = item.mode || "-";
-        }
-        target.count += 1;
-        if (item.hasError) {
-          target.errorCount += 1;
-        } else if (item.statusLabel === "progress") {
-          target.progressCount += 1;
-        } else {
-          target.successCount += 1;
-        }
-      }
-
-      const total = providerRuntimeItems.length;
-      const errorCount = providerRuntimeItems.filter((x) => x.hasError).length;
-      const progressCount = providerRuntimeItems.filter((x) => x.statusLabel === "progress").length;
-      const successCount = total - errorCount - progressCount;
-      const latest = total > 0 ? providerRuntimeItems[0] : null;
-      return {
-        total,
-        errorCount,
-        successCount,
-        progressCount,
-        latest,
-        byProvider
-      };
-    }, [providerRuntimeItems]);
-    const guardObsStats = useMemo(() => {
-      const createChannelStat = () => ({
-        count: 0,
-        blockedCount: 0,
-        retryRequiredCount: 0,
-        countLockUnsatisfiedCount: 0,
-        citationValidationFailedCount: 0,
-        citationMappingRetryCount: 0,
-        citationMappingCount: 0,
-        maxRetryAttempt: 0,
-        maxRetryMaxAttempts: 0,
-        lastRetryAction: "-",
-        lastRetryReason: "-",
-        lastRetryStopReason: "-"
-      });
-
-      const byChannel = {};
-      GUARD_OBS_CHANNEL_KEYS.forEach((channel) => {
-        byChannel[channel] = createChannelStat();
-      });
-
-      const retryActionCounts = {};
-      const retryReasonCounts = {};
-      const retryStopReasonCounts = {};
-
-      let blockedTotal = 0;
-      let retryRequiredTotal = 0;
-      let countLockUnsatisfiedTotal = 0;
-      let citationValidationFailedTotal = 0;
-      let citationMappingRetryTotal = 0;
-      let citationMappingCountTotal = 0;
-
-      for (const item of guardObsItems) {
-        const channel = byChannel[item.channel] ? item.channel : "other";
-        const target = byChannel[channel];
-        target.count += 1;
-
-        if (item.hasGuardFailure) {
-          target.blockedCount += 1;
-          blockedTotal += 1;
-        }
-        if (item.retryRequired) {
-          target.retryRequiredCount += 1;
-          retryRequiredTotal += 1;
-        }
-        if (item.hasCountLockUnsatisfied) {
-          target.countLockUnsatisfiedCount += 1;
-          countLockUnsatisfiedTotal += 1;
-        }
-        if (item.hasCitationValidationFailure) {
-          target.citationValidationFailedCount += 1;
-          citationValidationFailedTotal += 1;
-        }
-        if (item.isCitationMappingRetry) {
-          target.citationMappingRetryCount += 1;
-          citationMappingRetryTotal += 1;
-        }
-
-        if (item.citationMappingCount > 0) {
-          target.citationMappingCount += item.citationMappingCount;
-          citationMappingCountTotal += item.citationMappingCount;
-        }
-
-        target.maxRetryAttempt = Math.max(target.maxRetryAttempt, item.retryAttempt);
-        target.maxRetryMaxAttempts = Math.max(target.maxRetryMaxAttempts, item.retryMaxAttempts);
-
-        if (target.lastRetryAction === "-" && item.retryAction !== "-") {
-          target.lastRetryAction = item.retryAction;
-        }
-        if (target.lastRetryReason === "-" && item.retryReason !== "-") {
-          target.lastRetryReason = item.retryReason;
-        }
-        if (target.lastRetryStopReason === "-" && item.retryStopReason !== "-") {
-          target.lastRetryStopReason = item.retryStopReason;
-        }
-
-        if (item.retryAction !== "-") {
-          retryActionCounts[item.retryAction] = (retryActionCounts[item.retryAction] || 0) + 1;
-        }
-        if (item.retryReason !== "-") {
-          retryReasonCounts[item.retryReason] = (retryReasonCounts[item.retryReason] || 0) + 1;
-        }
-        if (item.retryStopReason !== "-") {
-          retryStopReasonCounts[item.retryStopReason] = (retryStopReasonCounts[item.retryStopReason] || 0) + 1;
-        }
-      }
-
-      const toTopRows = (entries) => Object.entries(entries)
-        .sort((a, b) => {
-          if (b[1] !== a[1]) {
-            return b[1] - a[1];
-          }
-          return a[0].localeCompare(b[0]);
-        })
-        .slice(0, 6)
-        .map(([name, count]) => ({ name, count }));
-
-      return {
-        total: guardObsItems.length,
-        blockedTotal,
-        retryRequiredTotal,
-        countLockUnsatisfiedTotal,
-        citationValidationFailedTotal,
-        citationMappingRetryTotal,
-        citationMappingCountTotal,
-        telegramGuardMetaBlockedTotal: byChannel.telegram ? byChannel.telegram.blockedCount : 0,
-        byChannel,
-        topRetryActions: toTopRows(retryActionCounts),
-        topRetryReasons: toTopRows(retryReasonCounts),
-        topRetryStopReasons: toTopRows(retryStopReasonCounts),
-        guardAlertRows: (() => {
-          const metrics = {
-            total: guardObsItems.length,
-            blockedTotal,
-            retryRequiredTotal,
-            countLockUnsatisfiedTotal,
-            citationValidationFailedTotal,
-            telegramGuardMetaBlockedTotal: byChannel.telegram ? byChannel.telegram.blockedCount : 0
-          };
-          return GUARD_ALERT_RULES.map((rule) => buildGuardAlertRuleResult(rule, metrics));
-        })()
-      };
-    }, [guardObsItems]);
+    const toolResultStats = useMemo(
+      () => buildToolResultStats(toolResultItems, TOOL_RESULT_GROUPS),
+      [toolResultItems]
+    );
+    const providerRuntimeStats = useMemo(
+      () => buildProviderRuntimeStats(providerRuntimeItems, PROVIDER_RUNTIME_KEYS),
+      [providerRuntimeItems]
+    );
+    const guardObsStats = useMemo(
+      () => buildGuardObsStats({
+        guardObsItems,
+        guardObsChannelKeys: GUARD_OBS_CHANNEL_KEYS,
+        guardAlertRules: GUARD_ALERT_RULES,
+        buildGuardAlertRuleResult
+      }),
+      [guardObsItems]
+    );
     const guardRetryTimelineMemorySnapshot = useMemo(
       () => buildGuardRetryTimelineSnapshot(
         guardRetryTimelineItems,
@@ -2597,77 +700,14 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       [guardRetryTimelineMemorySnapshot, guardRetryTimelineServerSnapshot]
     );
     const guardRetryTimelineSource = guardRetryTimelineServerSnapshot ? "server_api" : "memory_fallback";
-    const guardRetryTimelineRows = useMemo(() => {
-      const rows = [];
-      if (!guardRetryTimeline || !Array.isArray(guardRetryTimeline.channels)) {
-        return rows;
-      }
-
-      guardRetryTimeline.channels.forEach((channelRow) => {
-        const channel = `${channelRow && channelRow.channel ? channelRow.channel : "-"}`;
-        if (!Array.isArray(channelRow && channelRow.buckets)) {
-          return;
-        }
-
-        channelRow.buckets.forEach((bucket) => {
-          rows.push({
-            channel,
-            bucketStartUtc: `${bucket && bucket.bucketStartUtc ? bucket.bucketStartUtc : "-"}`,
-            samples: normalizeGuardNumber(bucket && bucket.samples),
-            retryRequiredCount: normalizeGuardNumber(bucket && bucket.retryRequiredCount),
-            maxRetryAttempt: normalizeGuardNumber(bucket && bucket.maxRetryAttempt),
-            maxRetryMaxAttempts: normalizeGuardNumber(bucket && bucket.maxRetryMaxAttempts),
-            topRetryStopReason: `${bucket && bucket.topRetryStopReason ? bucket.topRetryStopReason : "-"}`,
-            uniqueRetryStopReasons: normalizeGuardNumber(bucket && bucket.uniqueRetryStopReasons)
-          });
-        });
-      });
-
-      rows.sort((a, b) => {
-        if (a.bucketStartUtc !== b.bucketStartUtc) {
-          return a.bucketStartUtc < b.bucketStartUtc ? 1 : -1;
-        }
-        return a.channel.localeCompare(b.channel);
-      });
-      return rows;
-    }, [guardRetryTimeline]);
-    const guardAlertSummary = useMemo(() => {
-      if (!Array.isArray(guardObsStats.guardAlertRows) || guardObsStats.guardAlertRows.length === 0) {
-        return {
-          statusLabel: "sample_pending",
-          statusTone: "neutral",
-          triggeredCount: 0,
-          samplePendingCount: 0
-        };
-      }
-
-      let worstSeverity = "neutral";
-      let triggeredCount = 0;
-      let samplePendingCount = 0;
-
-      guardObsStats.guardAlertRows.forEach((row) => {
-        if (row.statusLabel === "warn" || row.statusLabel === "critical") {
-          triggeredCount += 1;
-        }
-        if (row.statusLabel === "sample_pending") {
-          samplePendingCount += 1;
-        }
-        if (severityRank(row.severity) > severityRank(worstSeverity)) {
-          worstSeverity = row.severity;
-        }
-      });
-
-      if (worstSeverity === "critical") {
-        return { statusLabel: "critical", statusTone: "error", triggeredCount, samplePendingCount };
-      }
-      if (worstSeverity === "warn") {
-        return { statusLabel: "warn", statusTone: "warn", triggeredCount, samplePendingCount };
-      }
-      if (worstSeverity === "ok") {
-        return { statusLabel: "ok", statusTone: "ok", triggeredCount, samplePendingCount };
-      }
-      return { statusLabel: "sample_pending", statusTone: "neutral", triggeredCount, samplePendingCount };
-    }, [guardObsStats.guardAlertRows]);
+    const guardRetryTimelineRows = useMemo(
+      () => buildGuardRetryTimelineRows(guardRetryTimeline, normalizeGuardNumber),
+      [guardRetryTimeline]
+    );
+    const guardAlertSummary = useMemo(
+      () => buildGuardAlertSummary(guardObsStats.guardAlertRows, severityRank),
+      [guardObsStats.guardAlertRows]
+    );
     const guardAlertPipelineEvent = useMemo(() => {
       const latestCapturedAt = guardObsItems[0] && guardObsItems[0].capturedAt
         ? guardObsItems[0].capturedAt
@@ -2683,209 +723,43 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       () => JSON.stringify(guardAlertPipelineEvent, null, 2),
       [guardAlertPipelineEvent]
     );
-    const providerHealthRows = useMemo(() => {
-      const copilotText = (copilotStatus || "").trim();
-      const copilotReady = copilotText.startsWith("설치/인증 완료");
-      const copilotAuthRequired = copilotText.includes("미인증");
-      const copilotMissing = copilotText === "미설치";
-      const codexText = (codexStatus || "").trim();
-      const codexReady = codexText.startsWith("설치/인증 완료");
-      const codexAuthRequired = codexText.includes("미인증");
-      const codexMissing = codexText === "미설치";
-      return [
-        {
-          provider: "groq",
-          statusLabel: settingsState.groqApiKeySet ? "ready" : "api_key_missing",
-          statusTone: settingsState.groqApiKeySet ? "ok" : "error",
-          ready: !!settingsState.groqApiKeySet,
-          reason: settingsState.groqApiKeySet ? "configured" : "Groq API 키 필요"
-        },
-        {
-          provider: "gemini",
-          statusLabel: settingsState.geminiApiKeySet ? "ready" : "api_key_missing",
-          statusTone: settingsState.geminiApiKeySet ? "ok" : "error",
-          ready: !!settingsState.geminiApiKeySet,
-          reason: settingsState.geminiApiKeySet ? "configured" : "Gemini API 키 필요"
-        },
-        {
-          provider: "cerebras",
-          statusLabel: settingsState.cerebrasApiKeySet ? "ready" : "api_key_missing",
-          statusTone: settingsState.cerebrasApiKeySet ? "ok" : "error",
-          ready: !!settingsState.cerebrasApiKeySet,
-          reason: settingsState.cerebrasApiKeySet ? "configured" : "Cerebras API 키 필요"
-        },
-        {
-          provider: "copilot",
-          statusLabel: copilotReady ? "ready" : (copilotAuthRequired ? "auth_required" : (copilotMissing ? "not_installed" : "unavailable")),
-          statusTone: copilotReady ? "ok" : (copilotAuthRequired ? "warn" : "error"),
-          ready: copilotReady,
-          reason: copilotReady
-            ? "설치/인증 완료"
-            : (copilotAuthRequired
-              ? "GitHub 인증 필요"
-              : (copilotMissing ? "Copilot 미설치" : (copilotText || "상태 확인 필요")))
-        },
-        {
-          provider: "codex",
-          statusLabel: codexReady ? "ready" : (codexAuthRequired ? "auth_required" : (codexMissing ? "not_installed" : "unavailable")),
-          statusTone: codexReady ? "ok" : (codexAuthRequired ? "warn" : "error"),
-          ready: codexReady,
-          reason: codexReady
-            ? "설치/인증 완료"
-            : (codexAuthRequired
-              ? "Codex OAuth 또는 API Key 필요"
-              : (codexMissing ? "Codex 미설치" : (codexText || "상태 확인 필요")))
-        }
-      ];
-    }, [
+    const providerHealthRows = useMemo(() => buildProviderHealthRows({
+      settingsState,
+      copilotStatus,
+      codexStatus
+    }), [
       copilotStatus,
       codexStatus,
-      settingsState.groqApiKeySet,
-      settingsState.geminiApiKeySet,
-      settingsState.cerebrasApiKeySet
+      settingsState
     ]);
-    const providerRuntimeRows = useMemo(() => {
-      return providerHealthRows.map((row) => {
-        const runtime = providerRuntimeStats.byProvider[row.provider] || {
-          count: 0,
-          successCount: 0,
-          errorCount: 0,
-          progressCount: 0
-        };
-        return {
-          ...row,
-          runtimeCount: runtime.count,
-          runtimeSuccessCount: runtime.successCount,
-          runtimeErrorCount: runtime.errorCount,
-          runtimeProgressCount: runtime.progressCount
-        };
-      });
-    }, [providerHealthRows, providerRuntimeStats]);
-    const providerHealthSummary = useMemo(() => {
-      const total = providerHealthRows.length;
-      const readyCount = providerHealthRows.filter((row) => row.ready).length;
-      const setupErrorCount = total - readyCount;
-      const runtimeErrorCount = providerRuntimeStats.errorCount;
-      const latest = providerRuntimeStats.latest;
-      const latestText = latest
-        ? `${latest.provider}:${latest.statusLabel}:${latest.scope}/${latest.mode}`
-        : "-";
-      const lastStatus = [
-        providerHealthRows.map((row) => `${row.provider}:${row.statusLabel}`).join(", "),
-        `runtime_latest=${latestText}`
-      ].join(" | ");
-      return {
-        count: total,
-        setupErrorCount,
-        runtimeErrorCount,
-        runtimeTotal: providerRuntimeStats.total,
-        runtimeSuccessCount: providerRuntimeStats.successCount,
-        runtimeProgressCount: providerRuntimeStats.progressCount,
-        lastStatus,
-        mainLabel: `${readyCount}/${total} ready · 실행 ${providerRuntimeStats.total}건`
-      };
-    }, [providerHealthRows, providerRuntimeStats]);
-    const toolDomainStats = useMemo(() => {
-      const byDomain = {
-        tool: { count: 0, errorCount: 0, lastType: "-", lastStatus: "-" },
-        rag: { count: 0, errorCount: 0, lastType: "-", lastStatus: "-" }
-      };
-
-      for (const item of toolResultItems) {
-        const domain = item.domain === "rag" ? "rag" : "tool";
-        const target = byDomain[domain];
-        if (target.count === 0) {
-          target.lastType = item.type || "-";
-          target.lastStatus = item.statusLabel || "-";
-        }
-        target.count += 1;
-        if (item.hasError) {
-          target.errorCount += 1;
-        }
-      }
-
-      return byDomain;
-    }, [toolResultItems]);
-    const opsFlowItems = useMemo(() => {
-      const providerItems = providerRuntimeItems.map((item) => ({
-        id: `provider-${item.id || `${item.capturedAt || ""}-${item.provider || "unknown"}`}`,
-        capturedAt: item.capturedAt || "",
-        domain: "provider",
-        source: item.scope || "runtime",
-        statusLabel: item.statusLabel || "-",
-        statusTone: item.statusTone || "neutral",
-        hasError: !!item.hasError,
-        summary: item.summary || `${item.provider || "unknown"} ${item.statusLabel || "-"}`
-      }));
-      const toolItems = toolResultItems.map((item) => ({
-        id: `tool-${item.id || `${item.capturedAt || ""}-${item.type || "unknown"}`}`,
-        capturedAt: item.capturedAt || "",
-        domain: item.domain === "rag" ? "rag" : "tool",
-        source: item.group || "tool",
-        statusLabel: item.statusLabel || "-",
-        statusTone: item.statusTone || "neutral",
-        hasError: !!item.hasError,
-        summary: item.summary || "-"
-      }));
-      return [...providerItems, ...toolItems]
-        .sort((a, b) => (b.capturedAt || "").localeCompare(a.capturedAt || ""))
-        .slice(0, 64);
-    }, [providerRuntimeItems, toolResultItems]);
-    const opsDomainStats = useMemo(() => {
-      const stats = {
-        all: { count: 0, errorCount: 0, lastSummary: "-" },
-        provider: { count: 0, errorCount: 0, lastSummary: "-" },
-        tool: { count: 0, errorCount: 0, lastSummary: "-" },
-        rag: { count: 0, errorCount: 0, lastSummary: "-" }
-      };
-
-      for (const item of opsFlowItems) {
-        const domain = item.domain === "provider" || item.domain === "rag" ? item.domain : "tool";
-        const allTarget = stats.all;
-        if (allTarget.count === 0) {
-          allTarget.lastSummary = item.summary || "-";
-        }
-        allTarget.count += 1;
-        if (item.hasError) {
-          allTarget.errorCount += 1;
-        }
-
-        const target = stats[domain];
-        if (target.count === 0) {
-          target.lastSummary = item.summary || "-";
-        }
-        target.count += 1;
-        if (item.hasError) {
-          target.errorCount += 1;
-        }
-      }
-
-      return stats;
-    }, [opsFlowItems]);
-    const filteredOpsFlowItems = useMemo(() => {
-      return opsFlowItems.filter((item) => {
-        if (opsDomainFilter === "all") {
-          return true;
-        }
-        return item.domain === opsDomainFilter;
-      });
-    }, [opsDomainFilter, opsFlowItems]);
-    const filteredToolResultItems = useMemo(() => {
-      return toolResultItems.filter((item) => {
-        if (toolResultFilter === "errors") {
-          if (!item.hasError) {
-            return false;
-          }
-        } else if (toolResultFilter !== "all" && item.group !== toolResultFilter) {
-          return false;
-        }
-
-        if (toolDomainFilter !== "all" && item.domain !== toolDomainFilter) {
-          return false;
-        }
-        return true;
-      });
-    }, [toolDomainFilter, toolResultFilter, toolResultItems]);
+    const providerRuntimeRows = useMemo(
+      () => buildProviderRuntimeRows(providerHealthRows, providerRuntimeStats),
+      [providerHealthRows, providerRuntimeStats]
+    );
+    const providerHealthSummary = useMemo(
+      () => buildProviderHealthSummary(providerHealthRows, providerRuntimeStats),
+      [providerHealthRows, providerRuntimeStats]
+    );
+    const toolDomainStats = useMemo(
+      () => buildToolDomainStats(toolResultItems),
+      [toolResultItems]
+    );
+    const opsFlowItems = useMemo(
+      () => buildOpsFlowItems(providerRuntimeItems, toolResultItems),
+      [providerRuntimeItems, toolResultItems]
+    );
+    const opsDomainStats = useMemo(
+      () => buildOpsDomainStats(opsFlowItems),
+      [opsFlowItems]
+    );
+    const filteredOpsFlowItems = useMemo(
+      () => filterOpsFlowItems(opsFlowItems, opsDomainFilter),
+      [opsDomainFilter, opsFlowItems]
+    );
+    const filteredToolResultItems = useMemo(
+      () => filterToolResultItems(toolResultItems, toolResultFilter, toolDomainFilter),
+      [toolDomainFilter, toolResultFilter, toolResultItems]
+    );
 
     useEffect(() => {
       if (!authed) {
@@ -2982,6 +856,1175 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       setToolControlError("");
     }
 
+    function refreshDoctorReport(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setDoctorState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        lastError: "",
+        lastAction: "get_last"
+      }));
+
+      const ok = requestDoctorLast(send, options);
+      if (!ok) {
+        setDoctorState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: 최근 doctor 보고서 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function runDoctorReport() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setDoctorState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastAction: "run"
+      }));
+
+      const ok = requestDoctorRun(send);
+      if (!ok) {
+        setDoctorState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: doctor 실행 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function trimNotebookEntry(value, maxChars = 800) {
+      const normalized = `${value || ""}`.trim();
+      if (normalized.length <= maxChars) {
+        return normalized;
+      }
+
+      return `${normalized.slice(0, maxChars)}...`;
+    }
+
+    function buildSelectedPlanDecisionText() {
+      const snapshot = plansState.snapshot || null;
+      const plan = snapshot?.plan || null;
+      if (!plan) {
+        return "";
+      }
+
+      const lines = [
+        `plan_id: ${plan.planId || "-"}`,
+        `title: ${plan.title || "-"}`,
+        `status: ${plan.status || "-"}`,
+        `objective: ${plan.objective || "-"}`
+      ];
+
+      if (Array.isArray(plan.constraints) && plan.constraints.length > 0) {
+        lines.push("", "constraints:");
+        plan.constraints.forEach((item) => {
+          lines.push(`- ${item}`);
+        });
+      }
+
+      if (snapshot.review) {
+        lines.push(
+          "",
+          `review_route: ${snapshot.review.reviewerRoute || "-"}`,
+          `review_summary: ${snapshot.review.summary || "-"}`
+        );
+      }
+
+      if (snapshot.execution) {
+        lines.push(
+          "",
+          `latest_execution: ${snapshot.execution.status || "-"}`,
+          `latest_message: ${snapshot.execution.message || "-"}`
+        );
+        if (snapshot.execution.resultSummary) {
+          lines.push(trimNotebookEntry(snapshot.execution.resultSummary, 420));
+        }
+      }
+
+      return lines.join("\n").trim();
+    }
+
+    function buildSelectedTaskVerificationText() {
+      const snapshot = taskGraphState.snapshot || null;
+      const graph = snapshot?.graph || null;
+      if (!graph) {
+        return "";
+      }
+
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+      const selectedTask = nodes.find((task) => task.taskId === taskGraphState.selectedTaskId)
+        || nodes[0]
+        || null;
+      const output = taskGraphState.output || null;
+      const lines = [
+        `graph_id: ${graph.graphId || "-"}`,
+        `source_plan_id: ${graph.sourcePlanId || "-"}`,
+        `status: ${graph.status || "-"}`,
+        `completed: ${nodes.filter((task) => task.status === "Completed").length}/${nodes.length}`,
+        `failed: ${nodes.filter((task) => task.status === "Failed").length}`
+      ];
+
+      if (selectedTask) {
+        lines.push(
+          "",
+          `selected_task: ${selectedTask.taskId} · ${selectedTask.title || "-"}`,
+          `task_status: ${selectedTask.status || "-"}`,
+          `task_category: ${selectedTask.category || "-"}`
+        );
+        if (selectedTask.outputSummary) {
+          lines.push(`task_summary: ${trimNotebookEntry(selectedTask.outputSummary, 280)}`);
+        }
+        if (selectedTask.error) {
+          lines.push(`task_error: ${trimNotebookEntry(selectedTask.error, 220)}`);
+        }
+      }
+
+      if (output?.resultJson) {
+        lines.push("", "[result.json]", trimNotebookEntry(output.resultJson, 420));
+      } else if (output?.stdout) {
+        lines.push("", "[stdout]", trimNotebookEntry(output.stdout, 420));
+      }
+
+      return lines.join("\n").trim();
+    }
+
+    function buildDoctorVerificationText() {
+      const report = doctorState.report || null;
+      if (!report) {
+        return "";
+      }
+
+      const checks = Array.isArray(report.checks) ? report.checks : [];
+      const failed = checks.filter((item) => `${item.status || ""}`.toLowerCase() === "fail");
+      const warned = checks.filter((item) => `${item.status || ""}`.toLowerCase() === "warn");
+      const lines = [
+        `report_id: ${report.reportId || "-"}`,
+        `created_at_utc: ${report.createdAtUtc || "-"}`,
+        `ok_count: ${report.okCount || 0}`,
+        `warn_count: ${report.warnCount || 0}`,
+        `fail_count: ${report.failCount || 0}`,
+        `skip_count: ${report.skipCount || 0}`
+      ];
+
+      if (failed.length > 0 || warned.length > 0) {
+        lines.push("", "issues:");
+        failed.concat(warned).slice(0, 8).forEach((item) => {
+          lines.push(`- ${item.id || "-"}: ${item.summary || "-"}`);
+        });
+      } else {
+        lines.push("", "issues:", "- 현재 warn/fail check 없음");
+      }
+
+      return lines.join("\n").trim();
+    }
+
+    function buildRefactorVerificationText() {
+      const preview = refactorState.preview || null;
+      const readResult = refactorState.readResult || null;
+      const issues = Array.isArray(refactorState.lastIssues) ? refactorState.lastIssues : [];
+      const filePath = readResult?.path || preview?.path || refactorState.loadedPath || refactorState.filePath || "";
+      if (!filePath && !refactorState.lastMessage && issues.length === 0) {
+        return "";
+      }
+
+      const lines = [
+        `path: ${filePath || "-"}`,
+        `last_action: ${refactorState.lastAction || "-"}`,
+        `last_message: ${refactorState.lastMessage || "-"}`
+      ];
+
+      if (preview) {
+        lines.push(
+          `preview_id: ${preview.previewId || "-"}`,
+          `safe_to_apply: ${preview.safeToApply ? "yes" : "no"}`
+        );
+        if (preview.unifiedDiff) {
+          lines.push("", "[preview]", trimNotebookEntry(preview.unifiedDiff, 420));
+        }
+      }
+
+      if (issues.length > 0) {
+        lines.push("", "issues:");
+        issues.slice(0, 6).forEach((issue) => {
+          lines.push(`- ${issue.startLine || "?"}-${issue.endLine || "?"}: ${issue.reason || "-"}`);
+        });
+      }
+
+      return lines.join("\n").trim();
+    }
+
+    function setNotebookProjectKey(value) {
+      setNotebooksState((prev) => ({ ...prev, projectKeyDraft: value }));
+    }
+
+    function setNotebookAppendKind(value) {
+      const normalized = `${value || ""}`.trim().toLowerCase();
+      const nextKind = normalized === "decision" || normalized === "verification" ? normalized : "learning";
+      setNotebooksState((prev) => ({ ...prev, appendKind: nextKind }));
+    }
+
+    function setNotebookAppendText(value) {
+      setNotebooksState((prev) => ({ ...prev, appendText: value }));
+    }
+
+    function refreshNotebook(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setNotebooksState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        lastError: "",
+        lastMessage: "",
+        lastAction: "get"
+      }));
+
+      const ok = requestNotebookGet(send, notebooksState.projectKeyDraft, options);
+      if (!ok) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: notebook 조회 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function appendNotebook(override = null) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const kind = `${override && override.kind ? override.kind : notebooksState.appendKind || "learning"}`.trim().toLowerCase();
+      const content = `${override && override.content ? override.content : notebooksState.appendText || ""}`.trim();
+      const projectKey = `${override && typeof override.projectKey === "string" ? override.projectKey : notebooksState.projectKeyDraft || ""}`.trim();
+      if (!content) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          lastError: "기록할 내용을 입력하세요."
+        }));
+        return false;
+      }
+
+      setNotebooksState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastMessage: "",
+        lastAction: "append",
+        appendKind: kind === "decision" || kind === "verification" ? kind : "learning",
+        appendText: content
+      }));
+
+      const ok = requestNotebookAppend(send, {
+        projectKey,
+        kind,
+        content
+      });
+      if (!ok) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: notebook append 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function createNotebookHandoff(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setNotebooksState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastMessage: "",
+        lastAction: "handoff"
+      }));
+
+      const ok = requestHandoffCreate(send, notebooksState.projectKeyDraft, options);
+      if (!ok) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: handoff 생성 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function appendSelectedPlanDecision() {
+      const content = buildSelectedPlanDecisionText();
+      if (!content) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          lastError: "선택된 계획이 없어 decision 템플릿을 만들 수 없습니다."
+        }));
+        return false;
+      }
+
+      return appendNotebook({
+        kind: "decision",
+        content
+      });
+    }
+
+    function appendSelectedTaskVerification() {
+      const content = buildSelectedTaskVerificationText();
+      if (!content) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          lastError: "선택된 Task graph가 없어 verification 템플릿을 만들 수 없습니다."
+        }));
+        return false;
+      }
+
+      return appendNotebook({
+        kind: "verification",
+        content
+      });
+    }
+
+    function appendDoctorVerification() {
+      const content = buildDoctorVerificationText();
+      if (!content) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          lastError: "최근 doctor 보고서가 없어 verification 템플릿을 만들 수 없습니다."
+        }));
+        return false;
+      }
+
+      return appendNotebook({
+        kind: "verification",
+        content
+      });
+    }
+
+    function appendRefactorVerification() {
+      const content = buildRefactorVerificationText();
+      if (!content) {
+        setNotebooksState((prev) => ({
+          ...prev,
+          lastError: "최근 refactor 상태가 없어 verification 템플릿을 만들 수 없습니다."
+        }));
+        return false;
+      }
+
+      return appendNotebook({
+        kind: "verification",
+        content
+      });
+    }
+
+    function setPlanCreateObjective(value) {
+      setPlansState((prev) => ({ ...prev, createObjective: value }));
+    }
+
+    function refreshProjectContext(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setContextState((prev) => ({
+        ...prev,
+        loading: true,
+        lastError: "",
+        lastAction: "scan"
+      }));
+
+      const ok = requestContextScan(send, options);
+      if (!ok) {
+        setContextState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: 프로젝트 문맥 스캔 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function refreshSkillsList(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setContextState((prev) => ({
+        ...prev,
+        loadingSkills: true,
+        lastError: "",
+        lastAction: "skills"
+      }));
+
+      const ok = requestSkillsList(send, options);
+      if (!ok) {
+        setContextState((prev) => ({
+          ...prev,
+          loadingSkills: false,
+          lastError: "오류: skills 목록 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function refreshCommandsList(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setContextState((prev) => ({
+        ...prev,
+        loadingCommands: true,
+        lastError: "",
+        lastAction: "commands"
+      }));
+
+      const ok = requestCommandsList(send, options);
+      if (!ok) {
+        setContextState((prev) => ({
+          ...prev,
+          loadingCommands: false,
+          lastError: "오류: commands 목록 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function setPlanCreateConstraintsText(value) {
+      setPlansState((prev) => ({ ...prev, createConstraintsText: value }));
+    }
+
+    function setPlanCreateMode(value) {
+      setPlansState((prev) => ({ ...prev, createMode: value === "interview" ? "interview" : "fast" }));
+    }
+
+    function refreshPlansList(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setPlansState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        lastError: "",
+        lastAction: "list"
+      }));
+
+      const ok = requestPlanList(send, options);
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: 계획 목록 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function loadPlanSnapshot(planId, options = {}) {
+      const normalizedPlanId = `${planId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedPlanId) {
+        return false;
+      }
+
+      setPlansState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        selectedPlanId: normalizedPlanId,
+        lastError: "",
+        lastAction: "get"
+      }));
+
+      const ok = requestPlanGet(send, normalizedPlanId, options);
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: 계획 상세 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function submitPlanCreate() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const objective = `${plansState.createObjective || ""}`.trim();
+      if (!objective) {
+        setPlansState((prev) => ({
+          ...prev,
+          lastError: "계획 요청을 입력하세요."
+        }));
+        return false;
+      }
+
+      const constraints = `${plansState.createConstraintsText || ""}`
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      setPlansState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastAction: "create"
+      }));
+
+      const ok = requestPlanCreate(send, {
+        objective,
+        constraints,
+        mode: plansState.createMode || "fast",
+        conversationId: currentConversationId || undefined
+      });
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 계획 생성 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function reviewPlan(planId) {
+      const normalizedPlanId = `${planId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedPlanId) {
+        return false;
+      }
+
+      setPlansState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        selectedPlanId: normalizedPlanId,
+        lastError: "",
+        lastAction: "review"
+      }));
+
+      const ok = requestPlanReview(send, normalizedPlanId);
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 계획 리뷰 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function approvePlan(planId) {
+      const normalizedPlanId = `${planId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedPlanId) {
+        return false;
+      }
+
+      setPlansState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        selectedPlanId: normalizedPlanId,
+        lastError: "",
+        lastAction: "approve"
+      }));
+
+      const ok = requestPlanApprove(send, normalizedPlanId);
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 계획 승인 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function runPlan(planId) {
+      const normalizedPlanId = `${planId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedPlanId) {
+        return false;
+      }
+
+      setPlansState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        selectedPlanId: normalizedPlanId,
+        lastError: "",
+        lastAction: "run"
+      }));
+
+      const ok = requestPlanRun(send, normalizedPlanId);
+      if (!ok) {
+        setPlansState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 계획 실행 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function setTaskGraphCreatePlanId(value) {
+      setTaskGraphState((prev) => ({ ...prev, createPlanId: value }));
+    }
+
+    function setRoutingPolicyChain(categoryKey, value) {
+      setRoutingPolicyState((prev) => ({
+        ...prev,
+        draftChains: {
+          ...(prev.draftChains || {}),
+          [categoryKey]: value
+        }
+      }));
+    }
+
+    function refreshRoutingPolicy(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setRoutingPolicyState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        lastError: "",
+        lastAction: "get"
+      }));
+
+      const ok = requestRoutingPolicyGet(send, options);
+      if (!ok) {
+        setRoutingPolicyState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: 라우팅 정책 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function saveRoutingPolicy() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const draft = routingPolicyState.draftChains || {};
+      const policy = Object.keys(draft).reduce((acc, key) => {
+        const items = `${draft[key] || ""}`
+          .split(",")
+          .map((item) => item.trim())
+          .filter(Boolean);
+        acc[key] = items;
+        return acc;
+      }, {});
+
+      setRoutingPolicyState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastAction: "save"
+      }));
+
+      const ok = requestRoutingPolicySave(send, policy);
+      if (!ok) {
+        setRoutingPolicyState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 라우팅 정책 저장 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function resetRoutingPolicy() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setRoutingPolicyState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastAction: "reset"
+      }));
+
+      const ok = requestRoutingPolicyReset(send);
+      if (!ok) {
+        setRoutingPolicyState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: 라우팅 정책 초기화 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function refreshRoutingDecision(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const ok = requestRoutingDecisionGetLast(send, options);
+      if (!ok) {
+        log("오류: 마지막 라우팅 결정 요청을 전송하지 못했습니다.", "error");
+      }
+
+      return ok;
+    }
+
+    function useSelectedPlanForTaskGraph() {
+      const nextPlanId = plansState.selectedPlanId || plansState.snapshot?.plan?.planId || "";
+      setTaskGraphState((prev) => ({ ...prev, createPlanId: nextPlanId }));
+    }
+
+    function refreshTaskGraphList(options = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        lastError: "",
+        lastAction: "list"
+      }));
+
+      const ok = requestTaskGraphList(send, options);
+      if (!ok) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: Task graph 목록 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function loadTaskGraph(graphId, options = {}) {
+      const normalizedGraphId = `${graphId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedGraphId) {
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        loading: true,
+        pending: false,
+        selectedGraphId: normalizedGraphId,
+        lastError: "",
+        lastAction: "get"
+      }));
+
+      const ok = requestTaskGraphGet(send, normalizedGraphId, options);
+      if (!ok) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          loading: false,
+          lastError: "오류: Task graph 상세 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function submitTaskGraphCreate() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const planId = `${taskGraphState.createPlanId || plansState.selectedPlanId || plansState.snapshot?.plan?.planId || ""}`.trim();
+      if (!planId) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          lastError: "Task graph를 만들 plan id를 입력하세요."
+        }));
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        lastError: "",
+        lastAction: "create"
+      }));
+
+      const ok = requestTaskGraphCreate(send, planId);
+      if (!ok) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: Task graph 생성 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function runTaskGraph(graphId) {
+      const normalizedGraphId = `${graphId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedGraphId) {
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        selectedGraphId: normalizedGraphId,
+        lastError: "",
+        lastAction: "run"
+      }));
+
+      const ok = requestTaskGraphRun(send, normalizedGraphId);
+      if (!ok) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: Task graph 실행 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function loadTaskOutput(graphId, taskId, options = {}) {
+      const normalizedGraphId = `${graphId || ""}`.trim();
+      const normalizedTaskId = `${taskId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedGraphId || !normalizedTaskId) {
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        selectedGraphId: normalizedGraphId,
+        selectedTaskId: normalizedTaskId,
+        lastError: "",
+        output: prev.selectedGraphId === normalizedGraphId && prev.selectedTaskId === normalizedTaskId
+          ? prev.output
+          : null
+      }));
+
+      return requestTaskOutput(send, normalizedGraphId, normalizedTaskId, options);
+    }
+
+    function cancelTask(graphId, taskId) {
+      const normalizedGraphId = `${graphId || ""}`.trim();
+      const normalizedTaskId = `${taskId || ""}`.trim();
+      if (!ensureAuthed() || !normalizedGraphId || !normalizedTaskId) {
+        return false;
+      }
+
+      setTaskGraphState((prev) => ({
+        ...prev,
+        pending: true,
+        loading: false,
+        selectedGraphId: normalizedGraphId,
+        selectedTaskId: normalizedTaskId,
+        lastError: "",
+        lastAction: "cancel"
+      }));
+
+      const ok = requestTaskCancel(send, normalizedGraphId, normalizedTaskId);
+      if (!ok) {
+        setTaskGraphState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: task cancel 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function selectRefactorLine(lineNumber) {
+      setRefactorState((prev) => {
+        const current = parseRefactorLineNumber(lineNumber);
+        if (!current) {
+          return prev;
+        }
+
+        const start = parseRefactorLineNumber(prev.selectedStartLine);
+        const end = parseRefactorLineNumber(prev.selectedEndLine);
+        if (!start || !end || start !== end || current === start) {
+          return {
+            ...prev,
+            selectedStartLine: String(current),
+            selectedEndLine: String(current),
+            preview: null,
+            lastError: ""
+          };
+        }
+
+        return {
+          ...prev,
+          selectedStartLine: String(Math.min(start, current)),
+          selectedEndLine: String(Math.max(start, current)),
+          preview: null,
+          lastError: ""
+        };
+      });
+    }
+
+    function readRefactorAnchors() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const path = `${refactorState.filePath || ""}`.trim();
+      if (!path) {
+        setRefactorState((prev) => ({
+          ...prev,
+          lastError: "파일 경로를 입력하세요."
+        }));
+        return false;
+      }
+
+      setRefactorState((prev) => ({
+        ...prev,
+        pending: true,
+        lastAction: "read",
+        lastError: "",
+        lastMessage: "",
+        lastIssues: []
+      }));
+
+      const ok = requestRefactorRead(send, path);
+      if (!ok) {
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: Anchor 읽기 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function previewSafeRefactor() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const mode = `${refactorState.mode || "anchor"}`;
+      if (mode === "lsp") {
+        const path = `${refactorState.filePath || refactorState.loadedPath || ""}`.trim();
+        const symbol = `${refactorState.symbol || ""}`.trim();
+        const newName = `${refactorState.newName || ""}`.trim();
+        if (!path) {
+          setRefactorState((prev) => ({
+            ...prev,
+            lastError: "파일 경로를 입력하세요."
+          }));
+          return false;
+        }
+
+        if (!symbol || !newName) {
+          setRefactorState((prev) => ({
+            ...prev,
+            lastError: "symbol과 새 이름을 모두 입력하세요."
+          }));
+          return false;
+        }
+
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: true,
+          lastAction: "lsp_rename",
+          lastError: "",
+          lastMessage: "",
+          lastIssues: []
+        }));
+
+        const ok = requestLspRename(send, path, symbol, newName);
+        if (!ok) {
+          setRefactorState((prev) => ({
+            ...prev,
+            pending: false,
+            lastError: "오류: LSP rename 요청을 전송하지 못했습니다."
+          }));
+        }
+
+        return ok;
+      }
+
+      if (mode === "ast") {
+        const path = `${refactorState.filePath || refactorState.loadedPath || ""}`.trim();
+        const pattern = `${refactorState.pattern || ""}`.trim();
+        if (!path) {
+          setRefactorState((prev) => ({
+            ...prev,
+            lastError: "파일 경로를 입력하세요."
+          }));
+          return false;
+        }
+
+        if (!pattern || !`${refactorState.replacement || ""}`) {
+          setRefactorState((prev) => ({
+            ...prev,
+            lastError: "pattern과 replacement를 모두 입력하세요."
+          }));
+          return false;
+        }
+
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: true,
+          lastAction: "ast_replace",
+          lastError: "",
+          lastMessage: "",
+          lastIssues: []
+        }));
+
+        const ok = requestAstReplace(send, path, pattern, refactorState.replacement || "");
+        if (!ok) {
+          setRefactorState((prev) => ({
+            ...prev,
+            pending: false,
+            lastError: "오류: AST replace 요청을 전송하지 못했습니다."
+          }));
+        }
+
+        return ok;
+      }
+
+      const readResult = refactorState.readResult || null;
+      if (!readResult || !Array.isArray(readResult.lines) || readResult.lines.length === 0) {
+        setRefactorState((prev) => ({
+          ...prev,
+          lastError: "먼저 Anchor를 읽으세요."
+        }));
+        return false;
+      }
+
+      const start = parseRefactorLineNumber(refactorState.selectedStartLine);
+      const end = parseRefactorLineNumber(refactorState.selectedEndLine);
+      if (!start || !end) {
+        setRefactorState((prev) => ({
+          ...prev,
+          lastError: "시작/끝 line을 모두 선택하세요."
+        }));
+        return false;
+      }
+
+      const safeStart = Math.min(start, end);
+      const safeEnd = Math.max(start, end);
+      const selectedLines = getRefactorSelectedLines({
+        ...refactorState,
+        selectedStartLine: String(safeStart),
+        selectedEndLine: String(safeEnd)
+      });
+      if (selectedLines.length !== safeEnd - safeStart + 1) {
+        setRefactorState((prev) => ({
+          ...prev,
+          lastError: "현재 로드된 Anchor 범위 밖의 line은 preview할 수 없습니다. 파일을 다시 읽으세요."
+        }));
+        return false;
+      }
+
+      setRefactorState((prev) => ({
+        ...prev,
+        pending: true,
+        lastAction: "preview",
+        lastError: "",
+        lastMessage: "",
+        lastIssues: []
+      }));
+
+      const ok = requestRefactorPreview(send, readResult.path || refactorState.loadedPath || refactorState.filePath, [{
+        startLine: safeStart,
+        endLine: safeEnd,
+        expectedHashes: selectedLines.map((line) => line.hash),
+        replacement: refactorState.replacement || ""
+      }]);
+      if (!ok) {
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: Safe Refactor preview 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
+    function applySafeRefactor() {
+      if (!ensureAuthed()) {
+        return false;
+      }
+
+      const previewId = `${refactorState.preview && refactorState.preview.previewId ? refactorState.preview.previewId : ""}`.trim();
+      if (!previewId) {
+        setRefactorState((prev) => ({
+          ...prev,
+          lastError: "먼저 preview를 만드세요."
+        }));
+        return false;
+      }
+
+      setRefactorState((prev) => ({
+        ...prev,
+        pending: true,
+        lastAction: "apply",
+        lastError: "",
+        lastMessage: ""
+      }));
+
+      const ok = requestRefactorApply(send, previewId);
+      if (!ok) {
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: false,
+          lastError: "오류: Safe Refactor apply 요청을 전송하지 못했습니다."
+        }));
+      }
+
+      return ok;
+    }
+
     function selectToolResultItem(item) {
       setSelectedToolResultId(item.id);
       setToolResultPreview(item.preview || "결과 대기 중");
@@ -3028,6 +2071,39 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         worker.terminate();
       };
     }, []);
+
+    useEffect(() => {
+      if (rootTab !== "coding" && (safeRefactorOverlayOpen || codingResultOverlayOpen)) {
+        setSafeRefactorOverlayOpen(false);
+        setCodingResultOverlayOpen(false);
+      }
+    }, [rootTab, safeRefactorOverlayOpen, codingResultOverlayOpen]);
+
+    useEffect(() => {
+      if (!codingResultOverlayOpen) {
+        return;
+      }
+
+      if (!currentConversationId || !codingResultByConversation[currentConversationId]) {
+        setCodingResultOverlayOpen(false);
+      }
+    }, [codingResultOverlayOpen, currentConversationId, codingResultByConversation]);
+
+    useEffect(() => {
+      if (!safeRefactorOverlayOpen && !codingResultOverlayOpen) {
+        return undefined;
+      }
+
+      function handleSupportOverlayEscape(event) {
+        if (event.key === "Escape") {
+          setSafeRefactorOverlayOpen(false);
+          setCodingResultOverlayOpen(false);
+        }
+      }
+
+      window.addEventListener("keydown", handleSupportOverlayEscape);
+      return () => window.removeEventListener("keydown", handleSupportOverlayEscape);
+    }, [safeRefactorOverlayOpen, codingResultOverlayOpen]);
 
     useEffect(() => {
       if (!chatSingleModel && selectedGroqModel) {
@@ -3344,6 +2420,8 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     }
 
     function sendInitialRequests() {
+      send({ type: "ping" }, { silent: true, queueIfClosed: false });
+
       const token = getSavedAuthToken();
       if (token) {
         send({ type: "resume_auth", authToken: token });
@@ -3508,16 +2586,152 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       return value.replace(/\n{3,}/g, "\n\n").trim();
     }
 
+    function resolveWorkspacePreviewRequestPath(filePath, conversationId) {
+      const rawPath = `${filePath || ""}`.trim();
+      if (!rawPath) {
+        return "";
+      }
+
+      if (rawPath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(rawPath)) {
+        return rawPath;
+      }
+
+      const normalizedConversationId = `${conversationId || currentConversationId || ""}`.trim();
+      if (!normalizedConversationId) {
+        return rawPath;
+      }
+
+      const latestCodingResult = codingResultByConversation[normalizedConversationId];
+      const latestRuntime = codingRuntimeByConversation[normalizedConversationId];
+      const candidateRunDirectories = [
+        latestCodingResult && latestCodingResult.execution && latestCodingResult.execution.runDirectory,
+        latestRuntime && latestRuntime.execution && latestRuntime.execution.runDirectory
+      ]
+        .map((value) => `${value || ""}`.trim())
+        .filter(Boolean);
+
+      for (const runDirectory of candidateRunDirectories) {
+        const normalizedRunDirectory = runDirectory.replace(/[\\/]+$/, "");
+        const normalizedRelativePath = rawPath.replace(/^[\\/]+/, "");
+        if (!normalizedRunDirectory || !normalizedRelativePath) {
+          continue;
+        }
+
+        return `${normalizedRunDirectory}/${normalizedRelativePath}`;
+      }
+
+      return rawPath;
+    }
+
     function requestWorkspaceFilePreview(filePath, conversationId) {
-      if (!filePath) {
+      const resolvedPath = resolveWorkspacePreviewRequestPath(filePath, conversationId);
+      if (!resolvedPath) {
         return;
       }
 
       send({
         type: "read_workspace_file",
-        filePath,
+        filePath: resolvedPath,
         conversationId: conversationId || undefined
       });
+    }
+
+    function buildCodingRuntimeMessageState(message, ok, pending = false) {
+      return {
+        pending,
+        ok,
+        runMode: "",
+        language: "",
+        message,
+        targetProvider: "",
+        targetModel: "",
+        previewUrl: "",
+        previewEntry: "",
+        execution: null,
+        updatedAt: Date.now()
+      };
+    }
+
+    function requestLatestCodingResultExecution(conversationId, standardInput = "") {
+      const normalizedConversationId = `${conversationId || currentConversationId || ""}`.trim();
+      if (!normalizedConversationId) {
+        return;
+      }
+
+      if (!authed) {
+        setCodingRuntimeByConversation((prev) => ({
+          ...prev,
+          [normalizedConversationId]: buildCodingRuntimeMessageState(
+            "세션 인증이 필요합니다. 설정 탭에서 OTP 인증 후 다시 시도하세요.",
+            false,
+            false
+          )
+        }));
+        return;
+      }
+
+      setCodingRuntimeByConversation((prev) => ({
+        ...prev,
+        [normalizedConversationId]: buildCodingRuntimeMessageState("최근 코딩 결과를 실행하는 중입니다.", true, true)
+      }));
+      setShowExecutionLogsByConversation((prev) => ({
+        ...prev,
+        [normalizedConversationId]: true
+      }));
+
+      const ok = send({
+        type: "coding_execute_result",
+        conversationId: normalizedConversationId,
+        stdin: typeof standardInput === "string" ? standardInput : ""
+      });
+      if (ok) {
+        return;
+      }
+
+      setCodingRuntimeByConversation((prev) => ({
+        ...prev,
+        [normalizedConversationId]: buildCodingRuntimeMessageState("오류: WebSocket 연결이 끊어졌습니다.", false, false)
+      }));
+    }
+
+    function humanWorkspacePath(pathValue) {
+      const value = `${pathValue || ""}`.trim();
+      if (!value) {
+        return "-";
+      }
+
+      const workspaceMarker = "/workspace/coding/";
+      const markerIndex = value.lastIndexOf(workspaceMarker);
+      if (markerIndex >= 0) {
+        return value.slice(markerIndex + workspaceMarker.length);
+      }
+
+      return value;
+    }
+
+    function parseRefactorLineNumber(value) {
+      const parsed = Number.parseInt(`${value || ""}`.trim(), 10);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return 0;
+      }
+      return parsed;
+    }
+
+    function getRefactorSelectedLines(state = refactorState) {
+      const readResult = state && state.readResult ? state.readResult : null;
+      if (!readResult || !Array.isArray(readResult.lines)) {
+        return [];
+      }
+
+      const start = parseRefactorLineNumber(state.selectedStartLine);
+      const end = parseRefactorLineNumber(state.selectedEndLine);
+      if (!start || !end) {
+        return [];
+      }
+
+      const safeStart = Math.min(start, end);
+      const safeEnd = Math.max(start, end);
+      return readResult.lines.filter((line) => line.lineNumber >= safeStart && line.lineNumber <= safeEnd);
     }
 
     function inferErrorKey(messageText) {
@@ -4672,6 +3886,10 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       pushProviderRuntimeEvents(msg);
       pushGuardObsEvent(msg);
 
+      if (msg.type === "pong") {
+        return;
+      }
+
       if (msg.type === "auth_required") {
         setAuthMeta({ sessionId: msg.sessionId || "", telegramConfigured: !!msg.telegramConfigured });
         return;
@@ -4696,6 +3914,15 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
           }
           setStatus("세션 인증됨");
           send({ type: "get_routines" });
+          requestDoctorLast(send, { silent: true, queueIfClosed: false });
+          requestRoutingPolicyGet(send, { silent: true, queueIfClosed: false });
+          requestRoutingDecisionGetLast(send, { silent: true, queueIfClosed: false });
+          requestPlanList(send, { silent: true, queueIfClosed: false });
+          requestTaskGraphList(send, { silent: true, queueIfClosed: false });
+          requestContextScan(send, { silent: true, queueIfClosed: false });
+          requestSkillsList(send, { silent: true, queueIfClosed: false });
+          requestCommandsList(send, { silent: true, queueIfClosed: false });
+          requestNotebookGet(send, "", { silent: true, queueIfClosed: false });
         } else {
           if (msg.resumed) {
             clearAuthToken();
@@ -4703,6 +3930,457 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
           setAuthLocalOffset(localUtcOffsetLabel());
           setStatus(msg.resumed ? "세션 만료 / OTP 필요" : "인증 실패");
         }
+        return;
+      }
+
+      if (msg.type === "context_scan_result") {
+        const payload = msg.payload || null;
+        const sources = Array.isArray(payload?.instructions?.sources) ? payload.instructions.sources : [];
+        const skills = Array.isArray(payload?.skills) ? payload.skills : [];
+        const commands = Array.isArray(payload?.commands) ? payload.commands : [];
+
+        setContextState((prev) => ({
+          ...prev,
+          loaded: !!payload,
+          loading: false,
+          lastError: payload ? "" : "프로젝트 문맥 스냅샷이 비어 있습니다.",
+          lastAction: "scan",
+          snapshot: payload,
+          skills: skills.length > 0 ? skills : prev.skills,
+          commands: commands.length > 0 ? commands : prev.commands
+        }));
+
+        if (payload) {
+          log(
+            `[context] scan · instructions=${sources.length} skills=${skills.length} commands=${commands.length}`,
+            "info"
+          );
+        }
+        return;
+      }
+
+      if (msg.type === "skills_list_result") {
+        const payload = msg.payload || {};
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        setContextState((prev) => ({
+          ...prev,
+          loadingSkills: false,
+          lastError: "",
+          lastAction: "skills",
+          skills: items
+        }));
+        return;
+      }
+
+      if (msg.type === "commands_list_result") {
+        const payload = msg.payload || {};
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        setContextState((prev) => ({
+          ...prev,
+          loadingCommands: false,
+          lastError: "",
+          lastAction: "commands",
+          commands: items
+        }));
+        return;
+      }
+
+      if (msg.type === "routing_policy_result") {
+        const payload = msg.payload || {};
+        const snapshot = payload.snapshot || null;
+        const ok = payload.ok !== false;
+        const action = msg.action || routingPolicyState.lastAction || "";
+        const effective = snapshot?.effectiveChains || {};
+        const draftChains = Object.keys(effective).reduce((acc, key) => {
+          acc[key] = Array.isArray(effective[key]) ? effective[key].join(", ") : "";
+          return acc;
+        }, {});
+
+        setRoutingPolicyState((prev) => ({
+          ...prev,
+          loaded: true,
+          loading: false,
+          pending: false,
+          lastAction: action,
+          lastError: ok ? "" : (payload.message || "라우팅 정책 요청이 실패했습니다."),
+          snapshot: snapshot || prev.snapshot,
+          draftChains: Object.keys(draftChains).length > 0 ? draftChains : prev.draftChains
+        }));
+
+        log(
+          `[routing] ${action || "action"} · ${payload.message || (ok ? "완료" : "실패")}`,
+          ok ? "info" : "error"
+        );
+        return;
+      }
+
+      if (msg.type === "routing_decision_result") {
+        const decision = msg.payload || null;
+        setRoutingPolicyState((prev) => ({
+          ...prev,
+          snapshot: prev.snapshot
+            ? {
+                ...prev.snapshot,
+                lastDecision: decision
+              }
+            : {
+                defaultChains: {},
+                overrideChains: {},
+                effectiveChains: {},
+                lastDecision: decision
+              }
+        }));
+        return;
+      }
+
+      if (msg.type === "plan_list_result") {
+        const payload = msg.payload || {};
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const nextSelectedPlanId = items.some((item) => item.planId === plansState.selectedPlanId)
+          ? plansState.selectedPlanId
+          : (items[0]?.planId || "");
+
+        setPlansState((prev) => ({
+          ...prev,
+          items,
+          loaded: true,
+          loading: false,
+          pending: false,
+          lastError: items.length === 0 ? "저장된 계획이 없습니다." : "",
+          selectedPlanId: nextSelectedPlanId || "",
+          snapshot: nextSelectedPlanId && prev.snapshot?.plan?.planId === nextSelectedPlanId
+            ? prev.snapshot
+            : (nextSelectedPlanId ? null : prev.snapshot)
+        }));
+
+        if (nextSelectedPlanId) {
+          requestPlanGet(send, nextSelectedPlanId, { silent: true, queueIfClosed: false });
+        }
+
+        return;
+      }
+
+      if (msg.type === "plan_result") {
+        const payload = msg.payload || {};
+        const snapshot = payload.snapshot || null;
+        const ok = payload.ok !== false;
+        const action = msg.action || plansState.lastAction || "";
+        const nextPlanId = snapshot?.plan?.planId || plansState.selectedPlanId || "";
+
+        setPlansState((prev) => {
+          const items = Array.isArray(prev.items) ? [...prev.items] : [];
+          if (snapshot?.plan?.planId) {
+            const nextItem = {
+              planId: snapshot.plan.planId,
+              title: snapshot.plan.title || snapshot.plan.planId,
+              objective: snapshot.plan.objective || "",
+              status: snapshot.plan.status || "Draft",
+              createdAtUtc: snapshot.plan.createdAtUtc || "",
+              updatedAtUtc: snapshot.plan.updatedAtUtc || "",
+              reviewerSummary: snapshot.plan.reviewerSummary || ""
+            };
+            const itemIndex = items.findIndex((item) => item.planId === nextItem.planId);
+            if (itemIndex >= 0) {
+              items[itemIndex] = nextItem;
+            } else {
+              items.unshift(nextItem);
+            }
+          }
+
+          return {
+            ...prev,
+            items,
+            loaded: true,
+            loading: false,
+            pending: false,
+            lastAction: action,
+            lastError: ok ? "" : (payload.message || "계획 요청이 실패했습니다."),
+            selectedPlanId: nextPlanId,
+            snapshot: snapshot || prev.snapshot,
+            createObjective: ok && action === "create" ? "" : prev.createObjective,
+            createConstraintsText: ok && action === "create" ? "" : prev.createConstraintsText,
+            createMode: ok && action === "create" ? "fast" : prev.createMode
+          };
+        });
+
+        log(
+          `[plan] ${action || "action"} · ${payload.message || (ok ? "완료" : "실패")}`,
+          ok ? "info" : "error"
+        );
+
+        if (ok && action !== "get") {
+          requestPlanList(send, { silent: true, queueIfClosed: false });
+        }
+
+        if (ok && action === "run") {
+          requestTaskGraphList(send, { silent: true, queueIfClosed: false });
+        }
+
+        return;
+      }
+
+      if (msg.type === "task_graph_list_result") {
+        const payload = msg.payload || {};
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        const nextSelectedGraphId = items.some((item) => item.graphId === taskGraphState.selectedGraphId)
+          ? taskGraphState.selectedGraphId
+          : (items[0]?.graphId || "");
+
+        setTaskGraphState((prev) => ({
+          ...prev,
+          items,
+          loaded: true,
+          loading: false,
+          pending: false,
+          lastError: items.length === 0 ? "저장된 Task graph가 없습니다." : "",
+          selectedGraphId: nextSelectedGraphId || "",
+          snapshot: nextSelectedGraphId && prev.snapshot?.graph?.graphId === nextSelectedGraphId
+            ? prev.snapshot
+            : (nextSelectedGraphId ? null : prev.snapshot)
+        }));
+
+        if (nextSelectedGraphId) {
+          requestTaskGraphGet(send, nextSelectedGraphId, { silent: true, queueIfClosed: false });
+        }
+
+        return;
+      }
+
+      if (msg.type === "task_graph_result") {
+        const payload = msg.payload || {};
+        const snapshot = payload.snapshot || null;
+        const ok = payload.ok !== false;
+        const action = msg.action || taskGraphState.lastAction || "";
+        const nextGraphId = snapshot?.graph?.graphId || taskGraphState.selectedGraphId || "";
+        const nextTaskId = snapshot?.graph?.nodes?.some((task) => task.taskId === taskGraphState.selectedTaskId)
+          ? taskGraphState.selectedTaskId
+          : (snapshot?.graph?.nodes?.[0]?.taskId || "");
+
+        setTaskGraphState((prev) => {
+          const items = Array.isArray(prev.items) ? [...prev.items] : [];
+          if (snapshot?.graph?.graphId) {
+            const nextItem = {
+              graphId: snapshot.graph.graphId,
+              sourcePlanId: snapshot.graph.sourcePlanId || "",
+              status: snapshot.graph.status || "Draft",
+              createdAtUtc: snapshot.graph.createdAtUtc || "",
+              updatedAtUtc: snapshot.graph.updatedAtUtc || "",
+              totalNodes: Array.isArray(snapshot.graph.nodes) ? snapshot.graph.nodes.length : 0,
+              completedNodes: Array.isArray(snapshot.graph.nodes)
+                ? snapshot.graph.nodes.filter((task) => task.status === "Completed").length
+                : 0,
+              failedNodes: Array.isArray(snapshot.graph.nodes)
+                ? snapshot.graph.nodes.filter((task) => task.status === "Failed").length
+                : 0,
+              runningNodes: Array.isArray(snapshot.graph.nodes)
+                ? snapshot.graph.nodes.filter((task) => task.status === "Running").length
+                : 0
+            };
+            const itemIndex = items.findIndex((item) => item.graphId === nextItem.graphId);
+            if (itemIndex >= 0) {
+              items[itemIndex] = nextItem;
+            } else {
+              items.unshift(nextItem);
+            }
+          }
+
+          return {
+            ...prev,
+            items,
+            loaded: true,
+            loading: false,
+            pending: false,
+            lastAction: action,
+            lastError: ok ? "" : (payload.message || "Task graph 요청이 실패했습니다."),
+            selectedGraphId: nextGraphId,
+            selectedTaskId: nextTaskId,
+            snapshot: snapshot || prev.snapshot,
+            createPlanId: ok && action === "create" ? "" : prev.createPlanId
+          };
+        });
+
+        log(
+          `[task-graph] ${action || "action"} · ${payload.message || (ok ? "완료" : "실패")}`,
+          ok ? "info" : "error"
+        );
+
+        if (nextGraphId && nextTaskId) {
+          requestTaskOutput(send, nextGraphId, nextTaskId, { silent: true, queueIfClosed: false });
+        }
+
+        if (ok && action !== "get") {
+          requestTaskGraphList(send, { silent: true, queueIfClosed: false });
+        }
+
+        const normalizedGraphStatus = `${snapshot?.graph?.status || ""}`.toLowerCase();
+        const sourcePlanId = `${snapshot?.graph?.sourcePlanId || ""}`.trim();
+        if (sourcePlanId
+          && sourcePlanId === `${plansState.selectedPlanId || ""}`.trim()
+          && (normalizedGraphStatus === "completed" || normalizedGraphStatus === "failed" || normalizedGraphStatus === "canceled")) {
+          requestPlanGet(send, sourcePlanId, { silent: true, queueIfClosed: false });
+        }
+
+        return;
+      }
+
+      if (msg.type === "task_output_result") {
+        const payload = msg.payload || {};
+        setTaskGraphState((prev) => ({
+          ...prev,
+          output: payload,
+          selectedGraphId: payload.graphId || prev.selectedGraphId,
+          selectedTaskId: payload.taskId || prev.selectedTaskId
+        }));
+        return;
+      }
+
+      if (msg.type === "task_updated") {
+        const graphId = `${msg.graphId || ""}`.trim();
+        const task = msg.task || null;
+        if (!graphId || !task?.taskId) {
+          return;
+        }
+
+        if (taskGraphState.selectedGraphId === graphId) {
+          requestTaskGraphGet(send, graphId, { silent: true, queueIfClosed: false });
+          if (taskGraphState.selectedTaskId === task.taskId) {
+            requestTaskOutput(send, graphId, task.taskId, { silent: true, queueIfClosed: false });
+          }
+        }
+
+        requestTaskGraphList(send, { silent: true, queueIfClosed: false });
+
+        const normalizedStatus = `${task.status || ""}`.toLowerCase();
+        if (normalizedStatus === "failed" || normalizedStatus === "completed" || normalizedStatus === "canceled") {
+          log(
+            `[task] ${task.taskId} ${task.status || "-"} · ${task.title || "-"}`,
+            normalizedStatus === "failed" ? "error" : "info"
+          );
+        }
+        return;
+      }
+
+      if (msg.type === "task_log") {
+        const graphId = `${msg.graphId || ""}`.trim();
+        const taskId = `${msg.taskId || ""}`.trim();
+        const line = `${msg.line || ""}`;
+        if (graphId && taskId && taskGraphState.selectedGraphId === graphId && taskGraphState.selectedTaskId === taskId) {
+          setTaskGraphState((prev) => ({
+            ...prev,
+            output: {
+              ...(prev.output || {}),
+              graphId,
+              taskId,
+              stdout: `${prev.output?.stdout || ""}${prev.output?.stdout ? "\n" : ""}${line}`
+            }
+          }));
+        }
+        return;
+      }
+
+      if (msg.type === "refactor_result") {
+        const payload = msg.payload || {};
+        const ok = payload.ok !== false;
+        const action = msg.action || refactorState.lastAction || "";
+        const readResult = payload.readResult || null;
+        const preview = payload.preview || null;
+        const applyResult = payload.applyResult || null;
+        const issues = Array.isArray(payload.issues)
+          ? payload.issues
+          : Array.isArray(preview?.issues)
+            ? preview.issues
+            : Array.isArray(applyResult?.issues)
+              ? applyResult.issues
+              : [];
+
+        setRefactorState((prev) => ({
+          ...prev,
+          pending: false,
+          lastAction: action,
+          lastError: ok ? "" : (payload.message || "Safe Refactor 요청이 실패했습니다."),
+          lastMessage: payload.message || (ok ? "완료" : ""),
+          lastIssues: issues,
+          toolResult: payload.toolResult || null,
+          filePath: readResult?.path || preview?.path || applyResult?.path || prev.filePath,
+          loadedPath: readResult?.path || preview?.path || applyResult?.path || prev.loadedPath,
+          readResult: action === "read"
+            ? (readResult || prev.readResult)
+            : action === "apply" && ok
+              ? prev.readResult
+              : prev.readResult,
+          preview: ["preview", "lsp_rename", "ast_replace"].includes(action)
+            ? (preview || null)
+            : action === "apply" && ok && applyResult?.applied
+              ? null
+              : prev.preview,
+          selectedStartLine: action === "read" && readResult ? "" : prev.selectedStartLine,
+          selectedEndLine: action === "read" && readResult ? "" : prev.selectedEndLine,
+          replacement: action === "apply" && ok && applyResult?.applied && prev.mode === "anchor" ? "" : prev.replacement
+        }));
+
+        log(
+          `[refactor] ${action || "action"} · ${payload.message || (ok ? "완료" : "실패")}`,
+          ok ? "info" : "error"
+        );
+
+        if (action === "apply" && ok && applyResult?.applied && applyResult.path) {
+          requestRefactorRead(send, applyResult.path, { silent: true, queueIfClosed: false });
+        }
+
+        return;
+      }
+
+      if (msg.type === "doctor_result") {
+        const report = msg.report || null;
+        const found = !!msg.found;
+        setDoctorState((prev) => ({
+          ...prev,
+          report: found ? report : null,
+          loaded: true,
+          loading: false,
+          pending: false,
+          lastAction: msg.action || prev.lastAction || "",
+          lastError: found ? "" : "저장된 doctor 보고서가 없습니다.",
+          receivedAt: new Date().toISOString()
+        }));
+
+        if (found && report) {
+          const failCount = Number(report.failCount || 0);
+          const warnCount = Number(report.warnCount || 0);
+          log(
+            `[doctor] ${msg.action === "run" ? "실행" : "조회"} 완료 · ok=${report.okCount || 0} warn=${warnCount} fail=${failCount}`,
+            failCount > 0 ? "error" : "info"
+          );
+        } else if (msg.action === "get_last") {
+          log("[doctor] 저장된 보고서가 없습니다.", "info");
+        }
+        return;
+      }
+
+      if (msg.type === "notebook_result") {
+        const payload = msg.payload || {};
+        const snapshot = payload.snapshot || null;
+        const ok = payload.ok !== false;
+        const action = msg.action || notebooksState.lastAction || "";
+
+        setNotebooksState((prev) => ({
+          ...prev,
+          loaded: true,
+          loading: false,
+          pending: false,
+          lastAction: action,
+          lastError: ok ? "" : (payload.message || "notebook 요청이 실패했습니다."),
+          lastMessage: ok ? (payload.message || "") : "",
+          snapshot: snapshot || prev.snapshot,
+          receivedAt: new Date().toISOString(),
+          projectKeyDraft: prev.projectKeyDraft || snapshot?.notebook?.projectKey || "",
+          appendText: ok && action === "append" ? "" : prev.appendText
+        }));
+
+        log(
+          `[notebook] ${action || "action"} · ${payload.message || (ok ? "완료" : "실패")}`,
+          ok ? "info" : "error"
+        );
         return;
       }
 
@@ -4876,7 +4554,14 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         send,
         setError,
         currentKey,
-        setFilePreviewByConversation
+        setFilePreviewByConversation,
+        filePreviewByConversation,
+        setCodingResultByConversation,
+        codingResultByConversation,
+        setShowExecutionLogsByConversation,
+        setCodingRuntimeByConversation,
+        setCodingExecutionInputByConversation,
+        requestWorkspaceFilePreview
       })) {
         return;
       }
@@ -4909,8 +4594,13 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         finishPendingRequest,
         setError,
         setCodingResultByConversation,
+        codingResultByConversation,
         setShowExecutionLogsByConversation,
+        setCodingRuntimeByConversation,
+        setCodingExecutionInputByConversation,
         setFilePreviewByConversation,
+        filePreviewByConversation,
+        requestWorkspaceFilePreview,
         send,
         log,
         setMetrics
@@ -4967,6 +4657,32 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
           clearAuthToken();
           setAuthed(false);
           setStatus("인증 필요");
+          setCodingRuntimeByConversation((prev) => {
+            const entries = Object.entries(prev || {});
+            const pendingIds = entries.filter(([, runtime]) => runtime && runtime.pending).map(([conversationId]) => conversationId);
+            if (pendingIds.length === 0 && !currentConversationId) {
+              return prev;
+            }
+
+            const next = { ...prev };
+            pendingIds.forEach((conversationId) => {
+              next[conversationId] = buildCodingRuntimeMessageState(
+                "세션 인증이 만료되었습니다. 설정 탭에서 OTP 인증 후 다시 시도하세요.",
+                false,
+                false
+              );
+            });
+
+            if (currentConversationId && !next[currentConversationId]) {
+              next[currentConversationId] = buildCodingRuntimeMessageState(
+                "세션 인증이 만료되었습니다. 설정 탭에서 OTP 인증 후 다시 시도하세요.",
+                false,
+                false
+              );
+            }
+
+            return next;
+          });
         }
         finishPendingRequest(targetKey);
         setError(targetKey, errorText);
@@ -4977,6 +4693,23 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     useEffect(() => {
       if (rootTab === "routine" && authed) {
         refreshRoutines();
+      }
+    }, [rootTab, authed]);
+
+    useEffect(() => {
+      if (rootTab === "settings" && authed) {
+        setDoctorState((prev) => ({
+          ...prev,
+          loading: true,
+          lastError: ""
+        }));
+        requestDoctorLast(send, { silent: true, queueIfClosed: false });
+        setPlansState((prev) => ({
+          ...prev,
+          loading: true,
+          lastError: ""
+        }));
+        requestPlanList(send, { silent: true, queueIfClosed: false });
       }
     }, [rootTab, authed]);
 
@@ -5187,74 +4920,15 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
       }
     }
 
-    function parseWebUrls(value) {
-      if (!value) {
-        return [];
-      }
-
-      const seen = new Set();
-      return value
-        .split(/[\n,\s]+/)
-        .map((item) => item.trim())
-        .filter((item) => item.length > 0)
-        .filter((item) => item.startsWith("http://") || item.startsWith("https://"))
-        .filter((item) => {
-          if (seen.has(item)) {
-            return false;
-          }
-          seen.add(item);
-          return true;
-        })
-        .slice(0, 3);
-    }
-
     function getRichInputPayload(inputText = "") {
-      return {
-        attachments: currentAttachments,
-        webUrls: parseWebUrls(inputText),
-        webSearchEnabled: true
-      };
+      return buildRichInputPayload({
+        inputText,
+        attachments: currentAttachments
+      });
     }
 
     function clearRichInputDraft(key) {
-      setAttachmentsByKey((prev) => ({ ...prev, [key]: [] }));
-    }
-
-    function removeAttachment(key, index) {
-      setAttachmentsByKey((prev) => {
-        const current = Array.isArray(prev[key]) ? prev[key] : [];
-        const nextList = current.filter((_, i) => i !== index);
-        return { ...prev, [key]: nextList };
-      });
-    }
-
-    function formatBytes(size) {
-      const n = Number(size || 0);
-      if (!Number.isFinite(n) || n <= 0) {
-        return "0B";
-      }
-      if (n < 1024) {
-        return `${n}B`;
-      }
-      if (n < 1024 * 1024) {
-        return `${(n / 1024).toFixed(1)}KB`;
-      }
-      return `${(n / (1024 * 1024)).toFixed(1)}MB`;
-    }
-
-    function readFileAsBase64(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = typeof reader.result === "string" ? reader.result : "";
-          const marker = "base64,";
-          const idx = result.indexOf(marker);
-          const base64 = idx >= 0 ? result.slice(idx + marker.length) : "";
-          resolve(base64);
-        };
-        reader.onerror = () => reject(new Error("파일 읽기 실패"));
-        reader.readAsDataURL(file);
-      });
+      setAttachmentsByKey((prev) => clearAttachmentDraft(prev, key));
     }
 
     async function appendAttachmentsForKey(key, fileList) {
@@ -5264,40 +4938,11 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         return;
       }
 
-      const existing = attachmentsByKey[normalizedKey] || [];
-      const maxCount = 6;
-      const maxBytes = 15 * 1024 * 1024;
-      const next = [...existing];
-      for (const file of safeFileList) {
-        if (next.length >= maxCount) {
-          log(`첨부는 최대 ${maxCount}개까지 가능합니다.`, "error");
-          break;
-        }
-
-        if ((file.size || 0) > maxBytes) {
-          log(`첨부 파일 크기 제한 초과: ${file.name} (최대 ${formatBytes(maxBytes)})`, "error");
-          continue;
-        }
-
-        try {
-          const base64 = await readFileAsBase64(file);
-          if (!base64) {
-            log(`첨부 인코딩 실패: ${file.name}`, "error");
-            continue;
-          }
-
-          next.push({
-            name: file.name,
-            mimeType: file.type || "application/octet-stream",
-            dataBase64: base64,
-            sizeBytes: file.size || 0,
-            isImage: (file.type || "").startsWith("image/")
-          });
-        } catch (_err) {
-          log(`첨부 읽기 실패: ${file.name}`, "error");
-        }
-      }
-
+      const next = await buildNextAttachments({
+        existing: attachmentsByKey[normalizedKey] || [],
+        fileList: safeFileList,
+        onError: (message) => log(message, "error")
+      });
       setAttachmentsByKey((prev) => ({ ...prev, [normalizedKey]: next }));
     }
 
@@ -5349,255 +4994,80 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     function isNoneModel(value) {
       return (value || "").trim().toLowerCase() === NONE_MODEL;
     }
+    const {
+      groqModelOptions,
+      copilotModelOptions,
+      codexModelOptions,
+      geminiModelOptions,
+      routineAgentProviderOptions,
+      routineAgentModelOptions,
+      groqWorkerModelOptions,
+      geminiWorkerModelOptions,
+      copilotWorkerModelOptions,
+      codexWorkerModelOptions
+    } = useMemo(
+      () => buildDashboardModelOptionSets({
+        e,
+        groqModels,
+        copilotModels,
+        codeXModelChoices: CODEX_MODEL_CHOICES,
+        geminiModelChoices: GEMINI_MODEL_CHOICES,
+        noneModel: NONE_MODEL,
+        defaultGroqWorkerModel: DEFAULT_GROQ_WORKER_MODEL,
+        defaultRoutineAgentProvider: DEFAULT_ROUTINE_AGENT_PROVIDER,
+        defaultRoutineAgentModel: DEFAULT_ROUTINE_AGENT_MODEL
+      }),
+      [groqModels, copilotModels]
+    );
 
-    const groqModelOptions = useMemo(() => {
-      return groqModels.map((x) => e("option", { key: x.id, value: x.id }, x.id));
-    }, [groqModels]);
-
-    const copilotModelOptions = useMemo(() => {
-      return copilotModels.map((x) => e("option", { key: x.id, value: x.id }, x.id));
-    }, [copilotModels]);
-
-    const codexModelOptions = useMemo(() => {
-      return CODEX_MODEL_CHOICES.map((item) =>
-        e("option", { key: `codex-${item.id}`, value: item.id }, item.label)
-      );
-    }, []);
-
-    const geminiModelOptions = useMemo(() => {
-      return GEMINI_MODEL_CHOICES.map((item) =>
-        e("option", { key: `gemini-${item.id}`, value: item.id }, item.label)
-      );
-    }, []);
-
-    const routineAgentProviderOptions = useMemo(() => ([
-      e("option", { key: "routine-agent-provider-codex", value: DEFAULT_ROUTINE_AGENT_PROVIDER }, "Codex")
-    ]), []);
-
-    const routineAgentModelOptions = useMemo(() => ([
-      e(
-        "option",
-        { key: `routine-agent-model-${DEFAULT_ROUTINE_AGENT_MODEL}`, value: DEFAULT_ROUTINE_AGENT_MODEL },
-        `Codex 기본: ${DEFAULT_ROUTINE_AGENT_MODEL}`
-      )
-    ]), []);
-
-    const groqWorkerModelOptions = useMemo(() => {
-      const seen = new Set();
-      const options = [];
-      const push = (value, label) => {
-        if (seen.has(value)) {
-          return;
-        }
-        seen.add(value);
-        options.push(e("option", { key: `gw-${value}`, value }, label));
-      };
-
-      push(NONE_MODEL, "Groq: 선택 안함");
-      push(DEFAULT_GROQ_WORKER_MODEL, `Groq 기본: ${DEFAULT_GROQ_WORKER_MODEL}`);
-      groqModels.forEach((x) => push(x.id, x.id));
-      return options;
-    }, [groqModels]);
-
-    const geminiWorkerModelOptions = useMemo(() => {
-      return [
-        e("option", { key: "gm-none", value: NONE_MODEL }, "Gemini: 선택 안함"),
-        ...GEMINI_MODEL_CHOICES.map((item) => e("option", { key: `gm-${item.id}`, value: item.id }, item.label))
-      ];
-    }, []);
-
-    const copilotWorkerModelOptions = useMemo(() => {
-      const seen = new Set();
-      const options = [e("option", { key: "cw-none", value: NONE_MODEL }, "Copilot: 선택 안함")];
-      seen.add(NONE_MODEL);
-
-      copilotModels.forEach((x) => {
-        if (seen.has(x.id)) {
-          return;
-        }
-        seen.add(x.id);
-        options.push(e("option", { key: `cw-${x.id}`, value: x.id }, x.id));
-      });
-      return options;
-    }, [copilotModels]);
-
-    const codexWorkerModelOptions = useMemo(() => {
-      return [
-        e("option", { key: "xw-none", value: NONE_MODEL }, "Codex: 선택 안함"),
-        ...CODEX_MODEL_CHOICES.map((item) =>
-          e("option", { key: `xw-${item.id}`, value: item.id }, item.label)
-        )
-      ];
-    }, []);
-
-    const groqRows = useMemo(() => {
-      if (groqModels.length === 0) {
-        return [e("tr", { key: "empty-g" }, e("td", { colSpan: 13 }, "모델 데이터가 없습니다."))];
-      }
-
-      return groqModels.map((m) => e(
-        "tr",
-        { key: m.id },
-        e("td", null, m.id),
-        e("td", null, m.tier || "-"),
-        e("td", null, m.speed_tps || "-"),
-        e("td", null, m.context_window || "-"),
-        e("td", null, m.max_completion_tokens || "-"),
-        e("td", null, m.rpm || "-"),
-        e("td", null, m.rpd || "-"),
-        e("td", null, m.tpm || "-"),
-        e("td", null, m.tpd || "-"),
-        e("td", null, m.ash || "-"),
-        e("td", null, m.asd || "-"),
-        (() => {
-          const usageRequests = Number(m.usage_requests || 0);
-          const usageTokens = Number(m.usage_total_tokens || 0);
-          const baseline = m.id ? (groqUsageWindowBaseByModel[m.id] || {}) : {};
-          const minuteRequests = Math.max(0, usageRequests - Number(baseline.minuteRequests ?? usageRequests));
-          const minuteTokens = Math.max(0, usageTokens - Number(baseline.minuteTokens ?? usageTokens));
-          const hourRequests = Math.max(0, usageRequests - Number(baseline.hourRequests ?? usageRequests));
-          const hourTokens = Math.max(0, usageTokens - Number(baseline.hourTokens ?? usageTokens));
-          const dayRequests = Math.max(0, usageRequests - Number(baseline.dayRequests ?? usageRequests));
-          const dayTokens = Math.max(0, usageTokens - Number(baseline.dayTokens ?? usageTokens));
-          return e("td", null,
-            e("div", { className: "tiny" }, `분 ${minuteRequests}req/${minuteTokens}tok`),
-            e("div", { className: "tiny" }, `시 ${hourRequests}req/${hourTokens}tok`),
-            e("div", { className: "tiny" }, `일 ${dayRequests}req/${dayTokens}tok`)
-          );
-        })(),
-        e("td", null,
-          e("div", { className: "tiny" }, m.limit_requests == null ? "req -/-" : `req ${m.remaining_requests || 0}/${m.limit_requests}`),
-          e("div", { className: "tiny" }, m.limit_tokens == null ? "tok -/-" : `tok ${m.remaining_tokens || 0}/${m.limit_tokens}`),
-          e("div", { className: "tiny" }, `reset ${m.reset_requests || "-"} / ${m.reset_tokens || "-"}`)
-        )
-      ));
-    }, [groqModels, groqUsageWindowBaseByModel]);
-
-    const copilotRows = useMemo(() => {
-      if (copilotModels.length === 0) {
-        return [e("tr", { key: "empty-c" }, e("td", { colSpan: 8 }, "Copilot 모델 데이터가 없습니다."))];
-      }
-
-      return copilotModels.map((m) => e(
-        "tr",
-        { key: m.id },
-        e("td", null, m.id),
-        e("td", null, m.provider || "-"),
-        e("td", null, m.premium_multiplier || "-"),
-        e("td", null, m.speed_tps || "-"),
-        e("td", null, m.rate_limit || "-"),
-        e("td", null, m.context_window || "-"),
-        e("td", null, m.max_completion_tokens || "-"),
-        e("td", null, `${m.usage_requests || 0} req`)
-      ));
-    }, [copilotModels]);
-
-    const copilotPremiumPercent = useMemo(() => {
-      const parsed = Number.parseFloat(copilotPremiumUsage.percent_used || "0");
-      if (!Number.isFinite(parsed)) {
-        return 0;
-      }
-      return Math.min(100, Math.max(0, parsed));
-    }, [copilotPremiumUsage.percent_used]);
-
-    const copilotPremiumQuotaText = useMemo(() => {
-      const parsed = Number.parseFloat(copilotPremiumUsage.monthly_quota || "0");
-      if (!Number.isFinite(parsed) || parsed <= 0) {
-        return "-";
-      }
-      return formatDecimal(parsed, 1);
-    }, [copilotPremiumUsage.monthly_quota]);
-
-    const copilotPremiumRows = useMemo(() => {
-      if (!Array.isArray(copilotPremiumUsage.items) || copilotPremiumUsage.items.length === 0) {
-        return [e("tr", { key: "empty-cp" }, e("td", { colSpan: 3 }, "모델별 사용량 데이터가 없습니다."))];
-      }
-
-      return copilotPremiumUsage.items.map((item, index) => e(
-        "tr",
-        { key: `cp-${item.model}-${index}` },
-        e("td", null, item.model || "-"),
-        e("td", null, `${formatDecimal(item.requests, 1)} req`),
-        e("td", null, `${formatDecimal(item.percent, 2)}%`)
-      ));
-    }, [copilotPremiumUsage.items]);
-
-    const copilotLocalRows = useMemo(() => {
-      if (!Array.isArray(copilotLocalUsage.items) || copilotLocalUsage.items.length === 0) {
-        return [e("tr", { key: "empty-cl" }, e("td", { colSpan: 2 }, "로컬 사용량 데이터가 없습니다."))];
-      }
-
-      return copilotLocalUsage.items.map((item, index) => e(
-        "tr",
-        { key: `cl-${item.model}-${index}` },
-        e("td", null, item.model || "-"),
-        e("td", null, `${item.requests || 0} req`)
-      ));
-    }, [copilotLocalUsage.items]);
+    const {
+      groqRows,
+      copilotRows,
+      copilotPremiumPercent,
+      copilotPremiumQuotaText,
+      copilotPremiumRows,
+      copilotLocalRows
+    } = useMemo(
+      () => buildSettingsModelTableState({
+        e,
+        groqModels,
+        groqUsageWindowBaseByModel,
+        copilotModels,
+        copilotPremiumUsage,
+        copilotLocalUsage,
+        formatDecimal
+      }),
+      [groqModels, groqUsageWindowBaseByModel, copilotModels, copilotPremiumUsage, copilotLocalUsage]
+    );
 
     function renderGlobalNav() {
-      const navStatusText = authed ? "세션 인증됨" : status;
-      const geminiLabel = settingsState.geminiApiKeySet
-        ? "gemini-3-flash-preview / gemini-3.1-flash-lite-preview"
-        : "미설정";
-      const cerebrasLabel = settingsState.cerebrasApiKeySet
-        ? DEFAULT_CEREBRAS_MODEL
-        : "미설정";
-      const codexLabel = (codexStatus || "").trim().startsWith("설치/인증 완료")
-        ? DEFAULT_CODEX_MODEL
-        : codexStatus;
-      return e(
-        "aside",
-        { className: "global-nav" },
-        e("div", { className: "global-nav-head" },
-          e("div", { className: "brand-wrap" },
-            e("h1", { className: "brand" }, "Omni-node"),
-            e("p", { className: "brand-sub" }, "대화/코딩 오케스트레이션")
-          ),
-          e("div", { className: "pill-group" },
-            e("span", { className: `pill ${authed || navStatusText.startsWith("연결") || navStatusText.startsWith("인증") ? "ok" : "idle"}` }, navStatusText)
-          )
-        ),
-        e("div", { className: "global-nav-menu" },
-          e("div", { className: "nav-title" }, "메뉴"),
-          e("button", { className: `nav-btn ${rootTab === "chat" ? "active" : ""}`, onClick: () => setRootTab("chat") }, "대화"),
-          e("button", { className: `nav-btn ${rootTab === "routine" ? "active" : ""}`, onClick: () => setRootTab("routine") }, "루틴"),
-          e("button", { className: `nav-btn ${rootTab === "coding" ? "active" : ""}`, onClick: () => setRootTab("coding") }, "코딩"),
-          e("button", { className: `nav-btn ${rootTab === "settings" ? "active" : ""}`, onClick: () => setRootTab("settings") }, "설정")
-        ),
-        e("div", { className: "nav-meta" },
-          e("div", null, `Groq: ${selectedGroqModel || "-"}`),
-          e("div", null, `Gemini: ${geminiLabel}`),
-          e("div", null, `Cerebras: ${cerebrasLabel}`),
-          e("div", null, `Copilot: ${selectedCopilotModel || "-"}`),
-          e("div", null, `Codex: ${codexLabel || "-"}`),
-          e("div", null, copilotStatus)
-        )
-      );
+      return renderGlobalNavModule({
+        e,
+        authed,
+        status,
+        rootTab,
+        setRootTab,
+        selectedGroqModel,
+        selectedCopilotModel,
+        settingsState,
+        copilotStatus,
+        codexStatus,
+        defaultCodexModel: DEFAULT_CODEX_MODEL,
+        defaultCerebrasModel: DEFAULT_CEREBRAS_MODEL
+      });
     }
 
     function renderModeTabs() {
-      const modes = rootTab === "coding" ? CODING_MODES : CHAT_MODES;
-      const activeMode = rootTab === "coding" ? codingMode : chatMode;
-      return e(
-        "div",
-        { className: "mode-tabs" },
-        modes.map((item) => e(
-          "button",
-          {
-            key: item.key,
-            className: `mode-btn ${activeMode === item.key ? "active" : ""}`,
-            onClick: () => {
-              if (rootTab === "coding") {
-                setCodingMode(item.key);
-              } else {
-                setChatMode(item.key);
-              }
-            }
-          },
-          item.label
-        ))
-      );
+      return renderModeTabsModule({
+        e,
+        rootTab,
+        chatMode,
+        codingMode,
+        chatModes: CHAT_MODES,
+        codingModes: CODING_MODES,
+        setChatMode,
+        setCodingMode
+      });
     }
 
     function renderConversationPanel() {
@@ -5726,7 +5196,9 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         isConversationBoundEntryVisible,
         elapsedSeconds,
         sanitizeCodingAssistantText,
-        messageListRef
+        messageListRef,
+        parseChatMultiComparisonMessage: chatMultiUtils.parseChatMultiComparisonMessage,
+        parseCodingMultiComparisonMessage: chatMultiUtils.parseCodingMultiComparisonMessage
       });
     }
 
@@ -5738,28 +5210,172 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         currentConversationId,
         codingResultByConversation,
         filePreviewByConversation,
+        runtimeByConversation: codingRuntimeByConversation,
+        executionInputByConversation: codingExecutionInputByConversation,
         showExecutionLogsByConversation,
         sanitizeCodingAssistantText,
+        buildCodingMultiRenderSnapshot: chatMultiUtils.buildCodingMultiRenderSnapshot,
         requestWorkspaceFilePreview,
+        requestLatestCodingResultExecution,
         humanPath,
+        setCodingExecutionInputByConversation,
         setShowExecutionLogsByConversation
       });
     }
 
-    function renderChatMultiResult() {
-      return renderChatMultiResultPanel({
+    function buildCodingResultRendererProps() {
+      return buildCodingResultRendererPropsModule({
         e,
         MarkdownBubbleText,
         rootTab,
-        mode,
         currentConversationId,
-        chatMultiResultByConversation,
-        buildChatMultiRenderSnapshot: chatMultiUtils.buildChatMultiRenderSnapshot
+        codingResultByConversation,
+        filePreviewByConversation,
+        runtimeByConversation: codingRuntimeByConversation,
+        executionInputByConversation: codingExecutionInputByConversation,
+        showExecutionLogsByConversation,
+        sanitizeCodingAssistantText,
+        buildCodingMultiRenderSnapshot: chatMultiUtils.buildCodingMultiRenderSnapshot,
+        requestWorkspaceFilePreview,
+        requestLatestCodingResultExecution,
+        humanPath,
+        setCodingExecutionInputByConversation,
+        setShowExecutionLogsByConversation,
+        actions: {
+          openOverlay: () => {
+            setSafeRefactorOverlayOpen(false);
+            setCodingResultOverlayOpen(true);
+          },
+          closeOverlay: () => setCodingResultOverlayOpen(false)
+        }
       });
     }
 
+    function renderCodingResultDock() {
+      return renderCodingResultDockShell({
+        ...buildCodingResultRendererProps(),
+        open: codingResultOverlayOpen
+      });
+    }
+
+    function renderCodingResultOverlay() {
+      return renderCodingResultOverlayShell({
+        ...buildCodingResultRendererProps(),
+        open: codingResultOverlayOpen
+      });
+    }
+
+    function buildSafeRefactorRendererProps() {
+      const selectedLines = getRefactorSelectedLines();
+      const selectedStart = parseRefactorLineNumber(refactorState.selectedStartLine);
+      const selectedEnd = parseRefactorLineNumber(refactorState.selectedEndLine);
+      const safeStart = selectedStart && selectedEnd ? Math.min(selectedStart, selectedEnd) : 0;
+      const safeEnd = selectedStart && selectedEnd ? Math.max(selectedStart, selectedEnd) : 0;
+      const selectedSummary = `${refactorState.mode || "anchor"}` === "anchor" && selectedLines.length > 0
+        ? `${safeStart}-${safeEnd}줄 · ${selectedLines.length}개 기준 줄`
+        : "";
+      const currentSnippet = `${refactorState.mode || "anchor"}` === "anchor" && selectedLines.length > 0
+        ? selectedLines.map((line) => line.content || "").join("\n")
+        : "";
+
+      return buildSafeRefactorRendererPropsModule({
+        e,
+        rootTab,
+        state: refactorState,
+        selectedLines,
+        currentSnippet,
+        selectedSummary,
+        helpers: {
+          humanWorkspacePath
+        },
+        actions: {
+          setMode: (value) => setRefactorState((prev) => ({
+            ...prev,
+            mode: value || "anchor",
+            preview: null,
+            lastError: "",
+            lastIssues: [],
+            lastMessage: ""
+          })),
+          setFilePath: (value) => setRefactorState((prev) => ({
+            ...prev,
+            filePath: value,
+            preview: null,
+            lastError: ""
+          })),
+          setSelectedStartLine: (value) => setRefactorState((prev) => ({
+            ...prev,
+            selectedStartLine: value,
+            preview: null,
+            lastError: ""
+          })),
+          setSelectedEndLine: (value) => setRefactorState((prev) => ({
+            ...prev,
+            selectedEndLine: value,
+            preview: null,
+            lastError: ""
+          })),
+          setReplacement: (value) => setRefactorState((prev) => ({
+            ...prev,
+            replacement: value,
+            preview: null,
+            lastError: ""
+          })),
+          setSymbol: (value) => setRefactorState((prev) => ({
+            ...prev,
+            symbol: value,
+            preview: null,
+            lastError: ""
+          })),
+          setNewName: (value) => setRefactorState((prev) => ({
+            ...prev,
+            newName: value,
+            preview: null,
+            lastError: ""
+          })),
+          setPattern: (value) => setRefactorState((prev) => ({
+            ...prev,
+            pattern: value,
+            preview: null,
+            lastError: ""
+          })),
+          selectAnchorLine: selectRefactorLine,
+          readAnchors: readRefactorAnchors,
+          previewRefactor: previewSafeRefactor,
+          applyRefactor: applySafeRefactor,
+          openOverlay: () => {
+            setCodingResultOverlayOpen(false);
+            setSafeRefactorOverlayOpen(true);
+          },
+          closeOverlay: () => setSafeRefactorOverlayOpen(false)
+        }
+      });
+    }
+
+    function renderSafeRefactorPanel() {
+      return renderSafeRefactorPanelShell(buildSafeRefactorRendererProps());
+    }
+
+    function renderSafeRefactorDock() {
+      return renderSafeRefactorDockShell({
+        ...buildSafeRefactorRendererProps(),
+        open: safeRefactorOverlayOpen
+      });
+    }
+
+    function renderSafeRefactorOverlay() {
+      return renderSafeRefactorOverlayShell({
+        ...buildSafeRefactorRendererProps(),
+        open: safeRefactorOverlayOpen
+      });
+    }
+
+    function renderChatMultiResult() {
+      return null;
+    }
+
     function renderComposerInputBar({ value, onChange, onSend, pendingKey, placeholder }) {
-      return renderComposerInputBarModule({
+      return renderComposerInputBarShell({
         e,
         value,
         onChange,
@@ -5776,22 +5392,23 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         handleAttachmentDrop,
         attachmentFileInputId,
         onAttachmentSelected,
-        onClearAttachments: () => setAttachmentsByKey((prev) => ({ ...prev, [currentKey]: [] }))
+        onClearAttachments: () => setAttachmentsByKey((prev) => clearAttachmentDraft(prev, currentKey))
       });
     }
 
     function renderThreadSupportStack() {
-      return renderThreadSupportStackModule({
+      return renderThreadSupportStackShell({
         e,
         renderChatMultiResult,
-        renderCodingResult,
+        renderCodingResult: () => null,
+        renderSafeRefactorPanel: () => null,
         memoryPickerOpen,
         renderMemoryPicker
       });
     }
 
     function renderResponsiveWorkspaceSupportPane() {
-      return renderResponsiveWorkspaceSupportPaneModule({
+      return renderResponsiveWorkspaceSupportPaneShell({
         e,
         currentConversationId,
         renderThreadModebar,
@@ -5799,12 +5416,13 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         buildThreadPreviewMeta,
         renderMemoryPicker,
         renderChatMultiResult,
-        renderCodingResult
+        renderCodingResult: () => null,
+        renderSafeRefactorPanel: () => null
       });
     }
 
     function renderChatComposer() {
-      return renderChatComposerPanelModule({
+      return renderChatComposerShell({
         e,
         mode,
         renderComposerInputBar,
@@ -5882,10 +5500,12 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     }
 
     function renderCodingComposer() {
-      return renderCodingComposerPanelModule({
+      return renderCodingComposerShell({
         e,
         mode,
         renderComposerInputBar,
+        codingResultDock: renderCodingResultDock(),
+        safeRefactorDock: renderSafeRefactorDock(),
         constants: {
           NONE_MODEL,
           DEFAULT_CODEX_MODEL,
@@ -5967,65 +5587,26 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
     }
 
     function renderWorkspace() {
-      const composer = rootTab === "chat" ? renderChatComposer() : renderCodingComposer();
-      const mobileWorkspaceSections = [
-        { key: "list", label: rootTab === "coding" ? "작업함" : "보관함" },
-        { key: "thread", label: "대화" },
-        { key: "support", label: rootTab === "coding" ? "결과" : "보조" }
-      ];
-
-      if (isPortraitMobileLayout) {
-        return e(
-          "div",
-          {
-            className: "workspace-mobile-shell",
-            style: mobileWorkspaceHeight > 0
-              ? { minHeight: `${mobileWorkspaceHeight}px`, height: `${mobileWorkspaceHeight}px` }
-              : undefined
-          },
-          renderResponsiveSectionTabs(
-            mobileWorkspaceSections,
-            currentWorkspacePane,
-            (paneKey) => setResponsivePane(responsiveWorkspaceKey, paneKey),
-            "workspace-mobile-tabs"
-          ),
-          currentWorkspacePane === "list"
-            ? renderConversationPanel()
-            : e(
-              "section",
-              { className: "chat-panel chat-panel-mobile" },
-              currentWorkspacePane === "support"
-                ? renderThreadHeader({ showInfoPanel: false, showActionButtons: false, showModebar: false })
-                : null,
-              errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
-              currentWorkspacePane === "thread"
-                ? e(
-                  React.Fragment,
-                  null,
-                  renderMessages(),
-                  composer
-                )
-                : null,
-              currentWorkspacePane === "support" ? renderResponsiveWorkspaceSupportPane() : null,
-              null
-            )
-        );
-      }
-
-      return e(
-        "div",
-        { className: "workspace-grid" },
-        renderConversationPanel(),
-        e(
-          "section",
-          { className: "chat-panel" },
-          renderThreadHeader(),
-          errorByKey[currentKey] ? e("div", { className: "error-banner" }, errorByKey[currentKey]) : null,
-          renderMessages(),
-          renderThreadSupportStack(),
-          composer
-        )
-      );
+      return renderWorkspaceShell({
+        e,
+        React,
+        rootTab,
+        isPortraitMobileLayout,
+        mobileWorkspaceHeight,
+        currentWorkspacePane,
+        responsiveWorkspaceKey,
+        setResponsivePane,
+        currentKey,
+        errorByKey,
+        renderConversationPanel,
+        renderThreadHeader,
+        renderMessages,
+        renderThreadSupportStack,
+        renderResponsiveWorkspaceSupportPane,
+        renderResponsiveSectionTabs,
+        chatComposer: renderChatComposer(),
+        codingComposer: renderCodingComposer()
+      });
     }
 
     function renderRoutine() {
@@ -6201,6 +5782,49 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
         authed,
         metrics,
         logs,
+        doctorState,
+        runDoctorReport,
+        refreshDoctorReport,
+        contextState,
+        routingPolicyState,
+        plansState,
+        taskGraphState,
+        notebooksState,
+        refreshProjectContext,
+        refreshSkillsList,
+        refreshCommandsList,
+        setRoutingPolicyChain,
+        refreshRoutingPolicy,
+        saveRoutingPolicy,
+        resetRoutingPolicy,
+        refreshRoutingDecision,
+        setPlanCreateObjective,
+        setPlanCreateConstraintsText,
+        setPlanCreateMode,
+        refreshPlansList,
+        loadPlanSnapshot,
+        submitPlanCreate,
+        reviewPlan,
+        approvePlan,
+        runPlan,
+        setTaskGraphCreatePlanId,
+        useSelectedPlanForTaskGraph,
+        refreshTaskGraphList,
+        loadTaskGraph,
+        submitTaskGraphCreate,
+        runTaskGraph,
+        loadTaskOutput,
+        cancelTask,
+        setNotebookProjectKey,
+        setNotebookAppendKind,
+        setNotebookAppendText,
+        refreshNotebook,
+        appendNotebook,
+        createNotebookHandoff,
+        appendSelectedPlanDecision,
+        appendSelectedTaskVerification,
+        appendDoctorVerification,
+        appendRefactorVerification,
         opsDomainFilter,
         opsDomainFilters: OPS_DOMAIN_FILTERS,
         opsDomainStats,
@@ -6228,6 +5852,8 @@ import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dash
             ? renderRoutine()
             : renderWorkspace()
       ),
+      renderCodingResultOverlay(),
+      renderSafeRefactorOverlay(),
       memoryPreview.open
         ? e("div", { className: "modal" },
           e("div", { className: "modal-card" },

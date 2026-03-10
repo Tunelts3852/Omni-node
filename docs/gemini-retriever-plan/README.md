@@ -1,5 +1,12 @@
 # Gemini 검색 리트리버 전환 계획 문서
 
+업데이트 기준: 2026-03-10
+
+현재 상태:
+
+- 이 디렉터리는 검색 파이프라인 설계/확장 계획 묶음이다.
+- 실제 구현 기준은 `apps/omninode-middleware/src/CommandService.SearchPipeline.cs`, `GeminiGroundedRetriever.cs`, `SearchAnswerGuard.cs`, `DefaultSearchAnswerComposer.cs`를 우선 본다.
+
 ## 목적
 Gemini 검색 리트리버 기반 구조를 Omni-node에 적용하기 위한 실행 문서 모음이다.
 본 문서 세트는 기존 Omni-node UI/UX와 동작 방식을 유지한 상태에서 검색 신뢰성과 최신성 품질을 높이는 것을 목표로 한다.

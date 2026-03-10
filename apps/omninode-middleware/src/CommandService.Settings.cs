@@ -7,6 +7,30 @@ public sealed partial class CommandService
         return _runtimeSettings.GetSnapshot();
     }
 
+    public RoutingPolicyActionResult GetRoutingPolicySnapshot()
+    {
+        return _routingPolicyResolver.GetSnapshotResult();
+    }
+
+    public RoutingPolicyActionResult SaveRoutingPolicy(RoutingPolicy? policy)
+    {
+        var result = _routingPolicyResolver.SaveOverrides(policy);
+        _auditLogger.Log("web", "routing_policy_save", result.Ok ? "ok" : "error", result.Message);
+        return result;
+    }
+
+    public RoutingPolicyActionResult ResetRoutingPolicy()
+    {
+        var result = _routingPolicyResolver.ResetOverrides();
+        _auditLogger.Log("web", "routing_policy_reset", result.Ok ? "ok" : "error", result.Message);
+        return result;
+    }
+
+    public RoutingDecision? GetLastRoutingDecision()
+    {
+        return _routingPolicyResolver.GetLastDecision();
+    }
+
     public string UpdateTelegramCredentials(string? botToken, string? chatId, bool persist)
     {
         var result = _runtimeSettings.UpdateTelegram(botToken, chatId, persist);
