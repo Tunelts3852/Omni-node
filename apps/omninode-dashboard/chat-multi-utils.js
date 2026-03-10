@@ -67,8 +67,22 @@
     return normalized ? normalized : "요약";
   }
 
-  function buildProviderLabel(providerName, modelName) {
+  function formatModelDisplayName(providerName, modelName) {
+    const provider = toMetaText(providerName).toLowerCase();
     const model = toMetaText(modelName);
+    if (!model) {
+      return "";
+    }
+
+    if (provider === "cerebras" && model === "zai-glm-4.7") {
+      return "zai-glm-4.7 (preview)";
+    }
+
+    return model;
+  }
+
+  function buildProviderLabel(providerName, modelName) {
+    const model = formatModelDisplayName(providerName, modelName);
     return model ? `${providerName} (${model})` : providerName;
   }
 

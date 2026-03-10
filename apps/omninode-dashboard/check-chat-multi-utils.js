@@ -108,7 +108,7 @@ function run() {
   const labels = buildChatMultiDisplayLabels(normalized);
   assert.equal(labels.groqLabel, "Groq (openai/gpt-oss-120b)");
   assert.equal(labels.geminiLabel, "Gemini (gemini-3-flash-preview)");
-  assert.equal(labels.cerebrasLabel, "Cerebras (zai-glm-4.7)");
+  assert.equal(labels.cerebrasLabel, "Cerebras (zai-glm-4.7 (preview))");
   assert.equal(labels.copilotLabel, "Copilot (gpt-5)");
   assert.equal(labels.codexLabel, "Codex (codex-mini)");
   assert.equal(labels.summaryLabel, "요약 (요청=auto, 실제=gemini)");
@@ -146,7 +146,7 @@ function run() {
     [
       "Groq (openai/gpt-oss-120b)",
       "Gemini (gemini-3-flash-preview)",
-      "Cerebras (zai-glm-4.7)",
+      "Cerebras (zai-glm-4.7 (preview))",
       "Copilot (gpt-5)",
       "Codex (codex-mini)"
     ]

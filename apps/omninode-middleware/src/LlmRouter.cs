@@ -1490,7 +1490,7 @@ public sealed class LlmRouter : IDisposable
                     }
 
                     Console.Error.WriteLine($"[cerebras] chat failed ({(int)response.StatusCode}): {responseBody}");
-                    return $"Cerebras 요청 실패: {(int)response.StatusCode}";
+                    return BuildCerebrasHttpFailureText(response.StatusCode, effectiveModel);
                 }
 
                 var chunk = ExtractGroqChatChunk(responseBody);
@@ -1546,6 +1546,34 @@ public sealed class LlmRouter : IDisposable
 
         return responseBody.IndexOf("model_not_found", StringComparison.OrdinalIgnoreCase) >= 0
                || responseBody.IndexOf("does not exist or you do not have access", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string BuildCerebrasHttpFailureText(System.Net.HttpStatusCode statusCode, string model)
+    {
+        var normalizedModel = (model ?? string.Empty).Trim();
+        if (statusCode == System.Net.HttpStatusCode.TooManyRequests)
+        {
+            if (string.Equals(normalizedModel, "zai-glm-4.7", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedModel, "qwen-3-235b-a22b-instruct-2507", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"Cerebras 요청 실패: 429 (rate limit). 현재 {normalizedModel} (preview)는 수요가 높아 free-tier rate limit이 일시적으로 줄어든 상태입니다. 오늘 처음 써도 걸릴 수 있으니 잠시 후 다시 시도하거나 `gpt-oss-120b`로 바꿔 보세요.";
+            }
+
+            return "Cerebras 요청 실패: 429 (rate limit). 짧은 시간에 허용된 요청 수를 넘었거나 현재 free-tier 제한에 걸린 상태입니다. 잠시 후 다시 시도해 주세요.";
+        }
+
+        if (statusCode == System.Net.HttpStatusCode.ServiceUnavailable)
+        {
+            if (string.Equals(normalizedModel, "zai-glm-4.7", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(normalizedModel, "qwen-3-235b-a22b-instruct-2507", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"Cerebras 요청 실패: 503 (service unavailable). 현재 {normalizedModel} (preview) 쪽 서버가 일시적으로 과부하이거나 불안정한 상태일 수 있습니다. 잠시 후 다시 시도하거나 `gpt-oss-120b`로 바꿔 보세요.";
+            }
+
+            return "Cerebras 요청 실패: 503 (service unavailable). Cerebras 서버가 일시적으로 과부하이거나 불안정한 상태입니다. 잠시 후 다시 시도해 주세요.";
+        }
+
+        return $"Cerebras 요청 실패: {(int)statusCode}";
     }
 
     private static bool TryGetPropertyCaseInsensitive(JsonElement element, string propertyName, out JsonElement value)
