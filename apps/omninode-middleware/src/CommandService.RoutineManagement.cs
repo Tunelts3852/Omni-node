@@ -28,9 +28,9 @@ public sealed partial class CommandService
                    정확히 제어할 때:
                    /routine list
                    /routine create <요청>
-                   /routine create browser --model <model> [--url <start-url>] <요청>
+                   /routine create browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>
                    /routine update <routine-id> <요청>
-                   /routine update <routine-id> browser --model <model> [--url <start-url>] <요청>
+                   /routine update <routine-id> browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>
                    /routine run <routine-id>
                    /routine runs <routine-id>
                    /routine detail <routine-id> <ts>
@@ -84,6 +84,7 @@ public sealed partial class CommandService
                     agentModel: browserSpec.Model,
                     agentStartUrl: browserSpec.StartUrl,
                     agentTimeoutSeconds: null,
+                    agentToolProfile: browserSpec.ToolProfile,
                     agentUsePlaywright: true,
                     scheduleSourceMode: "auto",
                     maxRetries: null,
@@ -132,6 +133,7 @@ public sealed partial class CommandService
                     agentModel: browserSpec.Model,
                     agentStartUrl: browserSpec.StartUrl,
                     agentTimeoutSeconds: null,
+                    agentToolProfile: browserSpec.ToolProfile,
                     agentUsePlaywright: true,
                     scheduleSourceMode: "auto",
                     maxRetries: null,
@@ -157,6 +159,7 @@ public sealed partial class CommandService
                     agentModel: null,
                     agentStartUrl: null,
                     agentTimeoutSeconds: null,
+                    agentToolProfile: null,
                     agentUsePlaywright: null,
                     scheduleSourceMode: "auto",
                     maxRetries: null,
@@ -327,7 +330,8 @@ public sealed partial class CommandService
         string Request,
         string? Provider,
         string Model,
-        string? StartUrl
+        string? StartUrl,
+        string? ToolProfile
     );
 
     private static bool TryParseRoutineBrowserCommand(
@@ -340,6 +344,7 @@ public sealed partial class CommandService
         string? provider = null;
         string? model = null;
         string? startUrl = null;
+        string? toolProfile = null;
         var requestTokens = new List<string>();
 
         for (var i = 0; i < tokenList.Count; i += 1)
@@ -349,8 +354,8 @@ public sealed partial class CommandService
             {
                 if (i + 1 >= tokenList.Count)
                 {
-                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
-                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>";
                     return false;
                 }
 
@@ -362,8 +367,8 @@ public sealed partial class CommandService
             {
                 if (i + 1 >= tokenList.Count)
                 {
-                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
-                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>";
                     return false;
                 }
 
@@ -375,12 +380,25 @@ public sealed partial class CommandService
             {
                 if (i + 1 >= tokenList.Count)
                 {
-                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
-                    error = "usage: /routine create browser --model <model> [--url <start-url>] <요청>";
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>";
                     return false;
                 }
 
                 startUrl = tokenList[++i];
+                continue;
+            }
+
+            if (token.Equals("--tool-profile", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 >= tokenList.Count)
+                {
+                    spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
+                    error = "usage: /routine create browser --model <model> [--url <start-url>] [--tool-profile <playwright_only|desktop_control>] <요청>";
+                    return false;
+                }
+
+                toolProfile = tokenList[++i];
                 continue;
             }
 
@@ -390,19 +408,19 @@ public sealed partial class CommandService
         var request = string.Join(' ', requestTokens).Trim();
         if (string.IsNullOrWhiteSpace(model))
         {
-            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
             error = "브라우저 루틴은 --model <model> 이 필요합니다.";
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(request))
         {
-            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null);
+            spec = new RoutineBrowserCommandSpec(string.Empty, null, string.Empty, null, null);
             error = "브라우저 루틴 요청을 입력하세요.";
             return false;
         }
 
-        spec = new RoutineBrowserCommandSpec(request, provider, model.Trim(), startUrl);
+        spec = new RoutineBrowserCommandSpec(request, provider, model.Trim(), startUrl, toolProfile);
         error = string.Empty;
         return true;
     }
@@ -1254,6 +1272,7 @@ public sealed partial class CommandService
             resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentModel(routine.AgentModel) : null,
             resolvedExecutionMode == "browser_agent" ? NormalizeOptionalAgentMetaValue(routine.AgentStartUrl) : null,
             resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) : null,
+            resolvedExecutionMode == "browser_agent" ? NormalizeRoutineAgentToolProfile(routine.AgentToolProfile, routine.AgentUsePlaywright) : null,
             resolvedExecutionMode == "browser_agent" && NormalizeRoutineAgentUsePlaywright(routine.AgentUsePlaywright),
             routine.ScheduleText,
             scheduleSourceMode,
@@ -1939,6 +1958,9 @@ public sealed partial class CommandService
                 string.IsNullOrWhiteSpace(entry.FinalUrl) ? null : entry.FinalUrl,
                 string.IsNullOrWhiteSpace(entry.PageTitle) ? null : entry.PageTitle,
                 string.IsNullOrWhiteSpace(entry.ScreenshotPath) ? null : entry.ScreenshotPath,
+                (entry.DownloadPaths ?? new List<string>())
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))
+                    .ToArray(),
                 entry.DurationMs,
                 FormatRoutineDuration(entry.DurationMs),
                 entry.NextRunAtMs.HasValue

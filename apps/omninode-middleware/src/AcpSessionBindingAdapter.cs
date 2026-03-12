@@ -13,7 +13,9 @@ public sealed record AcpSessionBindingDispatchRequest(
     bool Thread,
     string? Model,
     string? Thinking,
-    bool? LightContext
+    bool? LightContext,
+    string? ToolProfile,
+    string? OutputDirectory
 );
 
 public sealed record AcpSessionBindingDispatchResult(
@@ -326,6 +328,16 @@ public sealed class AcpSessionBindingAdapter
             tokens.Add($"lightContext={(request.LightContext.Value ? "true" : "false")}");
         }
 
+        if (!string.IsNullOrWhiteSpace(request.ToolProfile))
+        {
+            tokens.Add($"toolProfile={TrimLine(request.ToolProfile)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(request.OutputDirectory))
+        {
+            tokens.Add($"outputDirectory={TrimLine(request.OutputDirectory)}");
+        }
+
         if (tokens.Count == 0)
         {
             return "options=none";
@@ -506,7 +518,9 @@ public sealed class AcpSessionBindingAdapter
         builder.Append("\"options\":{");
         builder.Append($"\"model\":{ToNullableJsonString(request.Model)},");
         builder.Append($"\"thinking\":{ToNullableJsonString(request.Thinking)},");
-        builder.Append($"\"lightContext\":{(request.LightContext.HasValue ? (request.LightContext.Value ? "true" : "false") : "null")}");
+        builder.Append($"\"lightContext\":{(request.LightContext.HasValue ? (request.LightContext.Value ? "true" : "false") : "null")},");
+        builder.Append($"\"toolProfile\":{ToNullableJsonString(request.ToolProfile)},");
+        builder.Append($"\"outputDirectory\":{ToNullableJsonString(request.OutputDirectory)}");
         builder.Append("}");
         builder.Append("}");
         return builder.ToString();

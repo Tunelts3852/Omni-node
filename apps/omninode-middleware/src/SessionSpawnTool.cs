@@ -61,7 +61,9 @@ public sealed class SessionSpawnTool
         string? mode = null,
         string? acpModel = null,
         string? acpThinking = null,
-        bool? acpLightContext = null
+        bool? acpLightContext = null,
+        string? acpToolProfile = null,
+        string? acpOutputDirectory = null
     )
     {
         var runId = Guid.NewGuid().ToString("N");
@@ -115,7 +117,9 @@ public sealed class SessionSpawnTool
                 taskTruncated,
                 acpModel,
                 acpThinking,
-                acpLightContext
+                acpLightContext,
+                acpToolProfile,
+                acpOutputDirectory
             );
         }
 
@@ -188,7 +192,9 @@ public sealed class SessionSpawnTool
         bool taskTruncated,
         string? acpModel,
         string? acpThinking,
-        bool? acpLightContext
+        bool? acpLightContext,
+        string? acpToolProfile,
+        string? acpOutputDirectory
     )
     {
         AcpSessionBindingDispatchResult? dispatchResultSnapshot = null;
@@ -251,14 +257,24 @@ public sealed class SessionSpawnTool
                     thread,
                     acpModel,
                     acpThinking,
-                    acpLightContext
+                    acpLightContext,
+                    acpToolProfile,
+                    acpOutputDirectory
                 )
             );
             dispatchResultSnapshot = dispatchResult;
             _ = _conversationStore.AppendMessage(
                 created.Id,
                 "system",
-                BuildAcpDispatchTraceLine(runId, dispatchResult, acpModel, acpThinking, acpLightContext),
+                BuildAcpDispatchTraceLine(
+                    runId,
+                    dispatchResult,
+                    acpModel,
+                    acpThinking,
+                    acpLightContext,
+                    acpToolProfile,
+                    acpOutputDirectory
+                ),
                 "sessions_spawn_acp_dispatch"
             );
             if (!dispatchResult.Accepted)
@@ -455,7 +471,9 @@ public sealed class SessionSpawnTool
         AcpSessionBindingDispatchResult dispatchResult,
         string? acpModel,
         string? acpThinking,
-        bool? acpLightContext
+        bool? acpLightContext,
+        string? acpToolProfile,
+        string? acpOutputDirectory
     )
     {
         var lines = new List<string>
@@ -486,6 +504,16 @@ public sealed class SessionSpawnTool
         if (acpLightContext.HasValue)
         {
             lines.Add($"acp.option.lightContext={(acpLightContext.Value ? "true" : "false")}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(acpToolProfile))
+        {
+            lines.Add($"acp.option.toolProfile={NormalizeSingleLine(acpToolProfile)}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(acpOutputDirectory))
+        {
+            lines.Add($"acp.option.outputDirectory={NormalizeSingleLine(acpOutputDirectory)}");
         }
 
         if (!string.IsNullOrWhiteSpace(dispatchResult.Message))

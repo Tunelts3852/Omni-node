@@ -13,6 +13,8 @@ const MAX_TIMEOUT_MS = 30 * 60 * 1_000;
 const MAX_STDIO_BUFFER = 16 * 1024 * 1024;
 const DEFAULT_MODEL = (process.env.OMNINODE_ROUTINE_BROWSER_AGENT_MODEL || "gpt-5.4").trim() || "gpt-5.4";
 const DEFAULT_ALLOWED_MODELS = [DEFAULT_MODEL];
+const TOOL_PROFILE_PLAYWRIGHT_ONLY = "playwright_only";
+const TOOL_PROFILE_DESKTOP_CONTROL = "desktop_control";
 
 function toOptionalTrimmedString(value) {
   const text = typeof value === "string" ? value.trim() : "";
@@ -68,6 +70,93 @@ function resolveModel(payload) {
 function resolveWorkspaceCwd() {
   const envCwd = toOptionalTrimmedString(process.env.OMNINODE_ACP_ADAPTER_CODEX_CWD);
   return envCwd || process.cwd();
+}
+
+function normalizeToolProfile(value) {
+  const normalized = toOptionalTrimmedString(value)?.toLowerCase();
+  if (!normalized) {
+    return TOOL_PROFILE_PLAYWRIGHT_ONLY;
+  }
+
+  if (normalized === "desktop_control" || normalized === "desktop-control") {
+    return TOOL_PROFILE_DESKTOP_CONTROL;
+  }
+
+  if (normalized === "playwright_only" || normalized === "playwright-only" || normalized === "playwright") {
+    return TOOL_PROFILE_PLAYWRIGHT_ONLY;
+  }
+
+  return normalized;
+}
+
+function resolveToolProfile(payload) {
+  return normalizeToolProfile(
+    payload?.toolProfile
+      || payload?.options?.toolProfile
+  );
+}
+
+function resolveOutputDirectory(payload, workspaceCwd) {
+  const requested = toOptionalTrimmedString(
+    payload?.outputDirectory
+      || payload?.options?.outputDirectory
+  );
+  if (!requested) {
+    return null;
+  }
+
+  return path.resolve(workspaceCwd, requested);
+}
+
+function ensureDirectoryExists(dirPath) {
+  if (!dirPath) {
+    return;
+  }
+
+  fs.mkdirSync(dirPath, { recursive: true });
+}
+
+function formatTomlString(value) {
+  return JSON.stringify(String(value));
+}
+
+function formatTomlArray(values) {
+  return `[${values.map((value) => formatTomlString(value)).join(",")}]`;
+}
+
+function buildPlaywrightMcpConfig(outputDirectory) {
+  const args = ["@playwright/mcp@latest"];
+  if (outputDirectory) {
+    args.push("--output-dir", outputDirectory, "--output-mode", "file");
+  }
+
+  return [
+    ["mcp_servers.playwright.command", formatTomlString("npx")],
+    ["mcp_servers.playwright.args", formatTomlArray(args)]
+  ];
+}
+
+function buildDesktopControlMcpConfig(outputDirectory) {
+  const scriptPath = path.resolve(__dirname, "desktop-control-mcp.js");
+  if (!fs.existsSync(scriptPath)) {
+    throw new Error(`desktop control MCP script not found: ${scriptPath}`);
+  }
+
+  const args = [scriptPath];
+  if (outputDirectory) {
+    args.push("--output-dir", outputDirectory);
+  }
+
+  return [
+    ["mcp_servers.desktop_control.command", formatTomlString(process.execPath)],
+    ["mcp_servers.desktop_control.args", formatTomlArray(args)]
+  ];
+}
+
+function appendConfigOverrides(args, overrides) {
+  for (const [key, value] of overrides) {
+    args.push("-c", `${key}=${value}`);
+  }
 }
 
 function normalizeErrorText(stdout, stderr, fallback) {
@@ -327,6 +416,42 @@ async function main() {
   const codexBin = toOptionalTrimmedString(process.env.OMNINODE_ACP_ADAPTER_CODEX_BIN) || "codex";
   const workspaceCwd = resolveWorkspaceCwd();
   const timeoutMs = resolveTimeoutMs(payload);
+  const toolProfile = resolveToolProfile(payload);
+  const outputDirectory = resolveOutputDirectory(payload, workspaceCwd);
+  if (toolProfile !== TOOL_PROFILE_PLAYWRIGHT_ONLY && toolProfile !== TOOL_PROFILE_DESKTOP_CONTROL) {
+    emitError(
+      "codex exec tool profile is not supported in this environment",
+      `unsupported toolProfile: ${toolProfile}`,
+      { childSessionKey }
+    );
+    return;
+  }
+  if (toolProfile === TOOL_PROFILE_DESKTOP_CONTROL && process.platform !== "darwin") {
+    emitError(
+      "desktop_control is only supported on macOS",
+      `unsupported platform: ${process.platform}`,
+      { childSessionKey }
+    );
+    return;
+  }
+  if (toolProfile === TOOL_PROFILE_DESKTOP_CONTROL && !outputDirectory) {
+    emitError(
+      "desktop_control requires an output directory",
+      "outputDirectory is missing",
+      { childSessionKey }
+    );
+    return;
+  }
+  try {
+    ensureDirectoryExists(outputDirectory);
+  } catch (mkdirError) {
+    emitError(
+      "failed to prepare ACP output directory",
+      mkdirError instanceof Error ? mkdirError.message : String(mkdirError),
+      { childSessionKey, outputDirectory }
+    );
+    return;
+  }
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "omninode-codex-acp-"));
   const lastMessagePath = path.join(tempDir, "last-message.txt");
   const stdoutPath = path.join(tempDir, "codex-stdout.log");
@@ -338,9 +463,22 @@ async function main() {
     "--dangerously-bypass-approvals-and-sandbox",
     "--color", "never",
     "-o", lastMessagePath,
-    "-m", resolvedModel.model,
-    task
+    "-m", resolvedModel.model
   ];
+  appendConfigOverrides(args, buildPlaywrightMcpConfig(outputDirectory));
+  if (toolProfile === TOOL_PROFILE_DESKTOP_CONTROL) {
+    try {
+      appendConfigOverrides(args, buildDesktopControlMcpConfig(outputDirectory));
+    } catch (configError) {
+      emitError(
+        "failed to configure desktop control MCP",
+        configError instanceof Error ? configError.message : String(configError),
+        { childSessionKey, outputDirectory }
+      );
+      return;
+    }
+  }
+  args.push(task);
 
   const run = await runCodexExec({
     codexBin,

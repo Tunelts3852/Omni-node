@@ -9,9 +9,16 @@ public sealed partial class CommandService
 {
     private const string RoutineBrowserAgentDefaultProvider = "codex";
     private const string RoutineBrowserAgentDefaultModel = "gpt-5.4";
+    private const string RoutineBrowserAgentToolProfilePlaywrightOnly = "playwright_only";
+    private const string RoutineBrowserAgentToolProfileDesktopControl = "desktop_control";
     private static readonly IReadOnlySet<string> RoutineBrowserAgentSupportedModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
         RoutineBrowserAgentDefaultModel
+    };
+    private static readonly IReadOnlySet<string> RoutineBrowserAgentSupportedToolProfiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        RoutineBrowserAgentToolProfilePlaywrightOnly,
+        RoutineBrowserAgentToolProfileDesktopControl
     };
 
     private async Task<RoutineActionResult> CreateRoutineCoreAsync(
@@ -22,6 +29,7 @@ public sealed partial class CommandService
         string? agentModel,
         string? agentStartUrl,
         int? agentTimeoutSeconds,
+        string? agentToolProfile,
         bool? agentUsePlaywright,
         string scheduleSourceMode,
         int maxRetries,
@@ -70,12 +78,19 @@ public sealed partial class CommandService
         var normalizedAgentTimeoutSeconds = resolvedExecutionMode == "browser_agent"
             ? NormalizeRoutineAgentTimeoutSeconds(agentTimeoutSeconds)
             : null;
+        var normalizedAgentToolProfile = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentToolProfile(agentToolProfile, agentUsePlaywright)
+            : null;
         var normalizedAgentUsePlaywright = resolvedExecutionMode == "browser_agent"
             ? NormalizeRoutineAgentUsePlaywright(agentUsePlaywright)
             : false;
         if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineBrowserAgentModel(normalizedAgentModel))
         {
             return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedModelMessage(normalizedAgentModel), null);
+        }
+        if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineAgentToolProfile(normalizedAgentToolProfile))
+        {
+            return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedToolProfileMessage(normalizedAgentToolProfile), null);
         }
         RoutineGenerationResult? generation = null;
         var scriptPath = string.Empty;
@@ -88,7 +103,8 @@ public sealed partial class CommandService
             executionRoute.Mode,
             normalizedAgentProvider,
             normalizedAgentModel,
-            normalizedAgentStartUrl
+            normalizedAgentStartUrl,
+            normalizedAgentToolProfile
         );
         ReportRoutineCreateProgress(
             progressCallback,
@@ -182,6 +198,7 @@ public sealed partial class CommandService
             AgentModel = normalizedAgentModel,
             AgentStartUrl = normalizedAgentStartUrl,
             AgentTimeoutSeconds = normalizedAgentTimeoutSeconds,
+            AgentToolProfile = normalizedAgentToolProfile,
             AgentUsePlaywright = normalizedAgentUsePlaywright,
             ScheduleText = scheduleConfig.Display,
             ScheduleSourceMode = scheduleSourceMode,
@@ -450,6 +467,60 @@ public sealed partial class CommandService
         return true;
     }
 
+    private static string NormalizeRoutineAgentToolProfile(string? value, bool? agentUsePlaywright = null)
+    {
+        var normalized = (value ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return RoutineBrowserAgentToolProfilePlaywrightOnly;
+        }
+
+        return normalized switch
+        {
+            "desktop_control" or "desktop-control" => RoutineBrowserAgentToolProfileDesktopControl,
+            "playwright_only" or "playwright-only" or "playwright" => RoutineBrowserAgentToolProfilePlaywrightOnly,
+            _ => agentUsePlaywright == false
+                ? RoutineBrowserAgentToolProfilePlaywrightOnly
+                : normalized
+        };
+    }
+
+    private static bool IsSupportedRoutineAgentToolProfile(string? profile)
+    {
+        var normalized = NormalizeRoutineAgentToolProfile(profile);
+        return !string.IsNullOrWhiteSpace(normalized)
+            && RoutineBrowserAgentSupportedToolProfiles.Contains(normalized);
+    }
+
+    private static string BuildRoutineBrowserAgentUnsupportedToolProfileMessage(string? profile)
+    {
+        var normalized = NormalizeRoutineAgentToolProfile(profile);
+        return $"브라우저 에이전트 도구 프로필 '{normalized}'은 현재 지원되지 않습니다. 사용 가능: {string.Join(", ", RoutineBrowserAgentSupportedToolProfiles)}";
+    }
+
+    private static string BuildRoutineToolProfileLabel(string? profile)
+    {
+        return NormalizeRoutineAgentToolProfile(profile) switch
+        {
+            RoutineBrowserAgentToolProfileDesktopControl => "desktop-control",
+            _ => "playwright-only"
+        };
+    }
+
+    private static bool IsRoutineDesktopControlSupported()
+    {
+        return OperatingSystem.IsMacOS();
+    }
+
+    private string EnsureRoutineBrowserAgentAssetDirectory(string routineId, DateTimeOffset startedAtUtc)
+    {
+        var safeRoutineId = (routineId ?? string.Empty).Trim();
+        var runToken = startedAtUtc.ToString("yyyyMMdd-HHmmssfff", CultureInfo.InvariantCulture);
+        var assetDir = Path.Combine(_config.WorkspaceRootDir, "routines", safeRoutineId, "assets", runToken);
+        Directory.CreateDirectory(assetDir);
+        return assetDir;
+    }
+
     private static bool IsSupportedRoutineBrowserAgentModel(string? model)
     {
         var normalized = NormalizeRoutineAgentModel(model);
@@ -474,11 +545,12 @@ public sealed partial class CommandService
         string mode,
         string? agentProvider,
         string? agentModel,
-        string? agentStartUrl
+        string? agentStartUrl,
+        string? agentToolProfile
     )
     {
         return string.Equals(mode, "browser_agent", StringComparison.Ordinal)
-            ? $"이 루틴은 브라우저 에이전트로 실행합니다. provider={agentProvider ?? "acp"} model={agentModel ?? "-"} startUrl={agentStartUrl ?? "(요청 원문 URL 사용)"} tool=playwright"
+            ? $"이 루틴은 브라우저 에이전트로 실행합니다. provider={agentProvider ?? "acp"} model={agentModel ?? "-"} startUrl={agentStartUrl ?? "(요청 원문 URL 사용)"} toolProfile={BuildRoutineToolProfileLabel(agentToolProfile)}"
             : string.Equals(mode, "gemini-url-single", StringComparison.Ordinal)
             ? "이 루틴은 실행 시 gemini-url-single 경로로 URL 참조 답변을 생성합니다."
             : string.Equals(mode, "gemini-web-single", StringComparison.Ordinal)
@@ -552,6 +624,7 @@ public sealed partial class CommandService
         RoutineDefinition routine,
         string taskRequest,
         IReadOnlyList<string> detectedUrls,
+        string assetDirectory,
         CancellationToken cancellationToken
     )
     {
@@ -562,6 +635,13 @@ public sealed partial class CommandService
                 "error",
                 "브라우저 에이전트 실행 전에 요청이 취소되었습니다."
             ));
+        }
+
+        var toolProfile = NormalizeRoutineAgentToolProfile(routine.AgentToolProfile, routine.AgentUsePlaywright);
+        if (toolProfile == RoutineBrowserAgentToolProfileDesktopControl && !IsRoutineDesktopControlSupported())
+        {
+            const string unsupportedDesktopControl = "desktop_control 브라우저 에이전트 프로필은 현재 macOS에서만 지원합니다.";
+            return Task.FromResult(new RoutineExecutionOutcome(unsupportedDesktopControl, "error", unsupportedDesktopControl));
         }
 
         var startUrl = !string.IsNullOrWhiteSpace(routine.AgentStartUrl)
@@ -584,7 +664,8 @@ public sealed partial class CommandService
             taskRequest,
             startUrl,
             detectedUrls,
-            routine.AgentUsePlaywright
+            toolProfile,
+            assetDirectory
         );
         var timeoutSeconds = NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) ?? 180;
         var spawnResult = _sessionSpawnTool.Spawn(
@@ -597,7 +678,9 @@ public sealed partial class CommandService
             mode: "run",
             acpModel: agentModel,
             acpThinking: null,
-            acpLightContext: false
+            acpLightContext: false,
+            acpToolProfile: toolProfile,
+            acpOutputDirectory: assetDirectory
         );
         if (!string.Equals(spawnResult.Status, "accepted", StringComparison.OrdinalIgnoreCase))
         {
@@ -609,27 +692,33 @@ public sealed partial class CommandService
 
         var childSession = _conversationStore.Get(spawnResult.ChildSessionKey);
         var transcriptResult = TryExtractRoutineBrowserAgentResult(childSession);
+        var resolvedArtifacts = ResolveRoutineBrowserAgentArtifacts(
+            assetDirectory,
+            transcriptResult.ScreenshotPath,
+            transcriptResult.DownloadPaths
+        );
         var agentMetadata = new RoutineAgentExecutionMetadata(
             spawnResult.ChildSessionKey,
             spawnResult.RunId,
             NormalizeRoutineAgentProvider(routine.AgentProvider, routine.AgentModel) ?? "acp",
             agentModel,
-            "playwright",
+            BuildRoutineToolProfileLabel(toolProfile),
             startUrl,
             transcriptResult.FinalUrl,
             transcriptResult.PageTitle,
-            transcriptResult.ScreenshotPath
+            resolvedArtifacts.ScreenshotPath,
+            resolvedArtifacts.DownloadPaths
         );
 
         if (string.IsNullOrWhiteSpace(transcriptResult.Output))
         {
-            var noResultMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, spawnResult, childSession);
+            var noResultMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, assetDirectory, spawnResult, childSession);
             return Task.FromResult(new RoutineExecutionOutcome(noResultMessage, "error", noResultMessage, agentMetadata));
         }
 
         if (IsRoutineBrowserAgentPlaceholderReply(transcriptResult.Output))
         {
-            var placeholderMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, spawnResult, childSession);
+            var placeholderMessage = BuildRoutineBrowserAgentMissingResultMessage(startUrl, assetDirectory, spawnResult, childSession);
             return Task.FromResult(new RoutineExecutionOutcome(placeholderMessage, "error", placeholderMessage, agentMetadata));
         }
 
@@ -640,19 +729,30 @@ public sealed partial class CommandService
         string request,
         string startUrl,
         IReadOnlyList<string> detectedUrls,
-        bool agentUsePlaywright
+        string toolProfile,
+        string assetDirectory
     )
     {
         var builder = new StringBuilder();
         builder.AppendLine("너는 루틴 전용 브라우저 에이전트다.");
         builder.AppendLine("- 브라우저 자동화는 Playwright 계열 도구만 사용한다.");
-        builder.AppendLine("- 파일 다운로드, 로그인 시도, 데스크톱 전체 제어, 운영체제 조작은 금지한다.");
         builder.AppendLine("- 검색 엔진을 임의로 새로 열지 말고, 주어진 시작 URL과 그 안에서 도달 가능한 공개 페이지 범위만 사용한다.");
+        builder.AppendLine($"- 모든 스크린샷과 다운로드 파일은 반드시 자산 디렉터리('{assetDirectory}') 아래에만 저장한다.");
+        if (NormalizeRoutineAgentToolProfile(toolProfile) == RoutineBrowserAgentToolProfileDesktopControl)
+        {
+            builder.AppendLine("- Playwright로 해결되지 않으면 desktop_control 도구로 화면 캡처, 클릭, 입력, 스크롤을 수행할 수 있다.");
+            builder.AppendLine("- 로그인과 다운로드를 허용한다. 단, 임의 shell/운영체제 명령 실행으로 우회하지 말고 Playwright와 desktop_control 도구만 사용한다.");
+        }
+        else
+        {
+            builder.AppendLine("- 파일 다운로드, 로그인 시도, 데스크톱 전체 제어, 운영체제 조작은 금지한다.");
+        }
         builder.AppendLine("- 실패하면 어디에서 막혔는지 명확히 설명한다.");
         builder.AppendLine("- 최종 답변은 한국어로 작성한다.");
         builder.AppendLine();
         builder.AppendLine($"시작 URL: {startUrl}");
-        builder.AppendLine($"도구 프로필: {(agentUsePlaywright ? "playwright-only" : "playwright-disabled")}");
+        builder.AppendLine($"도구 프로필: {BuildRoutineToolProfileLabel(toolProfile)}");
+        builder.AppendLine($"자산 디렉터리: {assetDirectory}");
         if (detectedUrls.Count > 0)
         {
             builder.AppendLine("요청 원문에서 감지한 URL:");
@@ -673,17 +773,18 @@ public sealed partial class CommandService
         builder.AppendLine("final_url: <최종으로 확인한 URL 또는 ->");
         builder.AppendLine("page_title: <최종 페이지 제목 또는 ->");
         builder.AppendLine("screenshot_path: <가능하면 저장한 절대경로 또는 ->");
+        builder.AppendLine("download_paths: <다운로드한 절대경로를 | 로 연결하거나 ->");
         builder.AppendLine("[/ROUTINE_AGENT_META]");
         return builder.ToString().Trim();
     }
 
-    private static (string Output, string? FinalUrl, string? PageTitle, string? ScreenshotPath) TryExtractRoutineBrowserAgentResult(
+    private static (string Output, string? FinalUrl, string? PageTitle, string? ScreenshotPath, IReadOnlyList<string> DownloadPaths) TryExtractRoutineBrowserAgentResult(
         ConversationThreadView? childSession
     )
     {
         if (childSession == null || childSession.Messages.Count == 0)
         {
-            return (string.Empty, null, null, null);
+            return (string.Empty, null, null, null, Array.Empty<string>());
         }
 
         var assistant = childSession.Messages
@@ -703,12 +804,13 @@ public sealed partial class CommandService
 
         if (string.IsNullOrWhiteSpace(assistant))
         {
-            return (string.Empty, null, null, null);
+            return (string.Empty, null, null, null, Array.Empty<string>());
         }
 
         var finalUrl = ExtractRoutineAgentMetaValue(assistant, "final_url");
         var pageTitle = ExtractRoutineAgentMetaValue(assistant, "page_title");
         var screenshotPath = ExtractRoutineAgentMetaValue(assistant, "screenshot_path");
+        var downloadPaths = ParseRoutineAgentDownloadPaths(ExtractRoutineAgentMetaValue(assistant, "download_paths"));
         var cleaned = Regex.Replace(
                 assistant,
                 @"\[\s*ROUTINE_AGENT_META\s*\][\s\S]*?\[\s*/ROUTINE_AGENT_META\s*\]",
@@ -721,7 +823,13 @@ public sealed partial class CommandService
             screenshotPath = TryExtractScreenshotPathFromText(assistant);
         }
 
-        return (string.IsNullOrWhiteSpace(cleaned) ? assistant : cleaned, NormalizeOptionalAgentMetaValue(finalUrl), NormalizeOptionalAgentMetaValue(pageTitle), NormalizeOptionalAgentMetaValue(screenshotPath));
+        return (
+            string.IsNullOrWhiteSpace(cleaned) ? assistant : cleaned,
+            NormalizeOptionalAgentMetaValue(finalUrl),
+            NormalizeOptionalAgentMetaValue(pageTitle),
+            NormalizeOptionalAgentMetaValue(screenshotPath),
+            downloadPaths
+        );
     }
 
     private static string? ExtractRoutineAgentMetaValue(string text, string key)
@@ -742,6 +850,135 @@ public sealed partial class CommandService
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
         );
         return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    private static IReadOnlyList<string> ParseRoutineAgentDownloadPaths(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return Array.Empty<string>();
+        }
+
+        return raw
+            .Split('|', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(NormalizeOptionalAgentMetaValue)
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray()!;
+    }
+
+    private static (string? ScreenshotPath, IReadOnlyList<string> DownloadPaths) ResolveRoutineBrowserAgentArtifacts(
+        string assetDirectory,
+        string? reportedScreenshotPath,
+        IReadOnlyList<string> reportedDownloadPaths
+    )
+    {
+        var normalizedAssetDirectory = (assetDirectory ?? string.Empty).Trim();
+        var downloadPaths = new List<string>();
+        string? screenshotPath = NormalizeOptionalAgentMetaValue(reportedScreenshotPath);
+
+        if (reportedDownloadPaths != null)
+        {
+            downloadPaths.AddRange(
+                reportedDownloadPaths
+                    .Select(NormalizeOptionalAgentMetaValue)
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))!
+            );
+        }
+
+        if (!string.IsNullOrWhiteSpace(normalizedAssetDirectory) && Directory.Exists(normalizedAssetDirectory))
+        {
+            var files = Directory.GetFiles(normalizedAssetDirectory, "*", SearchOption.AllDirectories)
+                .Select(Path.GetFullPath)
+                .OrderBy(static path => path, StringComparer.Ordinal)
+                .ToArray();
+            if (string.IsNullOrWhiteSpace(screenshotPath))
+            {
+                screenshotPath = files.FirstOrDefault(IsRoutineBrowserAgentScreenshotFile);
+            }
+
+            if (downloadPaths.Count == 0)
+            {
+                foreach (var file in files)
+                {
+                    if (!IsRoutineBrowserAgentDownloadCandidateFile(file))
+                    {
+                        continue;
+                    }
+
+                    if (downloadPaths.Contains(file, StringComparer.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    downloadPaths.Add(file);
+                }
+            }
+        }
+
+        return (
+            screenshotPath,
+            downloadPaths
+                .Distinct(StringComparer.Ordinal)
+                .ToArray()
+        );
+    }
+
+    private static bool IsRoutineBrowserAgentScreenshotFile(string? path)
+    {
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(normalized);
+        return extension.Equals(".png", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".jpeg", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".webp", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsRoutineBrowserAgentDownloadCandidateFile(string? path)
+    {
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (IsRoutineBrowserAgentScreenshotFile(normalized))
+        {
+            return false;
+        }
+
+        var fileName = Path.GetFileName(normalized);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return false;
+        }
+
+        var normalizedFileName = fileName.Trim().ToLowerInvariant();
+        if (normalizedFileName.StartsWith("console-", StringComparison.Ordinal)
+            || normalizedFileName.StartsWith("page-", StringComparison.Ordinal)
+            || normalizedFileName.StartsWith("network-", StringComparison.Ordinal)
+            || normalizedFileName.StartsWith("trace-", StringComparison.Ordinal)
+            || normalizedFileName.StartsWith("video-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return normalizedFileName switch
+        {
+            "session.json" => false,
+            _ when normalizedFileName.EndsWith(".yml", StringComparison.Ordinal) => false,
+            _ when normalizedFileName.EndsWith(".yaml", StringComparison.Ordinal) => false,
+            _ when normalizedFileName.EndsWith(".log", StringComparison.Ordinal) => false,
+            _ when normalizedFileName.EndsWith(".har", StringComparison.Ordinal) => false,
+            _ when normalizedFileName.EndsWith(".webm", StringComparison.Ordinal) => false,
+            _ when normalizedFileName.EndsWith(".trace.zip", StringComparison.Ordinal) => false,
+            _ => true
+        };
     }
 
     private static string? NormalizeOptionalAgentMetaValue(string? value)
@@ -771,6 +1008,7 @@ public sealed partial class CommandService
 
     private static string BuildRoutineBrowserAgentMissingResultMessage(
         string startUrl,
+        string assetDirectory,
         SessionSpawnToolResult spawnResult,
         ConversationThreadView? childSession
     )
@@ -778,6 +1016,10 @@ public sealed partial class CommandService
         var builder = new StringBuilder();
         builder.AppendLine("브라우저 에이전트 실행은 시작되었지만 최종 결과를 child session에서 찾지 못했습니다.");
         builder.AppendLine($"startUrl={startUrl}");
+        if (!string.IsNullOrWhiteSpace(assetDirectory))
+        {
+            builder.AppendLine($"assetDirectory={assetDirectory}");
+        }
         builder.AppendLine($"runId={spawnResult.RunId}");
         builder.AppendLine("hint=ACP command adapter가 없거나 최종 결과를 반환하지 않았습니다.");
         if (!string.IsNullOrWhiteSpace(spawnResult.ChildSessionKey))
@@ -919,6 +1161,11 @@ public sealed partial class CommandService
         if (!string.IsNullOrWhiteSpace(entry.ScreenshotPath))
         {
             builder.AppendLine($"screenshotPath={entry.ScreenshotPath}");
+        }
+
+        if (entry.DownloadPaths != null && entry.DownloadPaths.Count > 0)
+        {
+            builder.AppendLine($"downloadPaths={string.Join(" | ", entry.DownloadPaths)}");
         }
 
         if (!string.IsNullOrWhiteSpace(entry.Error))

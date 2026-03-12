@@ -153,6 +153,7 @@ public sealed partial class WebSocketGateway
         builder.Append($"\"agentModel\":{ToJsonStringOrNull(routine.AgentModel)},");
         builder.Append($"\"agentStartUrl\":{ToJsonStringOrNull(routine.AgentStartUrl)},");
         builder.Append($"\"agentTimeoutSeconds\":{(routine.AgentTimeoutSeconds.HasValue ? routine.AgentTimeoutSeconds.Value.ToString(CultureInfo.InvariantCulture) : "null")},");
+        builder.Append($"\"agentToolProfile\":{ToJsonStringOrNull(routine.AgentToolProfile)},");
         builder.Append($"\"agentUsePlaywright\":{(routine.AgentUsePlaywright ? "true" : "false")},");
         builder.Append($"\"scheduleText\":\"{EscapeJson(routine.ScheduleText)}\",");
         builder.Append($"\"scheduleSourceMode\":\"{EscapeJson(routine.ScheduleSourceMode)}\",");
@@ -221,6 +222,7 @@ public sealed partial class WebSocketGateway
             + $"\"finalUrl\":{ToJsonStringOrNull(run.FinalUrl)},"
             + $"\"pageTitle\":{ToJsonStringOrNull(run.PageTitle)},"
             + $"\"screenshotPath\":{ToJsonStringOrNull(run.ScreenshotPath)},"
+            + $"\"downloadPaths\":{BuildStringArrayJson(run.DownloadPaths)},"
             + $"\"durationMs\":{(run.DurationMs.HasValue ? run.DurationMs.Value.ToString(CultureInfo.InvariantCulture) : "null")},"
             + $"\"durationText\":\"{EscapeJson(run.DurationText)}\","
             + $"\"nextRunLocal\":{ToJsonStringOrNull(run.NextRunLocal)}"

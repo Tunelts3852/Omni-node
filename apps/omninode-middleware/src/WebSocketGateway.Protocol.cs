@@ -354,6 +354,7 @@ public sealed partial class WebSocketGateway
         public string? AgentProvider { get; set; }
         public string? AgentModel { get; set; }
         public string? AgentStartUrl { get; set; }
+        public string? AgentToolProfile { get; set; }
         public string? ScheduleSourceMode { get; set; }
         public string? NotifyPolicy { get; set; }
         public string? ScheduleKind { get; set; }

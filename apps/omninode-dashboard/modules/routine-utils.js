@@ -3,6 +3,34 @@ import {
   DEFAULT_ROUTINE_AGENT_PROVIDER
 } from "./dashboard-constants.js";
 
+export function normalizeRoutineAgentToolProfile(value, agentUsePlaywright = true) {
+  const normalized = (value || "").trim().toLowerCase();
+  if (!normalized) {
+    return "playwright_only";
+  }
+  if (normalized === "desktop_control" || normalized === "desktop-control") {
+    return "desktop_control";
+  }
+  if (normalized === "playwright_only" || normalized === "playwright-only" || normalized === "playwright") {
+    return "playwright_only";
+  }
+  return agentUsePlaywright === false ? "playwright_only" : normalized;
+}
+
+export function formatRoutineAgentToolProfileLabel(value) {
+  return normalizeRoutineAgentToolProfile(value) === "desktop_control"
+    ? "데스크톱 제어"
+    : "Playwright 전용";
+}
+
+export function isRoutineDesktopControlSupportedClient() {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+  const platform = `${navigator.userAgentData?.platform || navigator.platform || ""}`.trim().toLowerCase();
+  return platform.includes("mac");
+}
+
 export function getViewportSnapshot() {
   if (typeof window === "undefined") {
     return { width: 1440, height: 960 };
@@ -138,6 +166,7 @@ export function createRoutineFormState(overrides = {}) {
     agentModel: DEFAULT_ROUTINE_AGENT_MODEL,
     agentStartUrl: "",
     agentTimeoutSeconds: 180,
+    agentToolProfile: "playwright_only",
     agentUsePlaywright: true,
     scheduleSourceMode: "auto",
     maxRetries: 1,
@@ -165,6 +194,7 @@ export function hydrateRoutineFormFromRoutine(routine) {
     agentModel: (routine.agentModel || DEFAULT_ROUTINE_AGENT_MODEL).trim() || DEFAULT_ROUTINE_AGENT_MODEL,
     agentStartUrl: routine.agentStartUrl || "",
     agentTimeoutSeconds: Number.isFinite(routine.agentTimeoutSeconds) ? Number(routine.agentTimeoutSeconds) : 180,
+    agentToolProfile: normalizeRoutineAgentToolProfile(routine.agentToolProfile, routine.agentUsePlaywright !== false),
     agentUsePlaywright: routine.agentUsePlaywright !== false,
     scheduleSourceMode: normalizeRoutineScheduleSourceMode(routine.scheduleSourceMode, "manual"),
     maxRetries: Number.isFinite(routine.maxRetries) ? Number(routine.maxRetries) : 1,
@@ -196,6 +226,9 @@ export function buildRoutinePayloadFromForm(form) {
     agentModel: (form?.agentModel || "").trim(),
     agentStartUrl: (form?.agentStartUrl || "").trim(),
     agentTimeoutSeconds: Math.min(1800, Math.max(30, Number(form?.agentTimeoutSeconds ?? 180) || 180)),
+    agentToolProfile: executionMode === "browser_agent"
+      ? normalizeRoutineAgentToolProfile(form?.agentToolProfile, form?.agentUsePlaywright !== false)
+      : "",
     agentUsePlaywright: form?.agentUsePlaywright !== false,
     scheduleSourceMode,
     maxRetries: Math.min(5, Math.max(0, Number(form?.maxRetries ?? 1) || 0)),

@@ -3,10 +3,13 @@ import {
   ROUTINE_WEEKDAY_OPTIONS
 } from "./dashboard-constants.js";
 import {
+  formatRoutineAgentToolProfileLabel,
   formatRoutineExecutionModeLabel,
   formatRoutineSchedulePreview,
   getRoutineAgentModelFallback,
   getRoutineLocalTimezone,
+  isRoutineDesktopControlSupportedClient,
+  normalizeRoutineAgentToolProfile,
   normalizeRoutineExecutionModeValue,
   normalizeRoutineNotifyPolicy,
   normalizeRoutineScheduleSourceMode,
@@ -259,6 +262,8 @@ function renderRoutineExecutionModeBuilder(props) {
   const visibleMode = resolveRoutineVisibleExecutionMode(form);
   const explicitMode = normalizeRoutineExecutionModeValue(form.executionMode);
   const agentProvider = (form.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER).trim().toLowerCase() || DEFAULT_ROUTINE_AGENT_PROVIDER;
+  const toolProfile = normalizeRoutineAgentToolProfile(form.agentToolProfile, form.agentUsePlaywright !== false);
+  const desktopControlSupported = isRoutineDesktopControlSupportedClient();
   return e(
     "div",
     { className: "routine-editor-card routine-execution-editor" },
@@ -283,6 +288,9 @@ function renderRoutineExecutionModeBuilder(props) {
           agentModel: value === "browser_agent"
             ? ((form.agentModel || "").trim() || getRoutineAgentModelFallback(form.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER))
             : form.agentModel,
+          agentToolProfile: value === "browser_agent"
+            ? normalizeRoutineAgentToolProfile(form.agentToolProfile, form.agentUsePlaywright !== false)
+            : form.agentToolProfile,
           agentUsePlaywright: value === "browser_agent"
         })
       }, value === "browser_agent"
@@ -339,9 +347,31 @@ function renderRoutineExecutionModeBuilder(props) {
             onChange: (event) => patchRoutineForm(formType, { agentTimeoutSeconds: Number(event.target.value) || 180 })
           })
         ),
+        e("label", { className: "routine-field routine-field-full" },
+          e("span", { className: "routine-field-label" }, "도구 프로필"),
+          e("select", {
+            className: "input",
+            value: toolProfile,
+            onChange: (event) => patchRoutineForm(formType, {
+              agentToolProfile: normalizeRoutineAgentToolProfile(event.target.value, true),
+              agentUsePlaywright: true
+            })
+          },
+          e("option", { value: "playwright_only" }, "Playwright 전용"),
+          e("option", {
+            value: "desktop_control",
+            disabled: !desktopControlSupported && toolProfile !== "desktop_control"
+          }, "데스크톱 제어"))
+        ),
         e("div", { className: "routine-auto-schedule-note routine-agent-note" },
-          e("strong", null, "Playwright 전용"),
-          e("span", null, "브라우저 자동화는 Playwright만 사용합니다. 로그인, 다운로드, 데스크톱 전체 제어는 허용하지 않습니다.")
+          e("strong", null, formatRoutineAgentToolProfileLabel(toolProfile)),
+          toolProfile === "desktop_control"
+            ? e("span", null, desktopControlSupported
+              ? "Playwright 우선으로 실행하고, 필요할 때만 데스크톱 제어를 추가로 사용합니다. 로그인과 다운로드를 허용합니다."
+              : "이 클라이언트에서는 macOS가 아니라서 새로 선택할 수 없습니다. 서버도 macOS가 아니면 실행 시 명확하게 실패합니다.")
+            : e("span", null, desktopControlSupported
+              ? "브라우저 자동화는 Playwright만 사용합니다. 로그인, 다운로드, 데스크톱 전체 제어는 허용하지 않습니다."
+              : "브라우저 자동화는 Playwright만 사용합니다. 데스크톱 제어 프로필은 macOS에서만 새로 선택할 수 있습니다.")
         )
       )
       : null
@@ -415,6 +445,10 @@ export function renderRoutineTab(props) {
   const selectedScheduleSource = selected
     ? (normalizeRoutineScheduleSourceMode(selected.scheduleSourceMode, "manual") === "auto" ? "요청 원문 기준" : "수동 스케줄")
     : "왼쪽 목록에서 선택";
+  const selectedToolProfile = selected
+    && normalizeRoutineExecutionModeValue(selected.resolvedExecutionMode || selected.executionMode) === "browser_agent"
+    ? formatRoutineAgentToolProfileLabel(selected.agentToolProfile)
+    : "";
   const selectedHeadline = selected
     ? `${selected.scheduleText || "-"} · ${selected.lastStatus || "실행 전"}`
     : "루틴을 선택하면 실행 상태와 스케줄을 한눈에 확인할 수 있습니다.";
@@ -432,7 +466,7 @@ export function renderRoutineTab(props) {
     e("div", { className: "routine-overview-card routine-overview-card-selected" },
       e("div", { className: "routine-overview-label" }, selected ? "선택된 루틴" : "상세 패널"),
       e("div", { className: "routine-overview-value routine-overview-value-lg" }, selected ? (selected.title || selected.id) : selectedModeLabel),
-      e("div", { className: "routine-overview-note" }, `${selectedScheduleSource} · ${selectedModeLabel}`),
+      e("div", { className: "routine-overview-note" }, `${selectedScheduleSource} · ${selectedModeLabel}${selectedToolProfile ? ` · ${selectedToolProfile}` : ""}`),
       e("div", { className: "routine-overview-note routine-overview-note-strong" }, selectedHeadline)
     ),
     e("div", { className: "routine-overview-card" },
@@ -453,7 +487,7 @@ export function renderRoutineTab(props) {
     e("div", { className: "routine-overview-card" },
       e("div", { className: "routine-overview-label" }, "브라우저 에이전트"),
       e("div", { className: "routine-overview-value" }, `${browserAgentCount}`),
-      e("div", { className: "routine-overview-note" }, "Playwright 기반 자동화")
+      e("div", { className: "routine-overview-note" }, "브라우저 자동화 루틴")
     ),
     e("div", { className: "routine-overview-card" },
       e("div", { className: "routine-overview-label" }, "최근 오류"),
@@ -594,6 +628,9 @@ export function renderRoutineTab(props) {
           ),
           e("div", { className: "routine-item-meta" },
             e("span", { className: "meta-chip neutral" }, formatRoutineExecutionModeLabel(item.resolvedExecutionMode || item.executionMode || "script")),
+            normalizeRoutineExecutionModeValue(item.resolvedExecutionMode || item.executionMode) === "browser_agent"
+              ? e("span", { className: "meta-chip neutral" }, formatRoutineAgentToolProfileLabel(item.agentToolProfile))
+              : null,
             e("span", { className: "meta-chip neutral" }, normalizeRoutineScheduleSourceMode(item.scheduleSourceMode, "manual") === "auto" ? "자동" : "수동"),
             e("span", { className: "meta-chip neutral" }, item.scheduleText || "-"),
             e("span", { className: "meta-chip neutral" }, item.lastRunLocal ? `최근 ${item.lastRunLocal}` : "실행 전")
@@ -619,6 +656,9 @@ export function renderRoutineTab(props) {
               e("div", { className: "routine-item-meta" },
                 e("span", { className: `meta-chip ${selected.enabled ? "ok" : "neutral"}` }, selected.enabled ? "활성" : "비활성"),
                 e("span", { className: "meta-chip neutral" }, formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script")),
+                normalizeRoutineExecutionModeValue(selected.resolvedExecutionMode || selected.executionMode) === "browser_agent"
+                  ? e("span", { className: "meta-chip neutral" }, formatRoutineAgentToolProfileLabel(selected.agentToolProfile))
+                  : null,
                 e("span", { className: "meta-chip neutral" }, normalizeRoutineScheduleSourceMode(selected.scheduleSourceMode, "manual") === "auto" ? "자동" : "수동"),
                 e("span", { className: "meta-chip neutral" }, selected.scheduleText || "-"),
                 e("span", { className: "meta-chip neutral" }, selected.language || "-")
@@ -657,6 +697,12 @@ export function renderRoutineTab(props) {
             e("span", { className: "routine-stat-label" }, "실행 모드"),
             e("strong", null, formatRoutineExecutionModeLabel(selected.resolvedExecutionMode || selected.executionMode || "script"))
           ),
+          normalizeRoutineExecutionModeValue(selected.resolvedExecutionMode || selected.executionMode) === "browser_agent"
+            ? e("div", { className: "routine-stat-card" },
+              e("span", { className: "routine-stat-label" }, "도구 프로필"),
+              e("strong", null, formatRoutineAgentToolProfileLabel(selected.agentToolProfile))
+            )
+            : null,
           e("div", { className: "routine-stat-card" },
             e("span", { className: "routine-stat-label" }, "알림 정책"),
             e("strong", null, normalizeRoutineNotifyPolicy(selected.notifyPolicy, "always"))

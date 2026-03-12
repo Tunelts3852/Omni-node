@@ -1,3 +1,5 @@
+import { formatRoutineAgentToolProfileLabel } from "./routine-utils.js";
+
 function renderPaperclipIcon(e) {
   return e(
     "svg",
@@ -1053,9 +1055,13 @@ export function renderRoutineRunHistoryPanel(props) {
       run.agentProvider || run.agentModel
         ? e("div", { className: "routine-run-next" }, `agent ${run.agentProvider || "-"}:${run.agentModel || "-"}`)
         : null,
+      run.toolProfile ? e("div", { className: "routine-run-next" }, `도구 ${formatRoutineAgentToolProfileLabel(run.toolProfile)}`) : null,
       run.finalUrl ? e("div", { className: "routine-run-next" }, `최종 URL ${run.finalUrl}`) : null,
       run.pageTitle ? e("div", { className: "routine-run-next" }, `페이지 ${run.pageTitle}`) : null,
       run.screenshotPath ? e("div", { className: "routine-run-next" }, `스크린샷 ${run.screenshotPath}`) : null,
+      Array.isArray(run.downloadPaths) && run.downloadPaths.length > 0
+        ? e("div", { className: "routine-run-next" }, `다운로드 ${run.downloadPaths.join(" | ")}`)
+        : null,
       run.telegramStatus ? e("div", { className: "routine-run-next" }, `텔레그램 ${run.telegramStatus}`) : null,
       run.nextRunLocal ? e("div", { className: "routine-run-next" }, `다음 실행 ${run.nextRunLocal}`) : null,
       e("div", { className: "routine-run-actions" },

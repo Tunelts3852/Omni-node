@@ -303,6 +303,7 @@ public sealed record RoutineSummary(
     string? AgentModel,
     string? AgentStartUrl,
     int? AgentTimeoutSeconds,
+    string? AgentToolProfile,
     bool AgentUsePlaywright,
     string ScheduleText,
     string ScheduleSourceMode,
@@ -357,6 +358,7 @@ public sealed record RoutineRunSummary(
     string? FinalUrl,
     string? PageTitle,
     string? ScreenshotPath,
+    IReadOnlyList<string> DownloadPaths,
     long? DurationMs,
     string DurationText,
     string? NextRunLocal
@@ -380,6 +382,7 @@ public sealed record RoutineRunDetailResult(
     string? FinalUrl,
     string? PageTitle,
     string? ScreenshotPath,
+    IReadOnlyList<string> DownloadPaths,
     string? Error,
     string Content
 );
@@ -522,6 +525,7 @@ internal sealed class RoutineDefinition
     public string? AgentModel { get; set; }
     public string? AgentStartUrl { get; set; }
     public int? AgentTimeoutSeconds { get; set; }
+    public string? AgentToolProfile { get; set; }
     public bool AgentUsePlaywright { get; set; }
     public string ScheduleText { get; set; } = string.Empty;
     public string ScheduleSourceMode { get; set; } = string.Empty;
@@ -583,6 +587,7 @@ internal sealed class RoutineRunLogEntry
     public string? FinalUrl { get; set; }
     public string? PageTitle { get; set; }
     public string? ScreenshotPath { get; set; }
+    public List<string> DownloadPaths { get; set; } = new();
     public long? RunAtMs { get; set; }
     public long? DurationMs { get; set; }
     public long? NextRunAtMs { get; set; }
@@ -597,7 +602,8 @@ internal sealed record RoutineAgentExecutionMetadata(
     string? StartUrl,
     string? FinalUrl,
     string? PageTitle,
-    string? ScreenshotPath
+    string? ScreenshotPath,
+    IReadOnlyList<string> DownloadPaths
 );
 
 internal sealed record RoutineExecutionOutcome(

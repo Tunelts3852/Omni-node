@@ -80,6 +80,10 @@ internal sealed class FileRunArtifactStore : IRunArtifactStore
         builder.AppendLine($"- attempts: {attempts.ToString(CultureInfo.InvariantCulture)}");
         builder.AppendLine($"- startedAt: {request.StartedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
         builder.AppendLine($"- completedAt: {request.CompletedAtUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}");
+        if (!string.IsNullOrWhiteSpace(request.AssetDirectory))
+        {
+            builder.AppendLine($"- assetDirectory: {request.AssetDirectory}");
+        }
         if (!string.IsNullOrWhiteSpace(request.TelegramStatus))
         {
             builder.AppendLine($"- telegram: {request.TelegramStatus}");
@@ -130,6 +134,11 @@ internal sealed class FileRunArtifactStore : IRunArtifactStore
             if (!string.IsNullOrWhiteSpace(request.AgentMetadata.ScreenshotPath))
             {
                 builder.AppendLine($"- screenshotPath: {request.AgentMetadata.ScreenshotPath}");
+            }
+
+            if (request.AgentMetadata.DownloadPaths.Count > 0)
+            {
+                builder.AppendLine($"- downloadPaths: {string.Join(" | ", request.AgentMetadata.DownloadPaths)}");
             }
         }
 

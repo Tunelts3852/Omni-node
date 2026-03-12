@@ -2820,6 +2820,7 @@ public sealed partial class WebSocketGateway
             + $"\"finalUrl\":{ToJsonStringOrNull(result.FinalUrl)},"
             + $"\"pageTitle\":{ToJsonStringOrNull(result.PageTitle)},"
             + $"\"screenshotPath\":{ToJsonStringOrNull(result.ScreenshotPath)},"
+            + $"\"downloadPaths\":{BuildStringArrayJson(result.DownloadPaths)},"
             + $"\"error\":{ToJsonStringOrNull(result.Error)},"
             + $"\"content\":\"{EscapeJson(result.Content)}\""
             + "}",
@@ -3260,6 +3261,7 @@ public sealed partial class WebSocketGateway
             string? agentProvider = null;
             string? agentModel = null;
             string? agentStartUrl = null;
+            string? agentToolProfile = null;
             string? scheduleSourceMode = null;
             string? notifyPolicy = null;
             string? scheduleKind = null;
@@ -4002,6 +4004,12 @@ public sealed partial class WebSocketGateway
                 }
             }
 
+            if (doc.RootElement.TryGetProperty("agentToolProfile", out var agentToolProfileElement)
+                && agentToolProfileElement.ValueKind == JsonValueKind.String)
+            {
+                agentToolProfile = agentToolProfileElement.GetString();
+            }
+
             if (doc.RootElement.TryGetProperty("compactConversation", out var compactConversationElement))
             {
                 if (compactConversationElement.ValueKind == JsonValueKind.True)
@@ -4316,6 +4324,7 @@ public sealed partial class WebSocketGateway
                 AgentProvider = agentProvider,
                 AgentModel = agentModel,
                 AgentStartUrl = agentStartUrl,
+                AgentToolProfile = agentToolProfile,
                 ScheduleSourceMode = scheduleSourceMode,
                 NotifyPolicy = notifyPolicy,
                 ScheduleKind = scheduleKind,

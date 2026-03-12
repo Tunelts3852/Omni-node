@@ -64,6 +64,7 @@ public sealed partial class CommandService
             null,
             null,
             null,
+            null,
             NormalizeRoutineScheduleSourceMode("auto", input),
             NormalizeRoutineRetryCount(null),
             NormalizeRoutineRetryDelaySeconds(null),
@@ -83,6 +84,7 @@ public sealed partial class CommandService
         string? agentModel,
         string? agentStartUrl,
         int? agentTimeoutSeconds,
+        string? agentToolProfile,
         bool? agentUsePlaywright,
         string? scheduleSourceMode,
         int? maxRetries,
@@ -131,6 +133,7 @@ public sealed partial class CommandService
             agentModel,
             agentStartUrl,
             agentTimeoutSeconds,
+            agentToolProfile,
             agentUsePlaywright,
             resolvedScheduleSourceMode,
             NormalizeRoutineRetryCount(maxRetries),
@@ -152,6 +155,7 @@ public sealed partial class CommandService
         string? agentModel,
         string? agentStartUrl,
         int? agentTimeoutSeconds,
+        string? agentToolProfile,
         bool? agentUsePlaywright,
         string? scheduleSourceMode,
         int? maxRetries,
@@ -236,12 +240,22 @@ public sealed partial class CommandService
         var normalizedAgentTimeoutSeconds = resolvedExecutionMode == "browser_agent"
             ? NormalizeRoutineAgentTimeoutSeconds(agentTimeoutSeconds)
             : null;
+        var normalizedAgentToolProfile = resolvedExecutionMode == "browser_agent"
+            ? NormalizeRoutineAgentToolProfile(
+                string.IsNullOrWhiteSpace(agentToolProfile) ? existing.AgentToolProfile : agentToolProfile,
+                agentUsePlaywright
+            )
+            : null;
         var normalizedAgentUsePlaywright = resolvedExecutionMode == "browser_agent"
             ? NormalizeRoutineAgentUsePlaywright(agentUsePlaywright)
             : false;
         if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineBrowserAgentModel(normalizedAgentModel))
         {
             return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedModelMessage(normalizedAgentModel), null);
+        }
+        if (resolvedExecutionMode == "browser_agent" && !IsSupportedRoutineAgentToolProfile(normalizedAgentToolProfile))
+        {
+            return new RoutineActionResult(false, BuildRoutineBrowserAgentUnsupportedToolProfileMessage(normalizedAgentToolProfile), null);
         }
         var requestChanged = !string.Equals(existing.Request, input, StringComparison.Ordinal);
         var titleChanged = !string.Equals(existing.Title, resolvedTitle, StringComparison.Ordinal);
@@ -280,6 +294,11 @@ public sealed partial class CommandService
         );
         var agentTimeoutChanged = NormalizeRoutineAgentTimeoutSeconds(existing.AgentTimeoutSeconds)
             != normalizedAgentTimeoutSeconds;
+        var agentToolProfileChanged = !string.Equals(
+            NormalizeRoutineAgentToolProfile(existing.AgentToolProfile, existing.AgentUsePlaywright),
+            normalizedAgentToolProfile,
+            StringComparison.Ordinal
+        );
         var agentUsePlaywrightChanged = NormalizeRoutineAgentUsePlaywright(existing.AgentUsePlaywright)
             != normalizedAgentUsePlaywright;
         RoutineGenerationResult? generation = null;
@@ -312,6 +331,7 @@ public sealed partial class CommandService
             update.AgentModel = normalizedAgentModel;
             update.AgentStartUrl = normalizedAgentStartUrl;
             update.AgentTimeoutSeconds = normalizedAgentTimeoutSeconds;
+            update.AgentToolProfile = normalizedAgentToolProfile;
             update.AgentUsePlaywright = normalizedAgentUsePlaywright;
             update.ScheduleText = scheduleConfig.Display;
             update.ScheduleSourceMode = resolvedScheduleSourceMode;
@@ -347,7 +367,8 @@ public sealed partial class CommandService
                     resolvedExecutionMode,
                     normalizedAgentProvider,
                     normalizedAgentModel,
-                    normalizedAgentStartUrl
+                    normalizedAgentStartUrl,
+                    normalizedAgentToolProfile
                 );
             }
 
@@ -360,6 +381,7 @@ public sealed partial class CommandService
                 || agentModelChanged
                 || agentStartUrlChanged
                 || agentTimeoutChanged
+                || agentToolProfileChanged
                 || agentUsePlaywrightChanged)
             {
                 update.LastNotifiedFingerprint = null;
@@ -395,7 +417,7 @@ public sealed partial class CommandService
                 update.CronPayloadThinking = null;
                 update.CronPayloadTimeoutSeconds = null;
                 update.CronPayloadLightContext = null;
-                update.LastOutput = BuildRoutineExecutionPreview(nextExecutionRoute.Mode, null, null, null);
+                update.LastOutput = BuildRoutineExecutionPreview(nextExecutionRoute.Mode, null, null, null, null);
             }
             else if (string.Equals(nextExecutionRoute.Mode, "script", StringComparison.Ordinal))
             {
@@ -464,10 +486,12 @@ public sealed partial class CommandService
 
             if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
             {
+                var runAssetDirectory = EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc);
                 var browserExecution = await ExecuteRoutineBrowserAgentAsync(
                     routine,
                     taskRequest,
                     executionRoute.Urls,
+                    runAssetDirectory,
                     cancellationToken
                 );
                 output = browserExecution.Output;
@@ -604,7 +628,10 @@ public sealed partial class CommandService
             telegramDispatch.Status,
             agentMetadata,
             startedAtUtc,
-            completedAtUtc
+            completedAtUtc,
+            string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal)
+                ? EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc)
+                : null
         ));
 
         lock (_routineLock)
@@ -654,6 +681,7 @@ public sealed partial class CommandService
                     FinalUrl = agentMetadata?.FinalUrl,
                     PageTitle = agentMetadata?.PageTitle,
                     ScreenshotPath = agentMetadata?.ScreenshotPath,
+                    DownloadPaths = agentMetadata?.DownloadPaths?.ToList() ?? new List<string>(),
                     RunAtMs = startedAtUtc.ToUnixTimeMilliseconds(),
                     DurationMs = durationMs,
                     NextRunAtMs = update.Enabled ? update.NextRunUtc.ToUnixTimeMilliseconds() : null
@@ -671,14 +699,14 @@ public sealed partial class CommandService
         var key = (routineId ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(key))
         {
-            return new RoutineRunDetailResult(false, string.Empty, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "routineId가 필요합니다.", "routineId가 필요합니다.");
+            return new RoutineRunDetailResult(false, string.Empty, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, Array.Empty<string>(), "routineId가 필요합니다.", "routineId가 필요합니다.");
         }
 
         lock (_routineLock)
         {
             if (!_routinesById.TryGetValue(key, out var routine))
             {
-                return new RoutineRunDetailResult(false, key, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "루틴을 찾을 수 없습니다.", "루틴을 찾을 수 없습니다.");
+                return new RoutineRunDetailResult(false, key, ts, "루틴 실행 상세", "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, Array.Empty<string>(), "루틴을 찾을 수 없습니다.", "루틴을 찾을 수 없습니다.");
             }
 
             var entry = (routine.CronRunLog ?? new List<RoutineRunLogEntry>())
@@ -686,7 +714,7 @@ public sealed partial class CommandService
                 .FirstOrDefault(item => item.Ts == ts);
             if (entry == null)
             {
-                return new RoutineRunDetailResult(false, key, ts, routine.Title, "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, "실행 이력을 찾을 수 없습니다.", "실행 이력을 찾을 수 없습니다.");
+                return new RoutineRunDetailResult(false, key, ts, routine.Title, "-", "-", 1, null, null, null, null, null, null, null, null, null, null, null, Array.Empty<string>(), "실행 이력을 찾을 수 없습니다.", "실행 이력을 찾을 수 없습니다.");
             }
 
             var content = _runArtifactStore.ReadText(entry.ArtifactPath);
@@ -714,6 +742,9 @@ public sealed partial class CommandService
                 string.IsNullOrWhiteSpace(entry.FinalUrl) ? null : entry.FinalUrl,
                 string.IsNullOrWhiteSpace(entry.PageTitle) ? null : entry.PageTitle,
                 string.IsNullOrWhiteSpace(entry.ScreenshotPath) ? null : entry.ScreenshotPath,
+                (entry.DownloadPaths ?? new List<string>())
+                    .Where(static path => !string.IsNullOrWhiteSpace(path))
+                    .ToArray(),
                 string.IsNullOrWhiteSpace(entry.Error) ? null : entry.Error,
                 content
             );

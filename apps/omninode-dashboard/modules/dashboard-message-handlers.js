@@ -658,7 +658,10 @@ export function handleRoutineMessage(msg, context) {
       msg.startUrl ? `startUrl=${msg.startUrl}` : "",
       msg.finalUrl ? `finalUrl=${msg.finalUrl}` : "",
       msg.pageTitle ? `pageTitle=${msg.pageTitle}` : "",
-      msg.screenshotPath ? `screenshot=${msg.screenshotPath}` : ""
+      msg.screenshotPath ? `screenshot=${msg.screenshotPath}` : "",
+      Array.isArray(msg.downloadPaths) && msg.downloadPaths.length > 0
+        ? `downloadPaths=${msg.downloadPaths.join(" | ")}`
+        : ""
     ].filter(Boolean).join("\n")
     setRoutineOutputPreview({
       open: true,

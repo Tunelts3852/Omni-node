@@ -3916,6 +3916,7 @@ import {
           agentModel: prev.agentModel,
           agentStartUrl: prev.agentStartUrl,
           agentTimeoutSeconds: prev.agentTimeoutSeconds,
+          agentToolProfile: prev.agentToolProfile,
           agentUsePlaywright: prev.agentUsePlaywright !== false,
           scheduleSourceMode: normalizeRoutineScheduleSourceMode(prev.scheduleSourceMode, "auto"),
           maxRetries: Math.min(5, Math.max(0, Number(prev.maxRetries ?? 1) || 0)),

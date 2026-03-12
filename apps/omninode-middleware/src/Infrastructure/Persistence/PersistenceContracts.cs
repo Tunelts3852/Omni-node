@@ -102,7 +102,8 @@ internal sealed record RoutineRunArtifactWriteRequest(
     string? TelegramStatus,
     RoutineAgentExecutionMetadata? AgentMetadata,
     DateTimeOffset StartedAtUtc,
-    DateTimeOffset CompletedAtUtc
+    DateTimeOffset CompletedAtUtc,
+    string? AssetDirectory = null
 );
 
 internal interface IRunArtifactStore
