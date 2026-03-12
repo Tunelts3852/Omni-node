@@ -3,6 +3,10 @@ import {
   DEFAULT_ROUTINE_AGENT_PROVIDER
 } from "./dashboard-constants.js";
 
+export const DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS = 120;
+export const MIN_ROUTINE_AGENT_TIMEOUT_SECONDS = 120;
+export const MAX_ROUTINE_AGENT_TIMEOUT_SECONDS = 1800;
+
 export function normalizeRoutineAgentToolProfile(value, agentUsePlaywright = true) {
   const normalized = (value || "").trim().toLowerCase();
   if (!normalized) {
@@ -157,6 +161,13 @@ export function normalizeRoutineNotifyPolicy(value, fallback = "always") {
   return fallback;
 }
 
+export function normalizeRoutineNotifyTelegram(value, fallback = true) {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return fallback;
+}
+
 export function createRoutineFormState(overrides = {}) {
   return {
     title: "",
@@ -165,13 +176,14 @@ export function createRoutineFormState(overrides = {}) {
     agentProvider: DEFAULT_ROUTINE_AGENT_PROVIDER,
     agentModel: DEFAULT_ROUTINE_AGENT_MODEL,
     agentStartUrl: "",
-    agentTimeoutSeconds: 180,
+    agentTimeoutSeconds: DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS,
     agentToolProfile: "playwright_only",
     agentUsePlaywright: true,
     scheduleSourceMode: "auto",
     maxRetries: 1,
     retryDelaySeconds: 15,
     notifyPolicy: "always",
+    notifyTelegram: true,
     scheduleKind: "daily",
     scheduleTime: "08:00",
     dayOfMonth: 1,
@@ -193,13 +205,14 @@ export function hydrateRoutineFormFromRoutine(routine) {
     agentProvider: (routine.agentProvider || DEFAULT_ROUTINE_AGENT_PROVIDER).trim() || DEFAULT_ROUTINE_AGENT_PROVIDER,
     agentModel: (routine.agentModel || DEFAULT_ROUTINE_AGENT_MODEL).trim() || DEFAULT_ROUTINE_AGENT_MODEL,
     agentStartUrl: routine.agentStartUrl || "",
-    agentTimeoutSeconds: Number.isFinite(routine.agentTimeoutSeconds) ? Number(routine.agentTimeoutSeconds) : 180,
+    agentTimeoutSeconds: Number.isFinite(routine.agentTimeoutSeconds) ? Number(routine.agentTimeoutSeconds) : DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS,
     agentToolProfile: normalizeRoutineAgentToolProfile(routine.agentToolProfile, routine.agentUsePlaywright !== false),
     agentUsePlaywright: routine.agentUsePlaywright !== false,
     scheduleSourceMode: normalizeRoutineScheduleSourceMode(routine.scheduleSourceMode, "manual"),
     maxRetries: Number.isFinite(routine.maxRetries) ? Number(routine.maxRetries) : 1,
     retryDelaySeconds: Number.isFinite(routine.retryDelaySeconds) ? Number(routine.retryDelaySeconds) : 15,
     notifyPolicy: normalizeRoutineNotifyPolicy(routine.notifyPolicy, "always"),
+    notifyTelegram: normalizeRoutineNotifyTelegram(routine.notifyTelegram, true),
     scheduleKind: routine.scheduleKind || "daily",
     scheduleTime: routine.timeOfDay || "08:00",
     dayOfMonth: Number.isFinite(routine.dayOfMonth) ? Number(routine.dayOfMonth) : 1,
@@ -225,7 +238,13 @@ export function buildRoutinePayloadFromForm(form) {
     agentProvider: (form?.agentProvider || "").trim(),
     agentModel: (form?.agentModel || "").trim(),
     agentStartUrl: (form?.agentStartUrl || "").trim(),
-    agentTimeoutSeconds: Math.min(1800, Math.max(30, Number(form?.agentTimeoutSeconds ?? 180) || 180)),
+    agentTimeoutSeconds: Math.min(
+      MAX_ROUTINE_AGENT_TIMEOUT_SECONDS,
+      Math.max(
+        MIN_ROUTINE_AGENT_TIMEOUT_SECONDS,
+        Number(form?.agentTimeoutSeconds ?? DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS) || DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS
+      )
+    ),
     agentToolProfile: executionMode === "browser_agent"
       ? normalizeRoutineAgentToolProfile(form?.agentToolProfile, form?.agentUsePlaywright !== false)
       : "",
@@ -234,6 +253,7 @@ export function buildRoutinePayloadFromForm(form) {
     maxRetries: Math.min(5, Math.max(0, Number(form?.maxRetries ?? 1) || 0)),
     retryDelaySeconds: Math.min(300, Math.max(0, Number(form?.retryDelaySeconds ?? 15) || 0)),
     notifyPolicy: normalizeRoutineNotifyPolicy(form?.notifyPolicy, "always"),
+    notifyTelegram: normalizeRoutineNotifyTelegram(form?.notifyTelegram, true),
     scheduleKind,
     scheduleTime: (form?.scheduleTime || "08:00").trim() || "08:00",
     dayOfMonth,

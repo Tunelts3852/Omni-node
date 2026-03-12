@@ -2321,7 +2321,7 @@ body,
 
 .routine-layout {
   display: grid;
-  grid-template-columns: minmax(360px, 1.08fr) minmax(240px, 0.72fr) minmax(0, 2.05fr);
+  grid-template-columns: minmax(240px, 0.72fr) minmax(360px, 1.08fr) minmax(0, 2.05fr);
   gap: 16px;
   align-items: stretch;
   width: 100%;
@@ -2369,12 +2369,21 @@ body,
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .routine-head h2 {
   margin: 3px 0 0;
   font-size: 18px;
   letter-spacing: -0.02em;
+}
+
+.routine-head > *,
+.routine-section-head > *,
+.routine-editor-section-head > *,
+.routine-item-head > *,
+.routine-detail-head > * {
+  min-width: 0;
 }
 
 .routine-library-meta {
@@ -2425,6 +2434,7 @@ body,
   padding: 16px;
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .routine-detail-header-card {
@@ -2454,6 +2464,7 @@ body,
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .routine-editor-section-head {
@@ -2462,6 +2473,7 @@ body,
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .routine-editor-title {
@@ -2475,6 +2487,7 @@ body,
   font-size: 12px;
   line-height: 1.45;
   text-align: right;
+  min-width: 0;
 }
 
 .routine-form-grid {
@@ -2663,6 +2676,7 @@ body,
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .routine-item-title {
@@ -2692,6 +2706,7 @@ body,
   justify-content: space-between;
   align-items: flex-start;
   gap: 16px;
+  flex-wrap: wrap;
 }
 
 .routine-detail-copy {
@@ -2723,6 +2738,16 @@ body,
   gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
+  width: 100%;
+  min-width: 0;
+}
+
+.routine-action-row .btn,
+.routine-submit-row .btn,
+.routine-head .btn,
+.routine-section-head .btn {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .routine-stats-grid {
@@ -2756,6 +2781,10 @@ body,
   line-height: 1.45;
 }
 
+.routine-kv > div {
+  min-width: 0;
+}
+
 .routine-subtitle {
   margin-top: 2px;
   margin-bottom: 0;
@@ -2787,6 +2816,8 @@ body,
   margin: 0;
   text-align: left;
   cursor: zoom-in;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .routine-output-button .routine-output {
@@ -2930,6 +2961,21 @@ body,
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   max-width: 1200px;
+}
+
+.settings-primary-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  width: 100%;
+  min-width: 0;
+  align-items: stretch;
+}
+
+.settings-primary-grid > .panel {
+  min-width: 0;
+  height: 100%;
 }
 
 .panel {
@@ -4024,12 +4070,20 @@ select.input {
     max-height: 50vh;
     min-height: 300px;
   }
+
+  .settings-primary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 920px) {
 
   .settings-grid,
   .monitor-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-primary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -4182,6 +4236,14 @@ select.input {
   .routine-action-row,
   .routine-segmented-control {
     width: 100%;
+  }
+
+  .routine-head,
+  .routine-section-head,
+  .routine-editor-section-head,
+  .routine-item-head {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .routine-action-row .btn,
@@ -5485,6 +5547,10 @@ video {
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
 }
 
+.settings-primary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .monitor-grid {
   grid-template-columns: minmax(280px, 0.9fr) minmax(0, 1.1fr);
 }
@@ -5499,7 +5565,7 @@ video {
 }
 
 .routine-layout {
-  grid-template-columns: minmax(340px, 0.98fr) minmax(230px, 0.7fr) minmax(0, 1.72fr);
+  grid-template-columns: minmax(230px, 0.7fr) minmax(340px, 0.98fr) minmax(0, 1.72fr);
 }
 
 .routine-detail-grid {
@@ -5679,6 +5745,7 @@ video {
   justify-content: center;
   text-align: center;
   line-height: 1.35;
+  min-width: 0;
 }
 
 .routine-tab .routine-overview-value,
@@ -5753,7 +5820,7 @@ video {
   }
 
   .routine-layout {
-    grid-template-columns: minmax(320px, 0.95fr) minmax(240px, 0.74fr) minmax(0, 1.5fr);
+    grid-template-columns: minmax(240px, 0.74fr) minmax(320px, 0.95fr) minmax(0, 1.5fr);
   }
 }
 
@@ -6056,6 +6123,7 @@ video {
 
   .routine-overview-grid,
   .settings-grid,
+  .settings-primary-grid,
   .doctor-summary-grid,
   .plan-summary-grid,
   .plans-create-grid,

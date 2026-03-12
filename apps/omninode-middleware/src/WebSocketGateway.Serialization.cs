@@ -160,6 +160,7 @@ public sealed partial class WebSocketGateway
         builder.Append($"\"maxRetries\":{routine.MaxRetries.ToString(CultureInfo.InvariantCulture)},");
         builder.Append($"\"retryDelaySeconds\":{routine.RetryDelaySeconds.ToString(CultureInfo.InvariantCulture)},");
         builder.Append($"\"notifyPolicy\":\"{EscapeJson(routine.NotifyPolicy)}\",");
+        builder.Append($"\"notifyTelegram\":{(routine.NotifyTelegram ? "true" : "false")},");
         builder.Append($"\"enabled\":{(routine.Enabled ? "true" : "false")},");
         builder.Append($"\"nextRunLocal\":\"{EscapeJson(routine.NextRunLocal)}\",");
         builder.Append($"\"lastRunLocal\":\"{EscapeJson(routine.LastRunLocal)}\",");

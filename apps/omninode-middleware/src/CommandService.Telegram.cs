@@ -2953,8 +2953,18 @@ public sealed partial class CommandService
 
             if (tightWrap && line.Length > 120)
             {
-                line = Regex.Replace(line, @"([.!?])\s+", "$1\n");
-                line = Regex.Replace(line, @"(다\.|요\.)\s+", "$1\n");
+                line = Regex.Replace(
+                    line,
+                    @"([.!?])\s+(?=(?:[""'“‘(\[])?[가-힣A-Z]))",
+                    "$1\n",
+                    RegexOptions.CultureInvariant
+                );
+                line = Regex.Replace(
+                    line,
+                    @"(다\.|요\.)\s+(?=(?:[""'“‘(\[])?[가-힣A-Z]))",
+                    "$1\n",
+                    RegexOptions.CultureInvariant
+                );
                 line = Regex.Replace(line, @"(…+)\s+", "$1\n");
                 line = Regex.Replace(line, @"\s+\|\s+\|", " |\n|");
                 var splitLines = line.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -3448,8 +3458,18 @@ public sealed partial class CommandService
         }
 
         var candidate = raw;
-        candidate = Regex.Replace(candidate, @"([.…]{1,3})(?=[^\s\n\d])", "$1\n");
-        candidate = Regex.Replace(candidate, @"([.…]{1,3})\s+", "$1\n");
+        candidate = Regex.Replace(
+            candidate,
+            @"([.…]{1,3})(?=(?:[""'“‘(\[])?[가-힣A-Z]))",
+            "$1\n",
+            RegexOptions.CultureInvariant
+        );
+        candidate = Regex.Replace(
+            candidate,
+            @"([.…]{1,3})\s+(?=(?:[""'“‘(\[])?[가-힣A-Z]))",
+            "$1\n",
+            RegexOptions.CultureInvariant
+        );
         candidate = Regex.Replace(candidate, @"\s+(?=[^,\n]{6,36},)", "\n");
         candidate = Regex.Replace(candidate, @"\n{2,}", "\n");
 

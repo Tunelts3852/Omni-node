@@ -16,6 +16,7 @@ import {
   getViewportSnapshot,
   hydrateRoutineFormFromRoutine,
   normalizeRoutineNotifyPolicy,
+  normalizeRoutineNotifyTelegram,
   normalizeRoutineScheduleSourceMode,
   normalizeRoutineWeekdays
 } from "./modules/routine-utils.js";
@@ -3922,6 +3923,7 @@ import {
           maxRetries: Math.min(5, Math.max(0, Number(prev.maxRetries ?? 1) || 0)),
           retryDelaySeconds: Math.min(300, Math.max(0, Number(prev.retryDelaySeconds ?? 15) || 0)),
           notifyPolicy: normalizeRoutineNotifyPolicy(prev.notifyPolicy, "always"),
+          notifyTelegram: normalizeRoutineNotifyTelegram(prev.notifyTelegram, true),
           scheduleKind: prev.scheduleKind,
           scheduleTime: prev.scheduleTime,
           dayOfMonth: prev.dayOfMonth,
@@ -3963,6 +3965,31 @@ import {
 
       setError("routine:main", "");
       if (!send({ type: "update_routine", routineId: routineSelectedId, ...payload })) {
+        setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function setRoutineTelegramResponseEnabled(routineId, notifyTelegram) {
+      if (!ensureAuthed() || !routineId) {
+        return;
+      }
+
+      const target = routines.find((item) => item.id === routineId);
+      if (!target) {
+        setError("routine:main", "오류: 루틴을 찾을 수 없습니다.");
+        return;
+      }
+
+      const payload = {
+        ...buildRoutinePayloadFromForm(hydrateRoutineFormFromRoutine(target)),
+        notifyTelegram: !!notifyTelegram
+      };
+      setRoutineEditForm((prev) => ({
+        ...prev,
+        notifyTelegram: !!notifyTelegram
+      }));
+      setError("routine:main", "");
+      if (!send({ type: "update_routine", routineId, ...payload })) {
         setError("routine:main", "오류: WebSocket 연결이 끊어졌습니다.");
       }
     }
@@ -4771,6 +4798,7 @@ import {
         runRoutineNow,
         testRoutineBrowserAgent,
         testRoutineTelegram,
+        setRoutineTelegramResponseEnabled,
         setRoutineEnabled,
         deleteRoutineById,
         openRoutineRunDetail,

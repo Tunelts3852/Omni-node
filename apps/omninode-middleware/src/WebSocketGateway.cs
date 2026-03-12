@@ -3264,6 +3264,7 @@ public sealed partial class WebSocketGateway
             string? agentToolProfile = null;
             string? scheduleSourceMode = null;
             string? notifyPolicy = null;
+            bool? notifyTelegram = null;
             string? scheduleKind = null;
             string? scheduleTime = null;
             string? timezoneId = null;
@@ -3743,6 +3744,19 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("notifyPolicy", out var notifyPolicyElement))
             {
                 notifyPolicy = notifyPolicyElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("notifyTelegram", out var notifyTelegramElement))
+            {
+                if (notifyTelegramElement.ValueKind == JsonValueKind.True || notifyTelegramElement.ValueKind == JsonValueKind.False)
+                {
+                    notifyTelegram = notifyTelegramElement.GetBoolean();
+                }
+                else if (notifyTelegramElement.ValueKind == JsonValueKind.String
+                         && bool.TryParse(notifyTelegramElement.GetString(), out var parsedNotifyTelegram))
+                {
+                    notifyTelegram = parsedNotifyTelegram;
+                }
             }
 
             if (doc.RootElement.TryGetProperty("scheduleTime", out var scheduleTimeElement))
@@ -4327,6 +4341,7 @@ public sealed partial class WebSocketGateway
                 AgentToolProfile = agentToolProfile,
                 ScheduleSourceMode = scheduleSourceMode,
                 NotifyPolicy = notifyPolicy,
+                NotifyTelegram = notifyTelegram,
                 ScheduleKind = scheduleKind,
                 ScheduleTime = scheduleTime,
                 TimezoneId = timezoneId,

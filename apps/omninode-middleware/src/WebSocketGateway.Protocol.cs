@@ -357,6 +357,7 @@ public sealed partial class WebSocketGateway
         public string? AgentToolProfile { get; set; }
         public string? ScheduleSourceMode { get; set; }
         public string? NotifyPolicy { get; set; }
+        public bool? NotifyTelegram { get; set; }
         public string? ScheduleKind { get; set; }
         public string? ScheduleTime { get; set; }
         public string? TimezoneId { get; set; }

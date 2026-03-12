@@ -310,6 +310,7 @@ public sealed record RoutineSummary(
     int MaxRetries,
     int RetryDelaySeconds,
     string NotifyPolicy,
+    bool NotifyTelegram,
     bool Enabled,
     string NextRunLocal,
     string LastRunLocal,
@@ -548,7 +549,7 @@ internal sealed class RoutineDefinition
     public string Planner { get; set; } = string.Empty;
     public string PlannerModel { get; set; } = string.Empty;
     public string CoderModel { get; set; } = string.Empty;
-    public bool NotifyTelegram { get; set; }
+    public bool NotifyTelegram { get; set; } = true;
     public string? CronDescription { get; set; }
     public string CronSessionTarget { get; set; } = "main";
     public string CronWakeMode { get; set; } = "next-heartbeat";

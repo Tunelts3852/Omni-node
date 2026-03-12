@@ -9,6 +9,9 @@ public sealed partial class CommandService
 {
     private const string RoutineBrowserAgentDefaultProvider = "codex";
     private const string RoutineBrowserAgentDefaultModel = "gpt-5.4";
+    private const int RoutineBrowserAgentDefaultTimeoutSeconds = 120;
+    private const int RoutineBrowserAgentMinTimeoutSeconds = 120;
+    private const int RoutineBrowserAgentMaxTimeoutSeconds = 1800;
     private const string RoutineBrowserAgentToolProfilePlaywrightOnly = "playwright_only";
     private const string RoutineBrowserAgentToolProfileDesktopControl = "desktop_control";
     private static readonly IReadOnlySet<string> RoutineBrowserAgentSupportedModels = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -35,6 +38,7 @@ public sealed partial class CommandService
         int maxRetries,
         int retryDelaySeconds,
         string notifyPolicy,
+        bool notifyTelegram,
         RoutineScheduleConfig scheduleConfig,
         string source,
         CancellationToken cancellationToken,
@@ -205,6 +209,7 @@ public sealed partial class CommandService
             MaxRetries = maxRetries,
             RetryDelaySeconds = retryDelaySeconds,
             NotifyPolicy = notifyPolicy,
+            NotifyTelegram = notifyTelegram,
             TimezoneId = scheduleConfig.TimezoneId,
             Hour = scheduleConfig.Hour,
             Minute = scheduleConfig.Minute,
@@ -219,7 +224,6 @@ public sealed partial class CommandService
             Planner = planner,
             PlannerModel = plannerModel,
             CoderModel = coderModel,
-            NotifyTelegram = true,
             CronScheduleKind = "cron",
             CronScheduleExpr = scheduleConfig.CronExpr,
             CronScheduleAtMs = null,
@@ -251,14 +255,19 @@ public sealed partial class CommandService
             94,
             "initial_run",
             "초기 실행",
-            "루틴이 실제로 한 번 실행되며 결과를 기록합니다.",
+            string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal)
+                ? $"브라우저 에이전트가 실제 사이트를 조작하며 결과를 기록합니다. 최대 {(normalizedAgentTimeoutSeconds ?? RoutineBrowserAgentDefaultTimeoutSeconds).ToString(CultureInfo.InvariantCulture)}초까지 걸릴 수 있습니다."
+                : "루틴이 실제로 한 번 실행되며 결과를 기록합니다.",
             5
         );
         var runNow = await RunRoutineNowAsync(routine.Id, source, cancellationToken);
+        var createSummaryPrefix = runNow.Ok
+            ? $"루틴 생성 완료: {title} ({scheduleConfig.Display})"
+            : $"루틴 생성은 완료됐지만 초기 실행은 실패했습니다: {title} ({scheduleConfig.Display})";
         return runNow with
         {
             Routine = ToRoutineSummary(routine),
-            Message = $"루틴 생성 완료: {title} ({scheduleConfig.Display})\n{runNow.Message}"
+            Message = $"{createSummaryPrefix}\n{runNow.Message}"
         };
     }
 
@@ -456,15 +465,20 @@ public sealed partial class CommandService
     {
         if (!timeoutSeconds.HasValue)
         {
-            return 180;
+            return RoutineBrowserAgentDefaultTimeoutSeconds;
         }
 
-        return Math.Clamp(timeoutSeconds.Value, 30, 1800);
+        return Math.Clamp(timeoutSeconds.Value, RoutineBrowserAgentMinTimeoutSeconds, RoutineBrowserAgentMaxTimeoutSeconds);
     }
 
     private static bool NormalizeRoutineAgentUsePlaywright(bool? value)
     {
         return true;
+    }
+
+    private static bool NormalizeRoutineNotifyTelegram(bool? value, bool fallback = true)
+    {
+        return value ?? fallback;
     }
 
     private static string NormalizeRoutineAgentToolProfile(string? value, bool? agentUsePlaywright = null)
@@ -667,7 +681,7 @@ public sealed partial class CommandService
             toolProfile,
             assetDirectory
         );
-        var timeoutSeconds = NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) ?? 180;
+        var timeoutSeconds = NormalizeRoutineAgentTimeoutSeconds(routine.AgentTimeoutSeconds) ?? RoutineBrowserAgentDefaultTimeoutSeconds;
         var spawnResult = _sessionSpawnTool.Spawn(
             task: prompt,
             label: $"routine-browser-{routine.Title}",
@@ -692,10 +706,12 @@ public sealed partial class CommandService
 
         var childSession = _conversationStore.Get(spawnResult.ChildSessionKey);
         var transcriptResult = TryExtractRoutineBrowserAgentResult(childSession);
+        var allowScreenshotResult = IsRoutineBrowserAgentScreenshotRequested(taskRequest);
         var resolvedArtifacts = ResolveRoutineBrowserAgentArtifacts(
             assetDirectory,
             transcriptResult.ScreenshotPath,
-            transcriptResult.DownloadPaths
+            transcriptResult.DownloadPaths,
+            allowScreenshotResult
         );
         var agentMetadata = new RoutineAgentExecutionMetadata(
             spawnResult.ChildSessionKey,
@@ -722,6 +738,18 @@ public sealed partial class CommandService
             return Task.FromResult(new RoutineExecutionOutcome(placeholderMessage, "error", placeholderMessage, agentMetadata));
         }
 
+        var downloadValidationError = ValidateRoutineBrowserAgentDownloads(
+            taskRequest,
+            resolvedArtifacts.DownloadPaths
+        );
+        if (!string.IsNullOrWhiteSpace(downloadValidationError))
+        {
+            var message = string.IsNullOrWhiteSpace(transcriptResult.Output)
+                ? downloadValidationError
+                : $"{transcriptResult.Output.Trim()}\n\n[download_validation]\n{downloadValidationError}";
+            return Task.FromResult(new RoutineExecutionOutcome(message, "error", downloadValidationError, agentMetadata));
+        }
+
         return Task.FromResult(new RoutineExecutionOutcome(transcriptResult.Output, "ok", null, agentMetadata));
     }
 
@@ -738,6 +766,14 @@ public sealed partial class CommandService
         builder.AppendLine("- 브라우저 자동화는 Playwright 계열 도구만 사용한다.");
         builder.AppendLine("- 검색 엔진을 임의로 새로 열지 말고, 주어진 시작 URL과 그 안에서 도달 가능한 공개 페이지 범위만 사용한다.");
         builder.AppendLine($"- 모든 스크린샷과 다운로드 파일은 반드시 자산 디렉터리('{assetDirectory}') 아래에만 저장한다.");
+        if (IsRoutineBrowserAgentScreenshotRequested(request))
+        {
+            builder.AppendLine("- 사용자가 스크린샷을 요청한 경우에만 스크린샷을 저장하고 결과 메타에 포함한다.");
+        }
+        else
+        {
+            builder.AppendLine("- 사용자가 스크린샷을 명시적으로 요청하지 않았다면 스크린샷을 저장하거나 결과 메타에 넣지 않는다.");
+        }
         if (NormalizeRoutineAgentToolProfile(toolProfile) == RoutineBrowserAgentToolProfileDesktopControl)
         {
             builder.AppendLine("- Playwright로 해결되지 않으면 desktop_control 도구로 화면 캡처, 클릭, 입력, 스크롤을 수행할 수 있다.");
@@ -761,6 +797,31 @@ public sealed partial class CommandService
                 builder.AppendLine($"- {url}");
             }
         }
+        var requestedFiles = ExtractRoutineBrowserAgentRequestedFileHints(request);
+        if (LooksLikeRoutineBrowserAgentDownloadRequest(request, requestedFiles))
+        {
+            builder.AppendLine("- 이번 요청의 성공 기준은 실제 파일 다운로드다.");
+            builder.AppendLine("- 페이지 저장(Save Page As), PDF 저장, 스크린샷, 페이지 내용을 복사해 새 파일을 만드는 것은 다운로드로 간주하지 않는다.");
+            if (IsRoutineBrowserAgentGitHubContext(startUrl, detectedUrls))
+            {
+                builder.AppendLine("- GitHub에서는 blob 렌더링 페이지를 저장하지 말고 Raw 또는 Download raw file 동작으로 원본 파일을 내려받아라.");
+            }
+            if (requestedFiles.Count > 0)
+            {
+                builder.AppendLine($"- 대상 파일 후보: {string.Join(", ", requestedFiles)}");
+            }
+            var gitHubRawCandidates = BuildRoutineBrowserAgentGitHubRawCandidates(startUrl, detectedUrls, requestedFiles);
+            if (gitHubRawCandidates.Count > 0)
+            {
+                builder.AppendLine("- GitHub raw 다운로드 후보 URL:");
+                foreach (var candidate in gitHubRawCandidates)
+                {
+                    builder.AppendLine($"- {candidate}");
+                }
+                builder.AppendLine("- 위 후보 URL을 우선 시도하고, 404면 다음 후보를 사용한다.");
+            }
+            builder.AppendLine("- 다운로드 후 파일명과 파일 내용 앞부분을 확인해 HTML 페이지가 아니라 요청한 실제 파일인지 검증한다.");
+        }
 
         builder.AppendLine();
         builder.AppendLine("사용자 요청:");
@@ -772,7 +833,7 @@ public sealed partial class CommandService
         builder.AppendLine("[ROUTINE_AGENT_META]");
         builder.AppendLine("final_url: <최종으로 확인한 URL 또는 ->");
         builder.AppendLine("page_title: <최종 페이지 제목 또는 ->");
-        builder.AppendLine("screenshot_path: <가능하면 저장한 절대경로 또는 ->");
+        builder.AppendLine("screenshot_path: <스크린샷을 요청한 경우에만 절대경로, 아니면 ->");
         builder.AppendLine("download_paths: <다운로드한 절대경로를 | 로 연결하거나 ->");
         builder.AppendLine("[/ROUTINE_AGENT_META]");
         return builder.ToString().Trim();
@@ -870,12 +931,15 @@ public sealed partial class CommandService
     private static (string? ScreenshotPath, IReadOnlyList<string> DownloadPaths) ResolveRoutineBrowserAgentArtifacts(
         string assetDirectory,
         string? reportedScreenshotPath,
-        IReadOnlyList<string> reportedDownloadPaths
+        IReadOnlyList<string> reportedDownloadPaths,
+        bool allowScreenshotResult
     )
     {
         var normalizedAssetDirectory = (assetDirectory ?? string.Empty).Trim();
         var downloadPaths = new List<string>();
-        string? screenshotPath = NormalizeOptionalAgentMetaValue(reportedScreenshotPath);
+        string? screenshotPath = allowScreenshotResult
+            ? NormalizeOptionalAgentMetaValue(reportedScreenshotPath)
+            : null;
 
         if (reportedDownloadPaths != null)
         {
@@ -892,7 +956,7 @@ public sealed partial class CommandService
                 .Select(Path.GetFullPath)
                 .OrderBy(static path => path, StringComparer.Ordinal)
                 .ToArray();
-            if (string.IsNullOrWhiteSpace(screenshotPath))
+            if (allowScreenshotResult && string.IsNullOrWhiteSpace(screenshotPath))
             {
                 screenshotPath = files.FirstOrDefault(IsRoutineBrowserAgentScreenshotFile);
             }
@@ -922,6 +986,334 @@ public sealed partial class CommandService
                 .Distinct(StringComparer.Ordinal)
                 .ToArray()
         );
+    }
+
+    private static bool IsRoutineBrowserAgentScreenshotRequested(string? request)
+    {
+        var normalized = (request ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        return normalized.Contains("스크린샷", StringComparison.Ordinal)
+            || normalized.Contains("screenshot", StringComparison.Ordinal)
+            || normalized.Contains("screen shot", StringComparison.Ordinal)
+            || normalized.Contains("화면 캡처", StringComparison.Ordinal)
+            || normalized.Contains("snapshot", StringComparison.Ordinal);
+    }
+
+    private static bool LooksLikeRoutineBrowserAgentDownloadRequest(string? request, IReadOnlyList<string>? requestedFiles = null)
+    {
+        var normalized = (request ?? string.Empty).Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return false;
+        }
+
+        if (requestedFiles != null && requestedFiles.Count > 0)
+        {
+            return true;
+        }
+
+        return normalized.Contains("다운로드", StringComparison.Ordinal)
+            || normalized.Contains("download", StringComparison.Ordinal)
+            || normalized.Contains("받아", StringComparison.Ordinal)
+            || normalized.Contains("저장해", StringComparison.Ordinal);
+    }
+
+    private static IReadOnlyList<string> ExtractRoutineBrowserAgentRequestedFileHints(string? request)
+    {
+        var normalized = (request ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return Array.Empty<string>();
+        }
+
+        var matches = Regex.Matches(
+            normalized,
+            @"(?<![:/\w-])(?<path>(?:[\w.-]+/)*[\w.-]+\.[A-Za-z0-9]{1,16})(?![\w-])",
+            RegexOptions.CultureInvariant
+        );
+        if (matches.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var results = new List<string>(matches.Count);
+        foreach (Match match in matches)
+        {
+            var raw = match.Groups["path"].Value.Trim();
+            if (string.IsNullOrWhiteSpace(raw) || raw.Contains("://", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            results.Add(raw);
+        }
+
+        return results
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(5)
+            .ToArray();
+    }
+
+    private static bool IsRoutineBrowserAgentGitHubContext(string startUrl, IReadOnlyList<string> detectedUrls)
+    {
+        if (IsRoutineBrowserAgentGitHubUrl(startUrl))
+        {
+            return true;
+        }
+
+        return detectedUrls.Any(IsRoutineBrowserAgentGitHubUrl);
+    }
+
+    private static bool IsRoutineBrowserAgentGitHubUrl(string? url)
+    {
+        var normalized = (url ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized)
+            || !Uri.TryCreate(normalized, UriKind.Absolute, out var uri))
+        {
+            return false;
+        }
+
+        return string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(uri.Host, "www.github.com", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IReadOnlyList<string> BuildRoutineBrowserAgentGitHubRawCandidates(
+        string startUrl,
+        IReadOnlyList<string> detectedUrls,
+        IReadOnlyList<string> requestedFiles
+    )
+    {
+        if (requestedFiles == null || requestedFiles.Count == 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var candidateUrls = new List<string> { startUrl };
+        if (detectedUrls != null)
+        {
+            candidateUrls.AddRange(detectedUrls);
+        }
+
+        foreach (var url in candidateUrls)
+        {
+            if (!TryParseRoutineBrowserAgentGitHubRepositoryUrl(url, out var owner, out var repo, out var gitRef, out var blobPath))
+            {
+                continue;
+            }
+
+            var targetPaths = requestedFiles;
+            if (!string.IsNullOrWhiteSpace(blobPath))
+            {
+                targetPaths = new[] { blobPath! };
+            }
+
+            var rawCandidates = new List<string>();
+            foreach (var targetPath in targetPaths)
+            {
+                if (string.IsNullOrWhiteSpace(targetPath))
+                {
+                    continue;
+                }
+
+                if (!string.IsNullOrWhiteSpace(gitRef))
+                {
+                    rawCandidates.Add(BuildRoutineBrowserAgentGitHubRawUrl(owner, repo, gitRef!, targetPath));
+                    continue;
+                }
+
+                rawCandidates.Add(BuildRoutineBrowserAgentGitHubRawUrl(owner, repo, "main", targetPath));
+                rawCandidates.Add(BuildRoutineBrowserAgentGitHubRawUrl(owner, repo, "master", targetPath));
+            }
+
+            return rawCandidates
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(4)
+                .ToArray();
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private static bool TryParseRoutineBrowserAgentGitHubRepositoryUrl(
+        string? rawUrl,
+        out string owner,
+        out string repo,
+        out string? gitRef,
+        out string? blobPath
+    )
+    {
+        owner = string.Empty;
+        repo = string.Empty;
+        gitRef = null;
+        blobPath = null;
+
+        var normalized = (rawUrl ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized)
+            || !Uri.TryCreate(normalized, UriKind.Absolute, out var uri)
+            || !IsRoutineBrowserAgentGitHubUrl(normalized))
+        {
+            return false;
+        }
+
+        var segments = uri.AbsolutePath
+            .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (segments.Length < 2)
+        {
+            return false;
+        }
+
+        owner = segments[0];
+        repo = segments[1];
+        if (segments.Length >= 5 && string.Equals(segments[2], "blob", StringComparison.OrdinalIgnoreCase))
+        {
+            gitRef = segments[3];
+            blobPath = string.Join('/', segments.Skip(4));
+        }
+
+        return !string.IsNullOrWhiteSpace(owner) && !string.IsNullOrWhiteSpace(repo);
+    }
+
+    private static string BuildRoutineBrowserAgentGitHubRawUrl(
+        string owner,
+        string repo,
+        string gitRef,
+        string path
+    )
+    {
+        var escapedPath = string.Join(
+            "/",
+            (path ?? string.Empty)
+                .Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(Uri.EscapeDataString)
+        );
+        return $"https://github.com/{Uri.EscapeDataString(owner)}/{Uri.EscapeDataString(repo)}/raw/{Uri.EscapeDataString(gitRef)}/{escapedPath}";
+    }
+
+    private static string? ValidateRoutineBrowserAgentDownloads(
+        string? request,
+        IReadOnlyList<string> downloadPaths
+    )
+    {
+        var requestedFiles = ExtractRoutineBrowserAgentRequestedFileHints(request);
+        if (!LooksLikeRoutineBrowserAgentDownloadRequest(request, requestedFiles))
+        {
+            return null;
+        }
+
+        var normalizedPaths = (downloadPaths ?? Array.Empty<string>())
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => path.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (normalizedPaths.Length == 0)
+        {
+            return "파일 다운로드 요청이었지만 실제 다운로드 파일이 저장되지 않았습니다.";
+        }
+
+        foreach (var path in normalizedPaths)
+        {
+            if (!File.Exists(path))
+            {
+                return $"다운로드 파일이 결과 메타에 기록됐지만 실제 파일이 없습니다: {path}";
+            }
+        }
+
+        if (requestedFiles.Count > 0)
+        {
+            var downloadedNames = normalizedPaths
+                .Select(Path.GetFileName)
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var requestedNames = requestedFiles
+                .Select(Path.GetFileName)
+                .Where(static name => !string.IsNullOrWhiteSpace(name))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (requestedNames.Length > 0 && !requestedNames.Any(downloadedNames.Contains))
+            {
+                return $"요청한 파일 후보({string.Join(", ", requestedNames)})와 일치하는 다운로드 파일이 없습니다.";
+            }
+        }
+
+        foreach (var path in normalizedPaths)
+        {
+            if (!LooksLikeRoutineBrowserAgentDownloadedFileContent(path))
+            {
+                return $"다운로드 파일 검증에 실패했습니다. HTML 페이지 저장물로 보이는 파일: {path}";
+            }
+        }
+
+        return null;
+    }
+
+    private static bool LooksLikeRoutineBrowserAgentDownloadedFileContent(string path)
+    {
+        var normalized = (path ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalized) || !File.Exists(normalized))
+        {
+            return false;
+        }
+
+        var extension = Path.GetExtension(normalized);
+        if (!IsRoutineBrowserAgentInspectableDownloadExtension(extension))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var stream = File.OpenRead(normalized);
+            if (stream.Length == 0)
+            {
+                return false;
+            }
+
+            var buffer = new byte[Math.Min(1024, (int)Math.Min(stream.Length, 1024L))];
+            var read = stream.Read(buffer, 0, buffer.Length);
+            if (read <= 0)
+            {
+                return false;
+            }
+
+            var prefix = Encoding.UTF8.GetString(buffer, 0, read)
+                .TrimStart('\uFEFF', ' ', '\t', '\r', '\n')
+                .ToLowerInvariant();
+            return !(prefix.StartsWith("<!doctype html", StringComparison.Ordinal)
+                || prefix.StartsWith("<html", StringComparison.Ordinal)
+                || prefix.StartsWith("<head", StringComparison.Ordinal)
+                || prefix.StartsWith("<body", StringComparison.Ordinal)
+                || prefix.StartsWith("<meta", StringComparison.Ordinal));
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    private static bool IsRoutineBrowserAgentInspectableDownloadExtension(string? extension)
+    {
+        var normalized = (extension ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            ".md" => true,
+            ".txt" => true,
+            ".json" => true,
+            ".csv" => true,
+            ".tsv" => true,
+            ".xml" => true,
+            ".yaml" => true,
+            ".yml" => true,
+            ".html" => true,
+            ".htm" => true,
+            ".js" => true,
+            ".ts" => true,
+            ".css" => true,
+            _ => false
+        };
     }
 
     private static bool IsRoutineBrowserAgentScreenshotFile(string? path)
@@ -1047,7 +1439,8 @@ public sealed partial class CommandService
         string output,
         string source,
         string resultStatus,
-        CancellationToken cancellationToken
+        CancellationToken cancellationToken,
+        RoutineAgentExecutionMetadata? agentMetadata = null
     )
     {
         if (routine == null || !ShouldSendRoutineResultToTelegram(source))
@@ -1061,6 +1454,11 @@ public sealed partial class CommandService
         var bypassPolicy = normalizedSource is "telegram_test" or "telegram_resend";
         if (!bypassPolicy)
         {
+            if (!routine.NotifyTelegram)
+            {
+                return ("disabled", null, fingerprint);
+            }
+
             if (normalizedPolicy == "never")
             {
                 return ("disabled", null, fingerprint);
@@ -1086,8 +1484,9 @@ public sealed partial class CommandService
 
         try
         {
+            var telegramText = BuildRoutineTelegramDeliveryText(routine, output, resultStatus, agentMetadata);
             var sent = await _telegramClient.SendMessageAsync(
-                FormatTelegramResponse(output, TelegramMaxResponseChars),
+                FormatTelegramResponse(telegramText, TelegramMaxResponseChars),
                 cancellationToken
             );
             return sent
@@ -1098,6 +1497,301 @@ public sealed partial class CommandService
         {
             return ("send_failed", $"텔레그램 전송 실패: {ex.Message}", fingerprint);
         }
+    }
+
+    private static string BuildRoutineTelegramDeliveryText(
+        RoutineDefinition routine,
+        string output,
+        string resultStatus,
+        RoutineAgentExecutionMetadata? agentMetadata
+    )
+    {
+        var normalizedOutput = ExtractRoutineArtifactOutputSection(output);
+        var executionRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
+        var resolvedExecutionMode = ResolveRoutineExecutionMode(executionRequest, routine.ExecutionMode);
+        if (string.Equals(resolvedExecutionMode, "script", StringComparison.Ordinal))
+        {
+            return BuildRoutineScriptTelegramDeliveryText(routine.Title, normalizedOutput, resultStatus);
+        }
+
+        if (string.Equals(resolvedExecutionMode, "browser_agent", StringComparison.Ordinal))
+        {
+            return BuildRoutineBrowserAgentTelegramDeliveryText(
+                routine.Title,
+                normalizedOutput,
+                resultStatus,
+                agentMetadata,
+                IsRoutineBrowserAgentScreenshotRequested(executionRequest)
+            );
+        }
+
+        return string.IsNullOrWhiteSpace(normalizedOutput)
+            ? routine.Title
+            : normalizedOutput.Trim();
+    }
+
+    private static string BuildRoutineScriptTelegramDeliveryText(
+        string title,
+        string output,
+        string resultStatus
+    )
+    {
+        var stdout = ExtractRoutineTaggedSection(output, "stdout");
+        var stderr = ExtractRoutineTaggedSection(output, "stderr");
+        var body = !string.IsNullOrWhiteSpace(stdout) && !string.Equals(stdout, "(출력 없음)", StringComparison.Ordinal)
+            ? stdout
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            body = ExtractRoutineScriptBodyFallback(output);
+        }
+
+        var builder = new StringBuilder();
+        builder.AppendLine($"[{title}]");
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            builder.AppendLine(body);
+        }
+        else if (string.Equals(resultStatus, "error", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.AppendLine("실행에 실패했습니다.");
+        }
+        else
+        {
+            builder.AppendLine("실행을 완료했습니다. 출력은 없습니다.");
+        }
+
+        if (string.Equals(resultStatus, "error", StringComparison.OrdinalIgnoreCase))
+        {
+            var errorText = !string.IsNullOrWhiteSpace(stderr)
+                ? stderr
+                : ExtractRoutineTaggedSection(output, "error");
+            if (string.IsNullOrWhiteSpace(errorText))
+            {
+                errorText = ExtractRoutineTaggedSection(output, "exception");
+            }
+
+            if (string.IsNullOrWhiteSpace(errorText))
+            {
+                errorText = ExtractRoutineTaggedSection(output, "artifact");
+            }
+
+            if (!string.IsNullOrWhiteSpace(errorText)
+                && !string.Equals(errorText, body, StringComparison.Ordinal))
+            {
+                builder.AppendLine();
+                builder.AppendLine("오류:");
+                builder.AppendLine(errorText);
+            }
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string BuildRoutineBrowserAgentTelegramDeliveryText(
+        string title,
+        string output,
+        string resultStatus,
+        RoutineAgentExecutionMetadata? agentMetadata,
+        bool includeScreenshot
+    )
+    {
+        var body = NormalizeRoutineBrowserAgentTelegramBody(output);
+        var builder = new StringBuilder();
+        builder.AppendLine($"[{title}]");
+        if (!string.IsNullOrWhiteSpace(body))
+        {
+            builder.AppendLine(body);
+        }
+        else if (string.Equals(resultStatus, "error", StringComparison.OrdinalIgnoreCase))
+        {
+            builder.AppendLine("브라우저 작업에 실패했습니다.");
+        }
+        else
+        {
+            builder.AppendLine("브라우저 작업을 완료했습니다.");
+        }
+
+        var downloadNames = (agentMetadata?.DownloadPaths ?? Array.Empty<string>())
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Select(static path => Path.GetFileName(path.Trim()))
+            .Where(static name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (downloadNames.Length > 0
+            && !downloadNames.Any(name => body.Contains(name, StringComparison.OrdinalIgnoreCase)))
+        {
+            builder.AppendLine();
+            builder.AppendLine(downloadNames.Length == 1
+                ? $"다운로드 파일: {downloadNames[0]}"
+                : $"다운로드 파일: {string.Join(", ", downloadNames)}");
+        }
+
+        var screenshotName = string.IsNullOrWhiteSpace(agentMetadata?.ScreenshotPath)
+            ? null
+            : Path.GetFileName(agentMetadata!.ScreenshotPath);
+        if (includeScreenshot
+            && !string.IsNullOrWhiteSpace(screenshotName)
+            && !body.Contains(screenshotName, StringComparison.OrdinalIgnoreCase))
+        {
+            builder.AppendLine();
+            builder.AppendLine($"스크린샷: {screenshotName}");
+        }
+
+        return builder.ToString().Trim();
+    }
+
+    private static string ExtractRoutineArtifactOutputSection(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var match = Regex.Match(
+            normalized,
+            @"(?ms)^##\s+Output\s*\n+(?<body>.*)$",
+            RegexOptions.CultureInvariant
+        );
+        return match.Success ? match.Groups["body"].Value.Trim() : normalized;
+    }
+
+    private static string? ExtractRoutineTaggedSection(string text, string tag)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(tag))
+        {
+            return null;
+        }
+
+        var match = Regex.Match(
+            text,
+            $@"(?ms)^\[{Regex.Escape(tag)}\]\s*\n(?<body>.*?)(?=^\[[^\]]+\]\s*$|\z)",
+            RegexOptions.CultureInvariant
+        );
+        return match.Success ? match.Groups["body"].Value.Trim() : null;
+    }
+
+    private static string ExtractRoutineScriptBodyFallback(string text)
+    {
+        var normalized = (text ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        var lines = normalized
+            .Split('\n', StringSplitOptions.None)
+            .Select(static line => line.Trim())
+            .Where(static line =>
+                !string.IsNullOrWhiteSpace(line)
+                && !line.StartsWith("[Routine:", StringComparison.Ordinal)
+                && !line.StartsWith("status=", StringComparison.OrdinalIgnoreCase)
+                && !line.StartsWith("model=", StringComparison.OrdinalIgnoreCase)
+                && !line.StartsWith("script=", StringComparison.OrdinalIgnoreCase)
+                && !line.StartsWith("run_dir=", StringComparison.OrdinalIgnoreCase)
+                && !Regex.IsMatch(line, @"^\[[a-z_]+\]$", RegexOptions.CultureInvariant))
+            .ToArray();
+        return string.Join('\n', lines).Trim();
+    }
+
+    private static string NormalizeRoutineBrowserAgentTelegramBody(string text)
+    {
+        var normalized = (text ?? string.Empty)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\r", "\n", StringComparison.Ordinal)
+            .Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"\[\s*ROUTINE_AGENT_META\s*\][\s\S]*?\[\s*/ROUTINE_AGENT_META\s*\]",
+            string.Empty,
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        ).Trim();
+
+        var lines = normalized
+            .Split('\n', StringSplitOptions.None)
+            .Select(static line => line.Trim())
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .Where(static line => !IsRoutineBrowserAgentTelegramNoiseLine(line))
+            .Select(NormalizeRoutineBrowserAgentTelegramLine)
+            .Where(static line => !string.IsNullOrWhiteSpace(line))
+            .ToArray();
+        return string.Join('\n', lines).Trim();
+    }
+
+    private static bool IsRoutineBrowserAgentTelegramNoiseLine(string line)
+    {
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return true;
+        }
+
+        if (normalized.StartsWith("저장 파일:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("저장 경로:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("스크린샷:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("스크린샷 경로:", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("출처 링크:", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (normalized.StartsWith("finalUrl=", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("pageTitle=", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("screenshotPath=", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("downloadPaths=", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (normalized.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || normalized.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return Regex.IsMatch(normalized, @"^/[^ \t\r\n]+$", RegexOptions.CultureInvariant);
+    }
+
+    private static string NormalizeRoutineBrowserAgentTelegramLine(string line)
+    {
+        var normalized = (line ?? string.Empty).Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        normalized = Regex.Replace(
+            normalized,
+            @"^\[(download_validation|error|exception|artifact)\]\s*$",
+            "오류:",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+        );
+        normalized = Regex.Replace(
+            normalized,
+            @"(/(?:Users|tmp|var|private|Volumes|opt|Applications|Library|System)/[^ \t\r\n]+)",
+            static match =>
+            {
+                var path = match.Groups[1].Value;
+                if (!Path.IsPathRooted(path))
+                {
+                    return path;
+                }
+
+                var fileName = Path.GetFileName(path);
+                return string.IsNullOrWhiteSpace(fileName) ? path : fileName;
+            },
+            RegexOptions.CultureInvariant
+        );
+        return normalized.Trim();
     }
 
     private static bool ShouldSendRoutineResultToTelegram(string source)

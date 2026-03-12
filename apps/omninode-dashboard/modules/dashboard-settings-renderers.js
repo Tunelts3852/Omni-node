@@ -613,10 +613,14 @@ export function renderSettingsPanel(props) {
     appendRefactorVerification
   });
 
-  const desktopSettingsGrid = e("div", { className: "settings-grid" },
+  const settingsPrimaryGrid = e("div", { className: "settings-primary-grid" },
     otpPanel,
     telegramPanel,
-    llmPanel,
+    llmPanel
+  );
+
+  const desktopSettingsGrid = e("div", { className: "settings-grid" },
+    settingsPrimaryGrid,
     routingPolicyPanel,
     contextPanel,
     plansPanel,

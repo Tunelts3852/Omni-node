@@ -85,7 +85,10 @@
 - [ ] E1. 루틴 생성/수정/즉시 실행 정상
   코멘트:
 
-- [ ] E2. 루틴 실행 이력에서 `telegram=not_applicable`가 웹 수동 실행에만 표시됨
+- [ ] E2. 루틴 상세에서 `텔레그램 봇 응답 켜기/끄기`를 바꾸면 다음 예약 실행부터 자동 전송 여부가 실제로 바뀜
+  코멘트:
+
+- [ ] E3. 루틴 실행 이력에서 `telegram=not_applicable`가 웹 수동 실행에만 표시됨
   코멘트:
 
 ## F. 계획 / 노트 / 진단
@@ -102,10 +105,13 @@
 - [ ] F4. 설정탭 `환경 진단`에서 `core_socket` 포함 doctor 항목 정상
   코멘트:
 
-- [ ] E3. 예약 실행 또는 텔레그램 테스트 실행에서 실제 telegram 전송 결과가 남음
+- [ ] E4. 예약 실행 또는 텔레그램 테스트 실행에서 실제 telegram 전송 결과가 남음
   코멘트:
 
-- [ ] E4. `/routine runs`, `/routine detail`, `/routine resend`에 대응하는 정보가 웹에서도 일치함
+- [ ] E5. `NotifyTelegram=false`인 루틴도 `텔레그램 테스트`와 실행 이력 `재전송`은 정상 동작함
+  코멘트:
+
+- [ ] E6. `/routine runs`, `/routine detail`, `/routine resend`에 대응하는 정보가 웹에서도 일치함
   코멘트:
 
 ## F. 텔레그램 봇

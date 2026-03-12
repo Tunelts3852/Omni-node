@@ -69,6 +69,7 @@ public sealed partial class CommandService
             NormalizeRoutineRetryCount(null),
             NormalizeRoutineRetryDelaySeconds(null),
             NormalizeRoutineNotifyPolicy(null),
+            NormalizeRoutineNotifyTelegram(null),
             scheduleConfig,
             source,
             cancellationToken,
@@ -90,6 +91,7 @@ public sealed partial class CommandService
         int? maxRetries,
         int? retryDelaySeconds,
         string? notifyPolicy,
+        bool? notifyTelegram,
         string? scheduleKind,
         string? scheduleTime,
         IReadOnlyList<int>? weekdays,
@@ -139,6 +141,7 @@ public sealed partial class CommandService
             NormalizeRoutineRetryCount(maxRetries),
             NormalizeRoutineRetryDelaySeconds(retryDelaySeconds),
             NormalizeRoutineNotifyPolicy(notifyPolicy),
+            NormalizeRoutineNotifyTelegram(notifyTelegram),
             scheduleConfig,
             source,
             cancellationToken,
@@ -161,6 +164,7 @@ public sealed partial class CommandService
         int? maxRetries,
         int? retryDelaySeconds,
         string? notifyPolicy,
+        bool? notifyTelegram,
         string? scheduleKind,
         string? scheduleTime,
         IReadOnlyList<int>? weekdays,
@@ -277,6 +281,8 @@ public sealed partial class CommandService
             NormalizeRoutineNotifyPolicy(notifyPolicy),
             StringComparison.Ordinal
         );
+        var normalizedNotifyTelegram = NormalizeRoutineNotifyTelegram(notifyTelegram, existing.NotifyTelegram);
+        var notifyTelegramChanged = existing.NotifyTelegram != normalizedNotifyTelegram;
         var agentProviderChanged = !string.Equals(
             NormalizeRoutineAgentProvider(existing.AgentProvider, existing.AgentModel),
             normalizedAgentProvider,
@@ -338,6 +344,7 @@ public sealed partial class CommandService
             update.MaxRetries = NormalizeRoutineRetryCount(maxRetries);
             update.RetryDelaySeconds = NormalizeRoutineRetryDelaySeconds(retryDelaySeconds);
             update.NotifyPolicy = NormalizeRoutineNotifyPolicy(notifyPolicy);
+            update.NotifyTelegram = normalizedNotifyTelegram;
             update.TimezoneId = scheduleConfig.TimezoneId;
             update.Hour = scheduleConfig.Hour;
             update.Minute = scheduleConfig.Minute;
@@ -347,7 +354,6 @@ public sealed partial class CommandService
             update.CronScheduleEveryMs = null;
             update.CronScheduleAnchorMs = null;
             update.NextRunUtc = ComputeNextCronBridgeRunUtc(update, DateTimeOffset.UtcNow);
-            update.NotifyTelegram = true;
             if (resolvedExecutionMode == "browser_agent")
             {
                 update.ScriptPath = string.Empty;
@@ -430,7 +436,7 @@ public sealed partial class CommandService
                 update.CronPayloadLightContext = null;
             }
 
-            if (titleChanged || requestChanged || scheduleChanged || scheduleSourceChanged || retryCountChanged || retryDelayChanged || notifyPolicyChanged)
+            if (titleChanged || requestChanged || scheduleChanged || scheduleSourceChanged || retryCountChanged || retryDelayChanged || notifyPolicyChanged || notifyTelegramChanged)
             {
                 update.LastStatus = update.LastRunUtc.HasValue
                     ? update.LastStatus
@@ -479,160 +485,214 @@ public sealed partial class CommandService
         string runStatus = "error";
         string? runError = null;
         RoutineAgentExecutionMetadata? agentMetadata = null;
+        var resultOk = true;
+        var telegramDispatch = (Status: "not_applicable", Error: (string?)null, Fingerprint: (string?)null);
 
-        for (var attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1)
+        try
         {
-            attemptCount = attemptIndex + 1;
+            for (var attemptIndex = 0; attemptIndex < maxAttempts; attemptIndex += 1)
+            {
+                attemptCount = attemptIndex + 1;
 
-            if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
-            {
-                var runAssetDirectory = EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc);
-                var browserExecution = await ExecuteRoutineBrowserAgentAsync(
-                    routine,
-                    taskRequest,
-                    executionRoute.Urls,
-                    runAssetDirectory,
-                    cancellationToken
-                );
-                output = browserExecution.Output;
-                lastStatus = browserExecution.Status;
-                runStatus = browserExecution.Status;
-                runError = browserExecution.Error;
-                agentMetadata = browserExecution.AgentMetadata;
-            }
-            else if (!string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal))
-            {
-                var llmExecution = await ExecuteRoutineLlmRouteAsync(
-                    routine,
-                    executionRoute.Mode,
-                    executionRoute.Urls,
-                    source,
-                    cancellationToken
-                );
-                output = llmExecution.Output;
-                lastStatus = llmExecution.Status;
-                runStatus = llmExecution.Status;
-                runError = llmExecution.Error;
-            }
-            else
-            {
-                var normalizedLanguage = NormalizeRoutineScriptLanguage(routine.Language);
-                var normalizedCode = string.IsNullOrWhiteSpace(routine.Code)
-                    ? BuildFallbackRoutineCode(taskRequest, new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText))
-                    : EnsureRoutineShebang(routine.Code, normalizedLanguage);
-                if (!string.Equals(normalizedLanguage, routine.Language, StringComparison.Ordinal)
-                    || !string.Equals(normalizedCode, routine.Code, StringComparison.Ordinal)
-                    || string.IsNullOrWhiteSpace(routine.ScriptPath))
+                if (string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal))
                 {
-                    lock (_routineLock)
-                    {
-                        if (_routinesById.TryGetValue(key, out var update))
-                        {
-                            var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
-                                ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
-                                : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
-                            Directory.CreateDirectory(runDir);
-                            update.ScriptPath = WriteRoutineScript(runDir, normalizedLanguage, normalizedCode);
-                            update.Language = normalizedLanguage;
-                            update.Code = normalizedCode;
-                            SaveRoutineStateLocked();
-                            routine = update;
-                        }
-                    }
-                }
-
-                if (!ShouldRunCronAgentTurnBridge(routine) && RoutineCodeNeedsRepair(routine.Language, routine.Code))
-                {
-                    var regenerated = await GenerateRoutineImplementationAsync(
+                    var runAssetDirectory = EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc);
+                    var browserExecution = await ExecuteRoutineBrowserAgentAsync(
+                        routine,
                         taskRequest,
-                        new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText),
+                        executionRoute.Urls,
+                        runAssetDirectory,
                         cancellationToken
                     );
-
-                    lock (_routineLock)
-                    {
-                        if (_routinesById.TryGetValue(key, out var update))
-                        {
-                            var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
-                                ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
-                                : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
-                            Directory.CreateDirectory(runDir);
-                            update.ScriptPath = WriteRoutineScript(runDir, regenerated.Language, regenerated.Code);
-                            update.Language = regenerated.Language;
-                            update.Code = regenerated.Code;
-                            update.Planner = regenerated.PlannerProvider;
-                            update.PlannerModel = regenerated.PlannerModel;
-                            update.CoderModel = regenerated.CoderModel;
-                            update.LastOutput = regenerated.Plan;
-                            SaveRoutineStateLocked();
-                            routine = update;
-                        }
-                    }
+                    output = browserExecution.Output;
+                    lastStatus = browserExecution.Status;
+                    runStatus = browserExecution.Status;
+                    runError = browserExecution.Error;
+                    agentMetadata = browserExecution.AgentMetadata;
                 }
-
-                CodeExecutionResult exec;
-                if (ShouldRunCronAgentTurnBridge(routine))
+                else if (!string.Equals(executionRoute.Mode, "script", StringComparison.Ordinal))
                 {
-                    exec = ExecuteCronAgentTurnBridge(routine, cancellationToken);
+                    var llmExecution = await ExecuteRoutineLlmRouteAsync(
+                        routine,
+                        executionRoute.Mode,
+                        executionRoute.Urls,
+                        source,
+                        cancellationToken
+                    );
+                    output = llmExecution.Output;
+                    lastStatus = llmExecution.Status;
+                    runStatus = llmExecution.Status;
+                    runError = llmExecution.Error;
                 }
                 else
                 {
-                    exec = await _codeRunner.ExecuteAsync(routine.Language, routine.Code, cancellationToken);
+                    var normalizedLanguage = NormalizeRoutineScriptLanguage(routine.Language);
+                    var normalizedCode = string.IsNullOrWhiteSpace(routine.Code)
+                        ? BuildFallbackRoutineCode(taskRequest, new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText))
+                        : EnsureRoutineShebang(routine.Code, normalizedLanguage);
+                    if (!string.Equals(normalizedLanguage, routine.Language, StringComparison.Ordinal)
+                        || !string.Equals(normalizedCode, routine.Code, StringComparison.Ordinal)
+                        || string.IsNullOrWhiteSpace(routine.ScriptPath))
+                    {
+                        lock (_routineLock)
+                        {
+                            if (_routinesById.TryGetValue(key, out var update))
+                            {
+                                var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
+                                    ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
+                                    : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
+                                Directory.CreateDirectory(runDir);
+                                update.ScriptPath = WriteRoutineScript(runDir, normalizedLanguage, normalizedCode);
+                                update.Language = normalizedLanguage;
+                                update.Code = normalizedCode;
+                                SaveRoutineStateLocked();
+                                routine = update;
+                            }
+                        }
+                    }
+
+                    if (!ShouldRunCronAgentTurnBridge(routine) && RoutineCodeNeedsRepair(routine.Language, routine.Code))
+                    {
+                        var regenerated = await GenerateRoutineImplementationAsync(
+                            taskRequest,
+                            new RoutineSchedule(routine.Hour, routine.Minute, routine.ScheduleText),
+                            cancellationToken
+                        );
+
+                        lock (_routineLock)
+                        {
+                            if (_routinesById.TryGetValue(key, out var update))
+                            {
+                                var runDir = string.IsNullOrWhiteSpace(update.ScriptPath)
+                                    ? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id)
+                                    : (Path.GetDirectoryName(update.ScriptPath) ?? Path.Combine(_config.WorkspaceRootDir, "routines", update.Id));
+                                Directory.CreateDirectory(runDir);
+                                update.ScriptPath = WriteRoutineScript(runDir, regenerated.Language, regenerated.Code);
+                                update.Language = regenerated.Language;
+                                update.Code = regenerated.Code;
+                                update.Planner = regenerated.PlannerProvider;
+                                update.PlannerModel = regenerated.PlannerModel;
+                                update.CoderModel = regenerated.CoderModel;
+                                update.LastOutput = regenerated.Plan;
+                                SaveRoutineStateLocked();
+                                routine = update;
+                            }
+                        }
+                    }
+
+                    CodeExecutionResult exec;
+                    if (ShouldRunCronAgentTurnBridge(routine))
+                    {
+                        exec = ExecuteCronAgentTurnBridge(routine, cancellationToken);
+                    }
+                    else
+                    {
+                        exec = await _codeRunner.ExecuteAsync(routine.Language, routine.Code, cancellationToken);
+                    }
+
+                    output = BuildRoutineExecutionText(routine, exec);
+                    lastStatus = exec.Status;
+                    runStatus = ResolveCronRunEntryStatus(exec);
+                    runError = BuildCronRunEntryError(exec, output, runStatus);
                 }
 
-                output = BuildRoutineExecutionText(routine, exec);
-                lastStatus = exec.Status;
-                runStatus = ResolveCronRunEntryStatus(exec);
-                runError = BuildCronRunEntryError(exec, output, runStatus);
+                if (!IsRoutineRetryableStatus(runStatus) || attemptCount >= maxAttempts)
+                {
+                    break;
+                }
+
+                if (retryDelaySeconds > 0)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds), cancellationToken);
+                }
             }
 
-            if (!IsRoutineRetryableStatus(runStatus) || attemptCount >= maxAttempts)
+            if (!cancellationToken.IsCancellationRequested)
             {
-                break;
-            }
-
-            if (retryDelaySeconds > 0)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(retryDelaySeconds), cancellationToken);
+                telegramDispatch = await DispatchRoutineResultToTelegramAsync(
+                    routine,
+                    output,
+                    source,
+                    runStatus,
+                    cancellationToken,
+                    agentMetadata
+                );
+                if (!string.IsNullOrWhiteSpace(telegramDispatch.Error))
+                {
+                    output = string.IsNullOrWhiteSpace(output)
+                        ? telegramDispatch.Error
+                        : $"{output.Trim()}\n\n[telegram]\n{telegramDispatch.Error}";
+                    lastStatus = "error";
+                    runStatus = "error";
+                    runError = telegramDispatch.Error;
+                }
             }
         }
-
-        var telegramDispatch = await DispatchRoutineResultToTelegramAsync(
-            routine,
-            output,
-            source,
-            runStatus,
-            cancellationToken
-        );
-        if (!string.IsNullOrWhiteSpace(telegramDispatch.Error))
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            const string canceledMessage = "루틴 실행이 취소되었습니다.";
             output = string.IsNullOrWhiteSpace(output)
-                ? telegramDispatch.Error
-                : $"{output.Trim()}\n\n[telegram]\n{telegramDispatch.Error}";
+                ? canceledMessage
+                : $"{output.Trim()}\n\n[cancel]\n{canceledMessage}";
             lastStatus = "error";
             runStatus = "error";
-            runError = telegramDispatch.Error;
+            runError = canceledMessage;
+            resultOk = false;
+        }
+        catch (Exception ex)
+        {
+            var exceptionMessage = $"루틴 실행 중 예외가 발생했습니다: {ex.Message}";
+            output = string.IsNullOrWhiteSpace(output)
+                ? exceptionMessage
+                : $"{output.Trim()}\n\n[exception]\n{exceptionMessage}";
+            lastStatus = "error";
+            runStatus = "error";
+            runError = exceptionMessage;
+            resultOk = false;
+        }
+
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            output = runError ?? "루틴 실행 결과가 비어 있습니다.";
         }
 
         var completedAtUtc = DateTimeOffset.UtcNow;
         var durationMs = Math.Max(0L, (long)(completedAtUtc - startedAtUtc).TotalMilliseconds);
         var runSummary = BuildCronRunEntrySummary(output);
-        var artifactPath = _runArtifactStore.WriteRoutineRun(new RoutineRunArtifactWriteRequest(
-            routine.Id,
-            routine.Title,
-            source,
-            attemptCount,
-            runStatus,
-            output,
-            runError,
-            telegramDispatch.Status,
-            agentMetadata,
-            startedAtUtc,
-            completedAtUtc,
-            string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal)
-                ? EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc)
-                : null
-        ));
+        string? artifactPath = null;
+        try
+        {
+            artifactPath = _runArtifactStore.WriteRoutineRun(new RoutineRunArtifactWriteRequest(
+                routine.Id,
+                routine.Title,
+                source,
+                attemptCount,
+                runStatus,
+                output,
+                runError,
+                telegramDispatch.Status,
+                agentMetadata,
+                startedAtUtc,
+                completedAtUtc,
+                string.Equals(executionRoute.Mode, "browser_agent", StringComparison.Ordinal)
+                    ? EnsureRoutineBrowserAgentAssetDirectory(routine.Id, startedAtUtc)
+                    : null
+            ));
+        }
+        catch (Exception ex)
+        {
+            var artifactError = $"실행 결과 저장 실패: {ex.Message}";
+            output = string.IsNullOrWhiteSpace(output)
+                ? artifactError
+                : $"{output.Trim()}\n\n[artifact]\n{artifactError}";
+            runError = string.IsNullOrWhiteSpace(runError)
+                ? artifactError
+                : $"{runError}\n{artifactError}";
+            lastStatus = "error";
+            runStatus = "error";
+            runSummary = BuildCronRunEntrySummary(output);
+            resultOk = false;
+        }
 
         lock (_routineLock)
         {
@@ -691,7 +751,11 @@ public sealed partial class CommandService
             }
         }
 
-        return new RoutineActionResult(true, output, routine == null ? null : ToRoutineSummary(routine));
+        return new RoutineActionResult(
+            resultOk && !IsRoutineRetryableStatus(runStatus),
+            output,
+            routine == null ? null : ToRoutineSummary(routine)
+        );
     }
 
     public RoutineRunDetailResult GetRoutineRunDetail(string routineId, long ts)
@@ -781,14 +845,34 @@ public sealed partial class CommandService
         {
             Id = summary.Id,
             Title = summary.Title,
+            Request = summary.Request,
+            ExecutionMode = summary.ExecutionMode,
+            AgentProvider = summary.AgentProvider ?? string.Empty,
+            AgentModel = summary.AgentModel ?? string.Empty,
+            AgentStartUrl = summary.AgentStartUrl,
+            AgentToolProfile = summary.AgentToolProfile,
+            ScheduleSourceMode = summary.ScheduleSourceMode,
             NotifyPolicy = "always"
         };
+        var agentMetadata = new RoutineAgentExecutionMetadata(
+            detail.AgentSessionId,
+            detail.AgentRunId,
+            detail.AgentProvider,
+            detail.AgentModel,
+            detail.ToolProfile,
+            detail.StartUrl,
+            detail.FinalUrl,
+            detail.PageTitle,
+            detail.ScreenshotPath,
+            detail.DownloadPaths
+        );
         var dispatch = await DispatchRoutineResultToTelegramAsync(
             routineForSend,
             detail.Content,
             "telegram_resend",
             detail.Status,
-            cancellationToken
+            cancellationToken,
+            agentMetadata
         );
         if (!string.IsNullOrWhiteSpace(dispatch.Error))
         {

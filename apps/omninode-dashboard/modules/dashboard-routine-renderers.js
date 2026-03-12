@@ -3,6 +3,9 @@ import {
   ROUTINE_WEEKDAY_OPTIONS
 } from "./dashboard-constants.js";
 import {
+  DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS,
+  MAX_ROUTINE_AGENT_TIMEOUT_SECONDS,
+  MIN_ROUTINE_AGENT_TIMEOUT_SECONDS,
   formatRoutineAgentToolProfileLabel,
   formatRoutineExecutionModeLabel,
   formatRoutineSchedulePreview,
@@ -12,6 +15,7 @@ import {
   normalizeRoutineAgentToolProfile,
   normalizeRoutineExecutionModeValue,
   normalizeRoutineNotifyPolicy,
+  normalizeRoutineNotifyTelegram,
   normalizeRoutineScheduleSourceMode,
   normalizeRoutineWeekdays,
   resolveRoutineVisibleExecutionMode
@@ -66,9 +70,11 @@ function formatRoutineProgressElapsed(progress) {
     return "";
   }
 
-  const end = Number(progress && progress.completedAt) > 0
-    ? Number(progress.completedAt)
-    : (Number(progress && progress.updatedAt) > 0 ? Number(progress.updatedAt) : Date.now());
+  const end = progress && progress.active && !progress.done
+    ? Date.now()
+    : (Number(progress && progress.completedAt) > 0
+      ? Number(progress.completedAt)
+      : (Number(progress && progress.updatedAt) > 0 ? Number(progress.updatedAt) : Date.now()));
   const elapsedMs = Math.max(0, end - startedAt);
   if (elapsedMs < 1000) {
     return `${elapsedMs}ms`;
@@ -341,10 +347,18 @@ function renderRoutineExecutionModeBuilder(props) {
           e("input", {
             className: "input",
             type: "number",
-            min: 30,
-            max: 1800,
-            value: `${Math.min(1800, Math.max(30, Number(form.agentTimeoutSeconds ?? 180) || 180))}`,
-            onChange: (event) => patchRoutineForm(formType, { agentTimeoutSeconds: Number(event.target.value) || 180 })
+            min: MIN_ROUTINE_AGENT_TIMEOUT_SECONDS,
+            max: MAX_ROUTINE_AGENT_TIMEOUT_SECONDS,
+            value: `${Math.min(
+              MAX_ROUTINE_AGENT_TIMEOUT_SECONDS,
+              Math.max(
+                MIN_ROUTINE_AGENT_TIMEOUT_SECONDS,
+                Number(form.agentTimeoutSeconds ?? DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS) || DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS
+              )
+            )}`,
+            onChange: (event) => patchRoutineForm(formType, {
+              agentTimeoutSeconds: Number(event.target.value) || DEFAULT_ROUTINE_AGENT_TIMEOUT_SECONDS
+            })
           })
         ),
         e("label", { className: "routine-field routine-field-full" },
@@ -420,6 +434,7 @@ export function renderRoutineTab(props) {
     runRoutineNow,
     testRoutineBrowserAgent,
     testRoutineTelegram,
+    setRoutineTelegramResponseEnabled,
     setRoutineEnabled,
     deleteRoutineById,
     openRoutineRunDetail,
@@ -455,10 +470,11 @@ export function renderRoutineTab(props) {
   const selectedRequestPreview = selected && `${selected.request || ""}`.trim()
     ? selected.request
     : "선택된 루틴이 없으면 이 영역에 요청 원문과 최근 상태가 표시됩니다.";
+  const selectedNotifyTelegram = normalizeRoutineNotifyTelegram(selected?.notifyTelegram, true);
   const routineMobileSections = [
     { key: "overview", label: "개요" },
-    { key: "create", label: "생성" },
     { key: "list", label: "목록" },
+    { key: "create", label: "생성" },
     { key: "detail", label: "상세" }
   ];
 
@@ -512,7 +528,7 @@ export function renderRoutineTab(props) {
         e("h2", null, "루틴 만들기")
       )
     ),
-    e("p", { className: "hint routine-panel-hint" }, "활성화된 루틴은 스케줄 시 자동으로 텔레그램 봇에 전송됩니다. 생성 직후에는 즉시 1회 실행합니다."),
+    e("p", { className: "hint routine-panel-hint" }, "새 루틴은 기본으로 텔레그램 봇 응답이 켜집니다. 상세 패널에서 켜기/끄기를 바로 바꿀 수 있고, 생성 직후에는 즉시 1회 실행합니다."),
     errorByKey["routine:main"] ? e("div", { className: "error-banner" }, errorByKey["routine:main"]) : null,
     e("div", { className: "routine-section-card routine-create-card" },
       e("div", { className: "routine-form-grid routine-form-grid-primary" },
@@ -567,6 +583,16 @@ export function renderRoutineTab(props) {
               value: `${Math.min(300, Math.max(0, Number(routineCreateForm.retryDelaySeconds ?? 15) || 0))}`,
               onChange: (event) => patchRoutineForm("create", { retryDelaySeconds: Number(event.target.value) || 0 })
             })
+          ),
+          e("label", { className: "routine-field routine-field-full" },
+            e("span", { className: "routine-field-label" }, "텔레그램 봇 응답"),
+            e("select", {
+              className: "input",
+              value: normalizeRoutineNotifyTelegram(routineCreateForm.notifyTelegram, true) ? "on" : "off",
+              onChange: (event) => patchRoutineForm("create", { notifyTelegram: event.target.value === "on" })
+            },
+            e("option", { value: "on" }, "켜기"),
+            e("option", { value: "off" }, "끄기"))
           ),
           e("label", { className: "routine-field routine-field-full" },
             e("span", { className: "routine-field-label" }, "텔레그램 알림"),
@@ -659,6 +685,7 @@ export function renderRoutineTab(props) {
                 normalizeRoutineExecutionModeValue(selected.resolvedExecutionMode || selected.executionMode) === "browser_agent"
                   ? e("span", { className: "meta-chip neutral" }, formatRoutineAgentToolProfileLabel(selected.agentToolProfile))
                   : null,
+                e("span", { className: `meta-chip ${selectedNotifyTelegram ? "ok" : "neutral"}` }, selectedNotifyTelegram ? "텔레그램 응답 ON" : "텔레그램 응답 OFF"),
                 e("span", { className: "meta-chip neutral" }, normalizeRoutineScheduleSourceMode(selected.scheduleSourceMode, "manual") === "auto" ? "자동" : "수동"),
                 e("span", { className: "meta-chip neutral" }, selected.scheduleText || "-"),
                 e("span", { className: "meta-chip neutral" }, selected.language || "-")
@@ -670,6 +697,10 @@ export function renderRoutineTab(props) {
                 ? e("button", { className: "btn", onClick: () => testRoutineBrowserAgent(selected.id) }, "브라우저 에이전트 테스트")
                 : null,
               e("button", { className: "btn", onClick: () => testRoutineTelegram(selected.id) }, "텔레그램 테스트"),
+              e("button", {
+                className: `btn ${selectedNotifyTelegram ? "ghost" : ""}`,
+                onClick: () => setRoutineTelegramResponseEnabled(selected.id, !selectedNotifyTelegram)
+              }, selectedNotifyTelegram ? "텔레그램 응답 끄기" : "텔레그램 응답 켜기"),
               e("button", { className: "btn", onClick: () => setRoutineEnabled(selected.id, !selected.enabled) }, selected.enabled ? "비활성화" : "활성화"),
               e("button", { className: "btn ghost", onClick: () => deleteRoutineById(selected.id) }, "삭제")
             )
@@ -703,6 +734,10 @@ export function renderRoutineTab(props) {
               e("strong", null, formatRoutineAgentToolProfileLabel(selected.agentToolProfile))
             )
             : null,
+          e("div", { className: "routine-stat-card" },
+            e("span", { className: "routine-stat-label" }, "텔레그램 응답"),
+            e("strong", null, selectedNotifyTelegram ? "켜짐" : "꺼짐")
+          ),
           e("div", { className: "routine-stat-card" },
             e("span", { className: "routine-stat-label" }, "알림 정책"),
             e("strong", null, normalizeRoutineNotifyPolicy(selected.notifyPolicy, "always"))
@@ -767,6 +802,16 @@ export function renderRoutineTab(props) {
                     })
                   ),
                   e("label", { className: "routine-field routine-field-full" },
+                    e("span", { className: "routine-field-label" }, "텔레그램 봇 응답"),
+                    e("select", {
+                      className: "input",
+                      value: normalizeRoutineNotifyTelegram(routineEditForm.notifyTelegram, true) ? "on" : "off",
+                      onChange: (event) => patchRoutineForm("edit", { notifyTelegram: event.target.value === "on" })
+                    },
+                    e("option", { value: "on" }, "켜기"),
+                    e("option", { value: "off" }, "끄기"))
+                  ),
+                  e("label", { className: "routine-field routine-field-full" },
                     e("span", { className: "routine-field-label" }, "텔레그램 알림"),
                     e("select", {
                       className: "input",
@@ -817,6 +862,7 @@ export function renderRoutineTab(props) {
                 e("div", null, `언어: ${selected.language || "-"}`),
                 e("div", null, `시간대: ${selected.timezoneId || "-"}`),
                 e("div", null, `재시도: ${Math.max(0, Number(selected.maxRetries || 0))}회 / ${Math.max(0, Number(selected.retryDelaySeconds || 0))}초`),
+                e("div", null, `텔레그램 응답: ${selectedNotifyTelegram ? "켜짐" : "꺼짐"}`),
                 e("div", null, `알림: ${normalizeRoutineNotifyPolicy(selected.notifyPolicy, "always")}`),
                 e("div", null, `에이전트: ${(selected.agentProvider || "-")} / ${(selected.agentModel || "-")}`),
                 e("div", null, `시작 URL: ${selected.agentStartUrl || "-"}`),
@@ -853,8 +899,8 @@ export function renderRoutineTab(props) {
         { className: "routine-mobile-shell" },
         renderResponsiveSectionTabs(routineMobileSections, currentRoutinePane, (paneKey) => setResponsivePane("routine", paneKey), "routine-mobile-tabs"),
         currentRoutinePane === "overview" ? overviewCards : null,
-        currentRoutinePane === "create" ? createPanel : null,
         currentRoutinePane === "list" ? listPanel : null,
+        currentRoutinePane === "create" ? createPanel : null,
         currentRoutinePane === "detail" ? detailPanel : null
       )
       : e(
@@ -862,8 +908,8 @@ export function renderRoutineTab(props) {
         null,
         overviewCards,
         e("div", { className: "routine-layout" },
-          createPanel,
           listPanel,
+          createPanel,
           detailPanel
         )
       )
