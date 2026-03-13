@@ -1,6 +1,6 @@
 # Omni-node Planning And Tasks
 
-업데이트 기준: 2026-03-12
+업데이트 기준: 2026-03-13
 
 이 문서는 현재 코드 기준의 작업 계획과 Background Task Graph 기능 사용법을 정리합니다.
 

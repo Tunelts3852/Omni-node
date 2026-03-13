@@ -1,6 +1,6 @@
 # Omni-node 정리 기준
 
-업데이트 기준: 2026-03-12
+업데이트 기준: 2026-03-13
 
 이 문서는 나중에 저장소를 다시 열었을 때 `무엇을 지워도 되는지`, `무엇을 보존해야 하는지`, `어떤 경로를 기준으로 기억할지`를 빠르게 판단하기 위한 위생 기준표입니다.
 
@@ -43,6 +43,7 @@
 | `workspace/coding/routines/` | 실행 결과 이력 | 과거 실행 기록이 필요 없을 때만 정리 |
 | `~/.omninode/code-runs/` | 실행 결과 이력 | 코드 실행 기록이 필요 없을 때만 정리 |
 | `~/.omninode/doctor/history/` | 진단 이력 | 과거 진단 기록이 필요 없을 때만 정리 |
+| `~/.omninode/cli/` | `Omni-node` 전역 실행기 PID/로그/최근 시작 메타데이터 | CLI로 부팅 중이면 함부로 지우지 않음 |
 | `~/.omninode/plans/` | 상태 원본 | 계획/리뷰/실행 이력을 보존하려면 유지 |
 | `~/.omninode/tasks/` | 상태 원본 | task graph 정의와 최근 실행 상태를 보존하려면 유지 |
 | `~/.omninode/notebooks/` | 상태 원본 | learnings / decisions / verification / handoff를 보존하려면 유지 |
@@ -110,4 +111,5 @@ Omni-node 상태는 세 층으로 기억하면 덜 헷갈립니다.
 9. `~/.omninode/tasks/`와 `workspace/.runtime/tasks/`는 Task graph 재개 근거가 되므로, 세션 복구가 필요하면 지우지 않는다.
 10. `~/.omninode/notebooks/`는 handoff 원본이므로, 다음 세션 인수인계가 필요하면 지우지 않는다.
 11. `AGENTS.md`, `AGENTS.override.md`, `.omni/skills/`, `.omni/commands/`는 project context 원본이므로 캐시처럼 지우지 않는다.
-12. `~/.omninode/AGENTS.md`, `~/.omninode/skills/`, `~/.omninode/commands/`도 전역 문맥 원본이므로 보존 여부를 먼저 판단한다.
+12. `~/.omninode/cli/`는 `Omni-node` 실행기와 연결된 PID, 로그, 최근 시작 메타데이터를 담으므로 서버를 CLI로 관리 중이면 정리 전에 종료부터 한다.
+13. `~/.omninode/AGENTS.md`, `~/.omninode/skills/`, `~/.omninode/commands/`도 전역 문맥 원본이므로 보존 여부를 먼저 판단한다.

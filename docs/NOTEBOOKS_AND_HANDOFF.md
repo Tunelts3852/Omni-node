@@ -1,6 +1,6 @@
 # Omni-node Notebooks And Handoff
 
-업데이트 기준: 2026-03-12
+업데이트 기준: 2026-03-13
 
 이 문서는 현재 코드 기준의 notebook / handoff 기능 저장 위치, 사용 흐름, 템플릿을 정리합니다.
 
