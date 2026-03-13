@@ -946,12 +946,26 @@ function renderMetaChipList(e, chips, className = "logic-node-meta-chips") {
   )
 }
 
+function formatLogicGraphListId(graphId) {
+  const normalized = `${graphId || ""}`.trim()
+  if (!normalized) {
+    return ""
+  }
+  return normalized.length > 14
+    ? `…${normalized.slice(-8)}`
+    : normalized
+}
+
 function renderGraphList(props) {
   const {
     e,
     graphs,
     selectedGraphId,
     draftGraph,
+    listPaneRef,
+    graphListRef,
+    onScrollListMouseDown,
+    onScrollListClickCapture,
     onSelectGraph,
     onCreateNewGraph,
     onDeleteGraph,
@@ -974,7 +988,12 @@ function renderGraphList(props) {
     ? (runSnapshot.status || "running")
     : (dirty ? "unsaved" : "saved")
 
-  return e("section", { className: "logic-pane logic-list-pane" },
+  return e("section", {
+    className: "logic-pane logic-list-pane logic-scroll-surface",
+    ref: listPaneRef,
+    onMouseDownCapture: onScrollListMouseDown,
+    onClickCapture: onScrollListClickCapture
+  },
     e("div", { className: "logic-pane-head" },
       e("div", null,
         e("div", { className: "routine-head-kicker" }, "흐름"),
@@ -1045,14 +1064,21 @@ function renderGraphList(props) {
         }, "삭제")
       )
     ),
-    e("div", { className: "logic-graph-list" },
+    e("div", {
+      className: "logic-graph-list logic-scroll-list",
+      ref: graphListRef
+    },
       graphs.length === 0
         ? e("div", { className: "logic-empty-card" }, "저장된 작업 흐름이 없습니다.")
         : graphs.map((item) => {
           const isActive = selectedGraphId === item.graphId
+          const rowDescription = `${isActive ? (draftGraph?.description || "") : (item.description || "")}`.trim()
           const rowSummary = isActive
             ? selectedSummary
             : `${item.nodeCount || 0}개 노드 · ${item.edgeCount || 0}개 연결`
+          const compactSummary = rowDescription || rowSummary
+          const compactMetrics = rowDescription ? rowSummary : ""
+          const compactStatus = getLogicStatusLabel(item.lastStatus || "saved")
           const rowMain = isActive
             ? e("div", {
               className: "logic-graph-list-main logic-graph-list-main-static"
@@ -1064,11 +1090,12 @@ function renderGraphList(props) {
               onClick: (event) => event.stopPropagation(),
               onChange: (event) => onGraphFieldChange("title", event.target.value)
             }),
-            e("span", { className: "tiny" }, draftGraph?.description || "설명 없음"),
-            e("span", { className: "tiny" }, rowSummary),
-            e("div", { className: "logic-graph-row-meta" },
-              e("span", { className: "tiny logic-graph-id-text" }, item.graphId),
-              e("span", { className: `pill ${getLogicStatusTone(item.lastStatus || "saved")}` }, getLogicStatusLabel(item.lastStatus || "saved"))
+            e("div", { className: "logic-graph-row-subline tiny compact" },
+              e("span", { className: "logic-graph-row-subline-text" }, compactSummary || "설명 없음"),
+              compactMetrics
+                ? e("span", { className: "logic-graph-row-summary" }, compactMetrics)
+                : null,
+              e("span", { className: `pill ${getLogicStatusTone(item.lastStatus || "saved")}` }, compactStatus)
             ))
             : e("button", {
               type: "button",
@@ -1076,11 +1103,12 @@ function renderGraphList(props) {
               onClick: () => onSelectGraph(item.graphId)
             },
             e("strong", null, item.title || item.graphId),
-            e("span", { className: "tiny" }, item.description || "설명 없음"),
-            e("span", { className: "tiny" }, rowSummary),
-            e("div", { className: "logic-graph-row-meta" },
-              e("span", { className: "tiny logic-graph-id-text" }, item.graphId),
-              e("span", { className: `pill ${getLogicStatusTone(item.lastStatus || "saved")}` }, getLogicStatusLabel(item.lastStatus || "saved"))
+            e("div", { className: "logic-graph-row-subline tiny compact" },
+              e("span", { className: "logic-graph-row-subline-text" }, compactSummary || "설명 없음"),
+              compactMetrics
+                ? e("span", { className: "logic-graph-row-summary" }, compactMetrics)
+                : null,
+              e("span", { className: `pill ${getLogicStatusTone(item.lastStatus || "saved")}` }, compactStatus)
             ))
           return e("div", {
             key: item.graphId,
@@ -1138,13 +1166,22 @@ function renderPalettePanel(props) {
   const {
     e,
     paletteGroup,
+    palettePaneRef,
+    paletteListRef,
+    onScrollListMouseDown,
+    onScrollListClickCapture,
     onPaletteGroupChange,
     onSelectNodeType
   } = props
 
   const activeGroup = getPaletteLibraryGroup(paletteGroup)
 
-  return e("section", { className: "logic-pane logic-palette-pane" },
+  return e("section", {
+    className: "logic-pane logic-palette-pane logic-scroll-surface",
+    ref: palettePaneRef,
+    onMouseDownCapture: onScrollListMouseDown,
+    onClickCapture: onScrollListClickCapture
+  },
     e("div", { className: "logic-pane-head" },
       e("div", null,
         e("div", { className: "routine-head-kicker" }, "노드"),
@@ -1163,17 +1200,14 @@ function renderPalettePanel(props) {
         }, group.label)
       })
     ),
-    e("div", { className: "logic-palette-list" },
+    e("div", {
+      className: "logic-palette-list logic-scroll-list",
+      ref: paletteListRef
+    },
       activeGroup.items.map(([type, label]) => {
         const definition = getLogicNodeInspectorDefinition(type)
         const meta = getLogicCategoryMeta(type)
         const themeVars = buildLogicThemeVars(type)
-        const prototypeNode = createLogicNode(type, {
-          nodeId: `palette-${type}`,
-          title: label,
-          position: { x: 0, y: 0 }
-        })
-        const chips = buildLogicNodeMetaChips(prototypeNode).slice(0, 1)
         return e("button", {
           key: type,
           type: "button",
@@ -1185,13 +1219,8 @@ function renderPalettePanel(props) {
           e("div", null,
             e("strong", null, label),
             e("div", { className: "tiny logic-palette-item-summary" }, truncateText(definition?.example || definition?.description || label, 36))
-          ),
-          e("span", {
-            className: `logic-node-kind-badge logic-node-kind-badge-${meta.className}`,
-            style: themeVars
-          }, meta.label)
-        ),
-        renderMetaChipList(e, chips, "logic-node-meta-chips logic-node-meta-chips-compact"))
+          )
+        ))
       })
     )
   )

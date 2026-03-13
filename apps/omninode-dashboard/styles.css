@@ -2948,6 +2948,8 @@ body,
 
 .logic-top-grid {
   min-height: min(72vh, 960px);
+  height: min(72vh, 960px);
+  max-height: min(72vh, 960px);
   display: grid;
   grid-template-columns: minmax(182px, 0.7fr) minmax(0, 2.3fr) minmax(260px, 1fr);
   grid-template-areas: "list canvas palette";
@@ -2961,8 +2963,8 @@ body,
   height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 18px;
+  gap: 10px;
+  padding: 14px;
   border: 1px solid rgba(213, 223, 236, 0.9);
   border-radius: 22px;
   background:
@@ -2979,17 +2981,20 @@ body,
 }
 
 .logic-pane-head strong {
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.2;
   color: #1c314f;
 }
 
 .logic-list-pane {
   grid-area: list;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
-  align-content: start;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .logic-canvas-pane {
@@ -3001,9 +3006,13 @@ body,
 
 .logic-palette-pane {
   grid-area: palette;
-  display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 .logic-inspector-pane {
@@ -3014,10 +3023,35 @@ body,
 
 .logic-graph-list,
 .logic-palette-list {
+  flex: 0 0 auto;
   min-height: 0;
-  overflow: auto;
-  display: grid;
-  gap: 10px;
+  min-block-size: 0;
+  max-height: none;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.logic-scroll-surface,
+.logic-scroll-list {
+  cursor: grab;
+}
+
+.logic-scroll-surface.is-drag-scroll-ready,
+.logic-scroll-surface.is-drag-scrolling,
+.logic-scroll-list.is-drag-scroll-ready,
+.logic-scroll-list.is-drag-scrolling {
+  cursor: grabbing;
+}
+
+.logic-scroll-surface.is-drag-scrolling,
+.logic-scroll-surface.is-drag-scrolling *,
+.logic-scroll-list.is-drag-scrolling,
+.logic-scroll-list.is-drag-scrolling * {
+  user-select: none;
 }
 
 .logic-current-graph-card,
@@ -3036,12 +3070,17 @@ body,
 .logic-current-graph-card,
 .logic-json-card,
 .logic-empty-card {
-  padding: 14px;
+  padding: 10px;
+}
+
+.logic-json-card {
+  flex: 0 0 auto;
 }
 
 .logic-current-graph-card {
   display: grid;
-  gap: 12px;
+  gap: 8px;
+  flex: 0 0 auto;
 }
 
 .logic-graph-current-meta,
@@ -3058,10 +3097,11 @@ body,
 }
 
 .logic-graph-list-row {
-  padding: 12px;
+  padding: 6px 8px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 6px;
+  align-items: center;
   transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), transform var(--transition-fast);
 }
 
@@ -3086,7 +3126,7 @@ body,
   background: transparent;
   padding: 0;
   display: grid;
-  gap: 6px;
+  gap: 2px;
   cursor: pointer;
 }
 
@@ -3094,16 +3134,69 @@ body,
   cursor: default;
 }
 
+.logic-graph-list-main strong {
+  display: block;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.12;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .logic-graph-title-input {
   min-width: 0;
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.logic-graph-row-subline {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  color: #60758f;
+  line-height: 1.12;
+}
+
+.logic-graph-row-subline.compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+}
+
+.logic-graph-row-subline-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.logic-graph-row-summary {
+  flex: 0 0 auto;
+  color: #58718d;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .logic-graph-row-meta {
   justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.logic-graph-row-meta .pill {
+  min-height: 22px;
+  padding: 0 8px;
+  font-size: 10px;
 }
 
 .logic-graph-row-actions {
-  align-items: flex-start;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
 }
 
 .logic-graph-id-text,
@@ -3114,6 +3207,11 @@ body,
 
 .logic-graph-id-text {
   color: #7085a1;
+  min-width: 0;
+  max-width: 60px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .logic-empty-card {
@@ -3125,23 +3223,24 @@ body,
 }
 
 .logic-json-textarea {
-  min-height: 160px;
-  max-height: 260px;
+  min-height: 104px;
+  max-height: 168px;
   resize: vertical;
-  margin-bottom: 10px;
-  font-size: 12px;
-  line-height: 1.5;
+  margin-bottom: 8px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .logic-palette-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 4px;
+  flex: 0 0 auto;
 }
 
 .logic-palette-tab {
-  padding: 9px 12px;
-  font-size: 12px;
+  padding: 6px 9px;
+  font-size: 10px;
   font-weight: 700;
   color: #445d7f;
   cursor: pointer;
@@ -3179,10 +3278,10 @@ body,
 
 .logic-palette-item-card {
   width: 100%;
-  padding: 8px 10px;
+  padding: 5px 7px;
   text-align: left;
   display: grid;
-  gap: 4px;
+  gap: 1px;
   cursor: pointer;
   transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition-fast);
   border-color: var(--logic-node-border, rgba(214, 224, 236, 0.94));
@@ -3198,9 +3297,9 @@ body,
 .logic-palette-item-head,
 .logic-palette-item-footer {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 6px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
 }
 
 .logic-palette-description,
@@ -3228,16 +3327,17 @@ body,
 .logic-palette-item-head strong {
   display: block;
   max-width: 100%;
-  font-size: 13px;
-  line-height: 1.2;
+  font-size: 11px;
+  line-height: 1.1;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .logic-palette-item-summary {
-  margin-top: 2px;
-  line-height: 1.25;
+  margin-top: 1px;
+  font-size: 9px;
+  line-height: 1.05;
   color: #5b708c;
   overflow: hidden;
   white-space: nowrap;
@@ -4104,6 +4204,8 @@ body,
 @media (max-width: 1140px) {
   .logic-top-grid {
     min-height: auto;
+    height: auto;
+    max-height: none;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     grid-template-areas:
       "canvas canvas"
@@ -4386,11 +4488,11 @@ select.input {
 }
 
 .tiny-btn {
-  min-height: 30px;
-  height: 30px;
-  padding: 0 10px;
-  font-size: 11px;
-  border-radius: 10px;
+  min-height: 26px;
+  height: 26px;
+  padding: 0 8px;
+  font-size: 10px;
+  border-radius: 9px;
 }
 
 .btn:disabled {

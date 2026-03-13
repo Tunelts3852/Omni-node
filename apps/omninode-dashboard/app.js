@@ -595,7 +595,20 @@ import {
     const routineBrowserAgentPreviewRef = useRef("");
     const mainShellRef = useRef(null);
     const logicCanvasShellRef = useRef(null);
+    const logicListPaneRef = useRef(null);
+    const logicPalettePaneRef = useRef(null);
+    const logicGraphListRef = useRef(null);
+    const logicPaletteListRef = useRef(null);
     const logicCanvasInteractionRef = useRef(createEmptyLogicCanvasInteraction());
+    const logicScrollDragRef = useRef({
+      active: false,
+      element: null,
+      startClientY: 0,
+      startScrollTop: 0,
+      moved: false,
+      suppressClick: false,
+      suppressElement: null
+    });
     const logicSelectedGraphIdRef = useRef(logicSelectedGraphId);
     const logicDraftGraphRef = useRef(logicDraftGraph);
     const logicAutoFrameKeyRef = useRef("");
@@ -4068,16 +4081,33 @@ import {
       if (rootTab !== "logic" || isPortraitMobileLayout) {
         return;
       }
+      const shell = logicCanvasShellRef.current;
+      const shellRect = shell?.getBoundingClientRect();
       const graph = logicDraftGraphRef.current;
       const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
       const key = `${graph?.graphId || "draft"}:${nodes.length}:${graph?.edges?.length || 0}`;
       const viewport = normalizeLogicViewport(graph?.viewport);
+      const hasVisibleNode = !!shellRect?.width
+        && !!shellRect?.height
+        && nodes.some((node) => {
+          const size = normalizeRuntimeLogicNodeSize(node.size, node);
+          const left = viewport.x + ((Number(node.position?.x) || 0) * viewport.zoom);
+          const top = viewport.y + ((Number(node.position?.y) || 0) * viewport.zoom);
+          const width = size.width * viewport.zoom;
+          const height = size.height * viewport.zoom;
+          return left < shellRect.width && (left + width) > 0 && top < shellRect.height && (top + height) > 0;
+        });
       const shouldAutoFrame = !graph?.graphId
         && viewport.x === LOGIC_VIEWPORT_DEFAULTS.x
         && viewport.y === LOGIC_VIEWPORT_DEFAULTS.y
         && viewport.zoom === LOGIC_VIEWPORT_DEFAULTS.zoom
         && nodes.length > 0
-      if (!shouldAutoFrame || logicAutoFrameKeyRef.current === key) {
+      const shouldRecoverViewport = !!graph?.graphId
+        && nodes.length > 0
+        && !!shellRect?.width
+        && !!shellRect?.height
+        && !hasVisibleNode;
+      if ((!shouldAutoFrame && !shouldRecoverViewport) || logicAutoFrameKeyRef.current === key) {
         return;
       }
 
@@ -4086,7 +4116,22 @@ import {
         logicAutoFrameKeyRef.current = key;
       });
       return () => window.cancelAnimationFrame(frameId);
-    }, [rootTab, isPortraitMobileLayout, logicDraftGraph]);
+    }, [rootTab, isPortraitMobileLayout, logicDraftGraph, viewportSize.width, viewportSize.height]);
+
+    useEffect(() => {
+      if (rootTab !== "logic" || typeof window === "undefined") {
+        return undefined;
+      }
+      const frameId = window.requestAnimationFrame(() => {
+        if (logicListPaneRef.current) {
+          logicListPaneRef.current.scrollTop = 0;
+        }
+        if (logicPalettePaneRef.current) {
+          logicPalettePaneRef.current.scrollTop = 0;
+        }
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }, [rootTab]);
 
     useEffect(() => {
       if (rootTab !== "logic") {
@@ -4175,6 +4220,77 @@ import {
 
       return () => window.cancelAnimationFrame(frameId);
     }, [rootTab, currentLogicPane, isPortraitMobileLayout, logicCanvasGesture, logicDraftGraph, logicRunSnapshot, viewportSize.width, viewportSize.height]);
+
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return undefined;
+      }
+
+      function clearDragScrollState() {
+        const dragState = logicScrollDragRef.current;
+        dragState?.element?.classList?.remove("is-drag-scroll-ready", "is-drag-scrolling");
+        logicScrollDragRef.current = {
+          ...dragState,
+          active: false,
+          element: null,
+          moved: false
+        };
+      }
+
+      function handleWindowMouseMove(event) {
+        const dragState = logicScrollDragRef.current;
+        if (!dragState?.active || !dragState?.element) {
+          return;
+        }
+        const deltaY = event.clientY - dragState.startClientY;
+        if (!dragState.moved && Math.abs(deltaY) > 5) {
+          dragState.moved = true;
+          dragState.element.classList.add("is-drag-scrolling");
+        }
+        if (!dragState.moved) {
+          return;
+        }
+        dragState.element.scrollTop = dragState.startScrollTop - deltaY;
+        if (event.cancelable) {
+          event.preventDefault();
+        }
+      }
+
+      function handleWindowMouseUp() {
+        const dragState = logicScrollDragRef.current;
+        if (!dragState?.active || !dragState?.element) {
+          return;
+        }
+        const targetElement = dragState.element;
+        const suppressClick = !!dragState.moved;
+        clearDragScrollState();
+        if (suppressClick) {
+          logicScrollDragRef.current = {
+            ...logicScrollDragRef.current,
+            suppressClick: true,
+            suppressElement: targetElement
+          };
+          window.setTimeout(() => {
+            if (logicScrollDragRef.current?.suppressElement === targetElement) {
+              logicScrollDragRef.current = {
+                ...logicScrollDragRef.current,
+                suppressClick: false,
+                suppressElement: null
+              };
+            }
+          }, 0);
+        }
+      }
+
+      window.addEventListener("mousemove", handleWindowMouseMove, { passive: false, capture: true });
+      window.addEventListener("mouseup", handleWindowMouseUp, true);
+
+      return () => {
+        clearDragScrollState();
+        window.removeEventListener("mousemove", handleWindowMouseMove, true);
+        window.removeEventListener("mouseup", handleWindowMouseUp, true);
+      };
+    }, []);
 
     useEffect(() => {
       if (typeof window === "undefined") {
@@ -4583,6 +4699,43 @@ import {
         y: (rect.height - (boundsHeight * nextZoom)) / 2 - (minY * nextZoom),
         zoom: nextZoom
       });
+    }
+
+    function beginLogicScrollListDrag(event) {
+      if (!event || event.button !== 0) {
+        return;
+      }
+      const scrollTarget = event.currentTarget;
+      if (!scrollTarget || (scrollTarget.scrollHeight - scrollTarget.clientHeight) <= 6) {
+        return;
+      }
+      if (event.target?.closest?.("input, textarea, select, option, label")) {
+        return;
+      }
+      logicScrollDragRef.current = {
+        active: true,
+        element: scrollTarget,
+        startClientY: event.clientY,
+        startScrollTop: scrollTarget.scrollTop,
+        moved: false,
+        suppressClick: false,
+        suppressElement: null
+      };
+      scrollTarget.classList.add("is-drag-scroll-ready");
+    }
+
+    function handleLogicScrollListClickCapture(event) {
+      const dragState = logicScrollDragRef.current;
+      if (!dragState?.suppressClick || !dragState?.suppressElement || dragState.suppressElement !== event.currentTarget) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      logicScrollDragRef.current = {
+        ...dragState,
+        suppressClick: false,
+        suppressElement: null
+      };
     }
 
     function beginLogicViewportPan(event) {
@@ -6300,6 +6453,12 @@ import {
         renderResponsiveSectionTabs,
         setResponsivePane,
         canvasShellRef: logicCanvasShellRef,
+        listPaneRef: logicListPaneRef,
+        palettePaneRef: logicPalettePaneRef,
+        graphListRef: logicGraphListRef,
+        paletteListRef: logicPaletteListRef,
+        onScrollListMouseDown: beginLogicScrollListDrag,
+        onScrollListClickCapture: handleLogicScrollListClickCapture,
         onSelectGraph: selectLogicGraph,
         onCreateNewGraph: createNewLogicGraphDraft,
         onDeleteGraph: (graphId) => {
