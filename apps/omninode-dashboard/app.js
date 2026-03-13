@@ -46,6 +46,16 @@ import {
   createRoutineState
 } from "./modules/routine-state.js";
 import {
+  cloneLogicGraph,
+  createEmptyLogicGraph,
+  createLogicEdge,
+  createLogicNode,
+  createLogicState,
+  getLogicNodeMinimumSize,
+  LOGIC_NODE_DEFAULT_SIZE,
+  normalizeLogicNodeSize
+} from "./modules/logic-state.js";
+import {
   buildDashboardWsUrl,
   clearPersistedAuthSession,
   flushQueuedPayloads,
@@ -86,6 +96,16 @@ import {
   requestTaskOutput
 } from "./modules/ws-tasks.js";
 import {
+  requestLogicGraphCancel,
+  requestLogicGraphDelete,
+  requestLogicGraphGet,
+  requestLogicGraphList,
+  requestLogicPathList,
+  requestLogicGraphRun,
+  requestLogicGraphSave,
+  requestLogicGraphRunGet
+} from "./modules/ws-logic.js";
+import {
   requestAstReplace,
   requestRefactorApply,
   requestLspRename,
@@ -118,6 +138,7 @@ import {
   renderMemoryPicker as renderMemoryPickerModule
 } from "./modules/dashboard-sidebar-renderers.js";
 import { renderRoutineTab as renderRoutineTabModule } from "./modules/dashboard-routine-renderers.js";
+import { renderLogicTab as renderLogicTabModule } from "./modules/dashboard-logic-renderers.js";
 import { renderToolControlPanel as renderToolControlPanelModule } from "./modules/dashboard-ops-renderers.js";
 import { renderSettingsPanel as renderSettingsPanelModule } from "./modules/dashboard-settings-renderers.js";
 import {
@@ -251,6 +272,119 @@ import {
   const ROUTINE_STATE_DEFAULTS = createRoutineState({
     defaultMobilePanes: DEFAULT_MOBILE_PANES
   });
+  const LOGIC_STATE_DEFAULTS = createLogicState();
+  const LOGIC_VIEWPORT_DEFAULTS = { x: 96, y: 72, zoom: 1 };
+  const LOGIC_CANVAS_MIN_ZOOM = 0.45;
+  const LOGIC_CANVAS_MAX_ZOOM = 1.8;
+  const LOGIC_CANVAS_STAGE_PADDING = 48;
+  const LOGIC_FIELD_MODE_PREFIX = "__mode__";
+  const LOGIC_FIELD_LITERAL_PREFIX = "__literal__";
+  const LOGIC_FIELD_REFERENCE_PREFIX = "__reference__";
+  function createEmptyLogicCanvasInteraction() {
+    return {
+      mode: "",
+      pointerId: null,
+      nodeId: "",
+      nodeType: "",
+      sourcePort: "main",
+      handle: "",
+      startClientX: 0,
+      startClientY: 0,
+      originX: 0,
+      originY: 0,
+      originWidth: LOGIC_NODE_DEFAULT_SIZE.width,
+      originHeight: LOGIC_NODE_DEFAULT_SIZE.height
+    };
+  }
+  function createEmptyLogicPathBrowserState() {
+    return {
+      open: false,
+      loading: false,
+      nodeId: "",
+      fieldKey: "",
+      fieldLabel: "",
+      scope: "workspace",
+      rootKey: "workspace",
+      browsePath: "",
+      displayPath: "",
+      parentBrowsePath: null,
+      directorySelectPath: null,
+      roots: [],
+      items: [],
+      message: "",
+      allowDirectorySelection: false
+    };
+  }
+  function normalizeLogicPathBrowserValue(value) {
+    return `${value || ""}`.replace(/\\/g, "/").trim();
+  }
+  function getLogicFieldModeKey(fieldKey) {
+    return `${LOGIC_FIELD_MODE_PREFIX}${fieldKey}`;
+  }
+  function getLogicFieldLiteralKey(fieldKey) {
+    return `${LOGIC_FIELD_LITERAL_PREFIX}${fieldKey}`;
+  }
+  function getLogicFieldReferenceKey(fieldKey) {
+    return `${LOGIC_FIELD_REFERENCE_PREFIX}${fieldKey}`;
+  }
+  function normalizeLogicReferenceValue(value) {
+    const raw = `${value || ""}`.trim();
+    if (!raw) {
+      return "";
+    }
+    if (raw.startsWith("{{") && raw.endsWith("}}")) {
+      return raw;
+    }
+    return `{{${raw}}}`;
+  }
+  function isLogicReferenceValue(value) {
+    const raw = `${value || ""}`.trim();
+    if (!raw) {
+      return false;
+    }
+    const normalized = raw.startsWith("{{") && raw.endsWith("}}")
+      ? raw.slice(2, -2).trim()
+      : raw;
+    return normalized === "run.input"
+      || normalized.startsWith("vars.")
+      || normalized.startsWith("nodes.")
+      || normalized.startsWith("sessions.")
+      || normalized.startsWith("artifacts.");
+  }
+  function getLogicPathBrowserDirectory(value) {
+    const normalized = normalizeLogicPathBrowserValue(value).replace(/^\/+/, "").replace(/\/+$/, "");
+    if (!normalized) {
+      return "";
+    }
+    if (normalizeLogicPathBrowserValue(value).endsWith("/")) {
+      return normalized;
+    }
+    const index = normalized.lastIndexOf("/");
+    return index < 0 ? "" : normalized.slice(0, index);
+  }
+  function resolveLogicPathBrowserRoot(scope, value) {
+    const normalizedValue = normalizeLogicPathBrowserValue(value);
+    if (scope === "memory") {
+      if (normalizedValue.startsWith("memory-notes/")) {
+        return "memory-notes";
+      }
+      if (normalizedValue.startsWith("conversations/")) {
+        return "conversations";
+      }
+      return "project-markdown";
+    }
+    return "workspace";
+  }
+  function resolveLogicPathBrowserBrowsePath(scope, rootKey, value) {
+    const normalizedValue = normalizeLogicPathBrowserValue(value);
+    if (!normalizedValue) {
+      return "";
+    }
+    if (scope === "memory" && (rootKey === "memory-notes" || rootKey === "conversations")) {
+      return "";
+    }
+    return getLogicPathBrowserDirectory(normalizedValue);
+  }
   const chatMultiUtils = {
     normalizeChatMultiResultMessage,
     parseChatMultiComparisonMessage,
@@ -425,6 +559,23 @@ import {
     const [routineEditForm, setRoutineEditForm] = useState(() => createRoutineFormState());
     const [routineSelectedId, setRoutineSelectedId] = useState(ROUTINE_STATE_DEFAULTS.routineSelectedId);
     const [routineProgress, setRoutineProgress] = useState(() => createRoutineProgressState(ROUTINE_STATE_DEFAULTS.progress));
+    const [logicGraphs, setLogicGraphs] = useState(() => [...LOGIC_STATE_DEFAULTS.graphs]);
+    const [logicSelectedGraphId, setLogicSelectedGraphId] = useState(LOGIC_STATE_DEFAULTS.selectedGraphId);
+    const [logicDraftGraph, setLogicDraftGraph] = useState(() => cloneLogicGraph(LOGIC_STATE_DEFAULTS.draftGraph));
+    const [logicSelectedNodeId, setLogicSelectedNodeId] = useState(LOGIC_STATE_DEFAULTS.selectedNodeId);
+    const [logicSelectedEdgeId, setLogicSelectedEdgeId] = useState(LOGIC_STATE_DEFAULTS.selectedEdgeId);
+    const [logicPendingSourceNodeId, setLogicPendingSourceNodeId] = useState(LOGIC_STATE_DEFAULTS.pendingSourceNodeId);
+    const [logicActiveRunId, setLogicActiveRunId] = useState(LOGIC_STATE_DEFAULTS.activeRunId);
+    const [logicRunSnapshot, setLogicRunSnapshot] = useState(LOGIC_STATE_DEFAULTS.runSnapshot);
+    const [logicRunEvents, setLogicRunEvents] = useState(() => [...LOGIC_STATE_DEFAULTS.runEvents]);
+    const [logicJsonBuffer, setLogicJsonBuffer] = useState(LOGIC_STATE_DEFAULTS.jsonBuffer);
+    const [logicDirty, setLogicDirty] = useState(LOGIC_STATE_DEFAULTS.dirty);
+    const [logicLastMessage, setLogicLastMessage] = useState(LOGIC_STATE_DEFAULTS.lastMessage);
+    const [logicPaletteGroup, setLogicPaletteGroup] = useState("flow");
+    const [logicCanvasGesture, setLogicCanvasGesture] = useState("idle");
+    const [logicConnectionPreview, setLogicConnectionPreview] = useState(null);
+    const [logicMeasuredNodeMinimumById, setLogicMeasuredNodeMinimumById] = useState(() => ({}));
+    const [logicPathBrowser, setLogicPathBrowser] = useState(() => createEmptyLogicPathBrowserState());
     const [groqUsageWindowBaseByModel, setGroqUsageWindowBaseByModel] = useState(() => ({ ...ROUTINE_STATE_DEFAULTS.groqUsageWindowBaseByModel }));
     const [viewportSize, setViewportSize] = useState(() => getViewportSnapshot());
     const [mainShellViewportTop, setMainShellViewportTop] = useState(0);
@@ -443,6 +594,12 @@ import {
     const groqAutoRefreshWindowRef = useRef({ minute: "", hour: "", day: "" });
     const routineBrowserAgentPreviewRef = useRef("");
     const mainShellRef = useRef(null);
+    const logicCanvasShellRef = useRef(null);
+    const logicCanvasInteractionRef = useRef(createEmptyLogicCanvasInteraction());
+    const logicSelectedGraphIdRef = useRef(logicSelectedGraphId);
+    const logicDraftGraphRef = useRef(logicDraftGraph);
+    const logicAutoFrameKeyRef = useRef("");
+    const logicMeasuredNodeMinimumRef = useRef(logicMeasuredNodeMinimumById);
 
     const scope = rootTab === "coding" ? "coding" : "chat";
     const mode = rootTab === "coding" ? codingMode : chatMode;
@@ -481,7 +638,21 @@ import {
     const currentWorkspacePane = mobilePaneByTab[responsiveWorkspaceKey]
       || (currentConversationId ? "thread" : "list");
     const currentRoutinePane = mobilePaneByTab.routine || (routineSelectedId ? "detail" : "overview");
+    const currentLogicPane = mobilePaneByTab.logic || "canvas";
     const currentSettingsPane = mobilePaneByTab.settings || "auth";
+
+    useEffect(() => {
+      logicSelectedGraphIdRef.current = logicSelectedGraphId;
+    }, [logicSelectedGraphId]);
+
+    useEffect(() => {
+      logicDraftGraphRef.current = logicDraftGraph;
+    }, [logicDraftGraph]);
+
+    useEffect(() => {
+      logicMeasuredNodeMinimumRef.current = logicMeasuredNodeMinimumById;
+    }, [logicMeasuredNodeMinimumById]);
+
     const groupedConversationList = useMemo(() => {
       const keyword = currentConversationFilter.trim().toLowerCase();
       const groups = {};
@@ -566,6 +737,26 @@ import {
         window.removeEventListener("resize", handleResize);
       };
     }, []);
+
+    useEffect(() => {
+      if (rootTab !== "logic") {
+        return undefined;
+      }
+
+      const shell = logicCanvasShellRef.current;
+      if (!shell) {
+        return undefined;
+      }
+
+      function handleWheel(event) {
+        handleLogicCanvasWheel(event);
+      }
+
+      shell.addEventListener("wheel", handleWheel, { passive: false });
+      return () => {
+        shell.removeEventListener("wheel", handleWheel);
+      };
+    }, [rootTab, currentLogicPane, isPortraitMobileLayout]);
 
     useEffect(() => {
       if (typeof window === "undefined") {
@@ -2738,6 +2929,9 @@ import {
 
     function inferErrorKey(messageText) {
       const text = (messageText || "").toLowerCase();
+      if (text.includes("logic")) {
+        return "logic:main";
+      }
       if (text.includes("routine")) {
         return "routine:main";
       }
@@ -3710,10 +3904,13 @@ import {
           routingPolicyState,
           plansState,
           taskGraphState,
+          logicSelectedGraphId: logicSelectedGraphIdRef.current,
           refactorState,
           notebooksState,
           filePreviewByConversation,
-          codingResultByConversation
+          codingResultByConversation,
+          logicDraftGraph: logicDraftGraphRef.current,
+          logicPathBrowser
         },
         refs: {
           autoCreateConversationRef,
@@ -3774,7 +3971,32 @@ import {
           setRoutines,
           setRoutineSelectedId,
           setRoutineProgress,
-          setRoutineOutputPreview
+          setRoutineOutputPreview,
+          setLogicGraphs,
+          setLogicSelectedGraphId: (value) => {
+            const nextValue = typeof value === "function"
+              ? value(logicSelectedGraphIdRef.current)
+              : value;
+            logicSelectedGraphIdRef.current = nextValue;
+            setLogicSelectedGraphId(nextValue);
+          },
+          setLogicDraftGraph: (value) => {
+            const nextValue = typeof value === "function"
+              ? value(logicDraftGraphRef.current)
+              : value;
+            logicDraftGraphRef.current = nextValue;
+            setLogicDraftGraph(nextValue);
+          },
+          setLogicSelectedNodeId,
+          setLogicSelectedEdgeId,
+          setLogicPendingSourceNodeId,
+          setLogicActiveRunId,
+          setLogicRunSnapshot,
+          setLogicRunEvents,
+          setLogicJsonBuffer,
+          setLogicDirty,
+          setLogicLastMessage,
+          setLogicPathBrowser
         },
         actions: {
           send,
@@ -3802,6 +4024,8 @@ import {
           requestPlanGet,
           requestTaskGraphGet,
           requestTaskOutput,
+          requestLogicGraphList,
+          requestLogicGraphGet,
           requestRefactorRead,
           setResponsivePane
         },
@@ -3835,6 +4059,245 @@ import {
     }, [rootTab, authed]);
 
     useEffect(() => {
+      if (rootTab === "logic" && authed) {
+        refreshLogicGraphs();
+      }
+    }, [rootTab, authed]);
+
+    useEffect(() => {
+      if (rootTab !== "logic" || isPortraitMobileLayout) {
+        return;
+      }
+      const graph = logicDraftGraphRef.current;
+      const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+      const key = `${graph?.graphId || "draft"}:${nodes.length}:${graph?.edges?.length || 0}`;
+      const viewport = normalizeLogicViewport(graph?.viewport);
+      const shouldAutoFrame = !graph?.graphId
+        && viewport.x === LOGIC_VIEWPORT_DEFAULTS.x
+        && viewport.y === LOGIC_VIEWPORT_DEFAULTS.y
+        && viewport.zoom === LOGIC_VIEWPORT_DEFAULTS.zoom
+        && nodes.length > 0
+      if (!shouldAutoFrame || logicAutoFrameKeyRef.current === key) {
+        return;
+      }
+
+      const frameId = window.requestAnimationFrame(() => {
+        fitLogicViewport();
+        logicAutoFrameKeyRef.current = key;
+      });
+      return () => window.cancelAnimationFrame(frameId);
+    }, [rootTab, isPortraitMobileLayout, logicDraftGraph]);
+
+    useEffect(() => {
+      if (rootTab !== "logic") {
+        return undefined;
+      }
+      if (logicCanvasGesture !== "idle") {
+        return undefined;
+      }
+      if (typeof window === "undefined") {
+        return undefined;
+      }
+
+      const shell = logicCanvasShellRef.current;
+      if (!shell) {
+        return undefined;
+      }
+
+      const frameId = window.requestAnimationFrame(() => {
+        const nextMeasured = {};
+        const cards = Array.from(shell.querySelectorAll(".logic-node-card[data-logic-node-id]"));
+        cards.forEach((card) => {
+          const nodeId = `${card.getAttribute("data-logic-node-id") || ""}`.trim();
+          const nodeType = `${card.getAttribute("data-logic-node-type") || ""}`.trim();
+          if (!nodeId) {
+            return;
+          }
+
+          const computed = window.getComputedStyle(card);
+          const paddingX = (
+            parseFloat(computed.paddingLeft || "0")
+            + parseFloat(computed.paddingRight || "0")
+            + parseFloat(computed.borderLeftWidth || "0")
+            + parseFloat(computed.borderRightWidth || "0")
+          );
+          const paddingY = (
+            parseFloat(computed.paddingTop || "0")
+            + parseFloat(computed.paddingBottom || "0")
+            + parseFloat(computed.borderTopWidth || "0")
+            + parseFloat(computed.borderBottomWidth || "0")
+          );
+          const dragHandle = card.querySelector(".logic-node-drag-handle");
+          const body = card.querySelector(".logic-node-body");
+          const actions = card.querySelector(".logic-node-actions");
+          const frame = card.querySelector(".logic-node-frame");
+          const baseMinimum = getLogicNodeMinimumSize(nodeType);
+          const requiredWidth = Math.ceil(
+            Math.max(
+              dragHandle?.scrollWidth || 0,
+              body?.scrollWidth || 0,
+              actions?.scrollWidth || 0,
+              frame?.scrollWidth || 0
+            )
+            + paddingX
+            + 4
+          );
+          const requiredHeight = Math.ceil(
+            (dragHandle?.scrollHeight || 0)
+            + (body?.scrollHeight || 0)
+            + (actions?.scrollHeight || 0)
+            + paddingY
+            + 12
+          );
+
+          nextMeasured[nodeId] = {
+            width: Math.max(baseMinimum.width, requiredWidth),
+            height: Math.max(baseMinimum.height, requiredHeight)
+          };
+        });
+
+        setLogicMeasuredNodeMinimumById((prev) => {
+          const prevKeys = Object.keys(prev || {});
+          const nextKeys = Object.keys(nextMeasured);
+          if (prevKeys.length === nextKeys.length) {
+            const unchanged = nextKeys.every((key) => {
+              const previous = prev?.[key];
+              const next = nextMeasured[key];
+              return previous?.width === next?.width && previous?.height === next?.height;
+            });
+            if (unchanged) {
+              return prev;
+            }
+          }
+          return nextMeasured;
+        });
+      });
+
+      return () => window.cancelAnimationFrame(frameId);
+    }, [rootTab, currentLogicPane, isPortraitMobileLayout, logicCanvasGesture, logicDraftGraph, logicRunSnapshot, viewportSize.width, viewportSize.height]);
+
+    useEffect(() => {
+      if (typeof window === "undefined") {
+        return undefined;
+      }
+
+      function resolveLogicConnectionTarget(event) {
+        if (
+          typeof document === "undefined"
+          || !Number.isFinite(Number(event?.clientX))
+          || !Number.isFinite(Number(event?.clientY))
+        ) {
+          return { nodeId: "", portKey: "" };
+        }
+
+        const target = document.elementFromPoint(event.clientX, event.clientY);
+        const targetPort = target?.closest?.("[data-logic-port-role='input'][data-logic-node-id]");
+        return {
+          nodeId: targetPort?.getAttribute?.("data-logic-node-id") || "",
+          portKey: targetPort?.getAttribute?.("data-logic-port-key") || "main"
+        };
+      }
+
+      function handlePointerMove(event) {
+        const interaction = logicCanvasInteractionRef.current;
+        if (!interaction?.mode) {
+          return;
+        }
+
+        if (interaction.mode === "pan") {
+          patchLogicViewport({
+            x: interaction.originX + (event.clientX - interaction.startClientX),
+            y: interaction.originY + (event.clientY - interaction.startClientY),
+            zoom: normalizeLogicViewport(logicDraftGraphRef.current?.viewport).zoom
+          });
+          return;
+        }
+
+        if (interaction.mode === "node" && interaction.nodeId) {
+          const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+          patchLogicNodePosition(interaction.nodeId, {
+            x: interaction.originX + ((event.clientX - interaction.startClientX) / currentViewport.zoom),
+            y: interaction.originY + ((event.clientY - interaction.startClientY) / currentViewport.zoom)
+          });
+          return;
+        }
+
+        if (interaction.mode === "resize" && interaction.nodeId && interaction.handle) {
+          const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+          const deltaX = (event.clientX - interaction.startClientX) / currentViewport.zoom;
+          const deltaY = (event.clientY - interaction.startClientY) / currentViewport.zoom;
+          const nextSize = normalizeRuntimeLogicNodeSize({
+            width: interaction.originWidth
+              + (interaction.handle.includes("e") ? deltaX : 0)
+              - (interaction.handle.includes("w") ? deltaX : 0),
+            height: interaction.originHeight
+              + (interaction.handle.includes("s") ? deltaY : 0)
+              - (interaction.handle.includes("n") ? deltaY : 0)
+          }, interaction.nodeId, interaction.nodeType);
+          const nextPosition = {
+            x: interaction.originX,
+            y: interaction.originY
+          };
+
+          if (interaction.handle.includes("w")) {
+            nextPosition.x = interaction.originX + (interaction.originWidth - nextSize.width);
+          }
+          if (interaction.handle.includes("n")) {
+            nextPosition.y = interaction.originY + (interaction.originHeight - nextSize.height);
+          }
+
+          patchLogicNodeFrame(interaction.nodeId, {
+            position: nextPosition,
+            size: nextSize
+          });
+          return;
+        }
+
+        if (interaction.mode === "connect" && interaction.nodeId) {
+          const target = resolveLogicConnectionTarget(event);
+          setLogicConnectionPreview({
+            sourceNodeId: interaction.nodeId,
+            sourcePort: interaction.sourcePort || "main",
+            targetNodeId: target.nodeId,
+            targetPort: target.portKey || "main",
+            clientX: event.clientX,
+            clientY: event.clientY
+          });
+        }
+      }
+
+      function clearInteraction(event) {
+        const interaction = logicCanvasInteractionRef.current;
+        if (!interaction?.mode) {
+          return;
+        }
+
+        if (interaction.mode === "connect" && interaction.nodeId) {
+          const target = resolveLogicConnectionTarget(event);
+          if (target.nodeId) {
+            addLogicEdge(interaction.nodeId, target.nodeId, interaction.sourcePort || "main", target.portKey || "main");
+          }
+          setLogicPendingSourceNodeId("");
+          setLogicConnectionPreview(null);
+        }
+
+        logicCanvasInteractionRef.current = createEmptyLogicCanvasInteraction();
+        setLogicCanvasGesture("idle");
+      }
+
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", clearInteraction);
+      window.addEventListener("pointercancel", clearInteraction);
+      window.addEventListener("blur", clearInteraction);
+      return () => {
+        window.removeEventListener("pointermove", handlePointerMove);
+        window.removeEventListener("pointerup", clearInteraction);
+        window.removeEventListener("pointercancel", clearInteraction);
+        window.removeEventListener("blur", clearInteraction);
+      };
+    }, []);
+
+    useEffect(() => {
       if (rootTab === "settings" && authed) {
         setDoctorState((prev) => ({
           ...prev,
@@ -3858,6 +4321,948 @@ import {
 
     function refreshRoutines() {
       send({ type: "get_routines" });
+    }
+
+    function refreshLogicGraphs() {
+      requestLogicGraphList(send, { silent: true, queueIfClosed: false });
+    }
+
+    function requestLogicGraphDetail(graphId) {
+      if (!graphId) {
+        return;
+      }
+      requestLogicGraphGet(send, graphId, { silent: true, queueIfClosed: false });
+    }
+
+    function getRuntimeLogicNodeMinimum(nodeOrId, explicitType = "") {
+      const nodeId = typeof nodeOrId === "object" ? `${nodeOrId?.nodeId || ""}` : `${nodeOrId || ""}`;
+      const type = typeof nodeOrId === "object" ? `${nodeOrId?.type || explicitType || ""}` : `${explicitType || ""}`;
+      const baseMinimum = getLogicNodeMinimumSize(type);
+      const measuredMinimum = logicMeasuredNodeMinimumRef.current?.[nodeId] || null;
+      return {
+        width: Math.max(baseMinimum.width, Math.round(Number(measuredMinimum?.width) || 0)),
+        height: Math.max(baseMinimum.height, Math.round(Number(measuredMinimum?.height) || 0))
+      };
+    }
+
+    function normalizeRuntimeLogicNodeSize(size, nodeOrId, explicitType = "") {
+      const type = typeof nodeOrId === "object" ? `${nodeOrId?.type || explicitType || ""}` : `${explicitType || ""}`;
+      const normalized = normalizeLogicNodeSize(size, type);
+      const minimum = getRuntimeLogicNodeMinimum(nodeOrId, type);
+      return {
+        width: Math.max(normalized.width, minimum.width),
+        height: Math.max(normalized.height, minimum.height)
+      };
+    }
+
+    function normalizeLogicViewport(viewport) {
+      const normalized = viewport && typeof viewport === "object" ? viewport : {};
+      const zoom = Number.isFinite(Number(normalized.zoom))
+        ? Math.min(LOGIC_CANVAS_MAX_ZOOM, Math.max(LOGIC_CANVAS_MIN_ZOOM, Number(normalized.zoom)))
+        : LOGIC_VIEWPORT_DEFAULTS.zoom;
+      return {
+        x: Number.isFinite(Number(normalized.x)) ? Math.round(Number(normalized.x)) : LOGIC_VIEWPORT_DEFAULTS.x,
+        y: Number.isFinite(Number(normalized.y)) ? Math.round(Number(normalized.y)) : LOGIC_VIEWPORT_DEFAULTS.y,
+        zoom: Math.round(zoom * 100) / 100
+      };
+    }
+
+    function patchLogicViewport(nextViewportOrUpdater, options = {}) {
+      let changed = false;
+      setLogicDraftGraph((prev) => {
+        if (!prev || typeof prev !== "object") {
+          return prev;
+        }
+        const currentViewport = normalizeLogicViewport(prev.viewport);
+        const candidate = typeof nextViewportOrUpdater === "function"
+          ? nextViewportOrUpdater(currentViewport, prev)
+          : nextViewportOrUpdater;
+        const nextViewport = normalizeLogicViewport(candidate);
+        if (
+          currentViewport.x === nextViewport.x
+          && currentViewport.y === nextViewport.y
+          && currentViewport.zoom === nextViewport.zoom
+        ) {
+          logicDraftGraphRef.current = prev;
+          return prev;
+        }
+        changed = true;
+        const nextGraph = {
+          ...prev,
+          viewport: nextViewport
+        };
+        logicDraftGraphRef.current = nextGraph;
+        return nextGraph;
+      });
+      if (changed && options.markDirty !== false) {
+        setLogicDirty(true);
+      }
+      return changed;
+    }
+
+    function patchLogicNodePosition(nodeId, nextPosition) {
+      if (!nodeId) {
+        return false;
+      }
+      let changed = false;
+      setLogicDraftGraph((prev) => {
+        if (!prev || !Array.isArray(prev.nodes)) {
+          return prev;
+        }
+        const normalizedPosition = {
+          x: Math.max(32, Math.round(Number(nextPosition?.x) || 0)),
+          y: Math.max(32, Math.round(Number(nextPosition?.y) || 0))
+        };
+        const nodes = prev.nodes.map((node) => {
+          if (node.nodeId !== nodeId) {
+            return node;
+          }
+          const currentX = Number(node.position?.x) || 0;
+          const currentY = Number(node.position?.y) || 0;
+          if (currentX === normalizedPosition.x && currentY === normalizedPosition.y) {
+            return node;
+          }
+          changed = true;
+          return {
+            ...node,
+            position: normalizedPosition
+          };
+        });
+        if (!changed) {
+          logicDraftGraphRef.current = prev;
+          return prev;
+        }
+        const nextGraph = {
+            ...prev,
+            nodes
+          };
+        logicDraftGraphRef.current = nextGraph;
+        return nextGraph;
+      });
+      if (changed) {
+        setLogicDirty(true);
+      }
+      return changed;
+    }
+
+    function patchLogicNodeFrame(nodeId, nextFrame) {
+      if (!nodeId) {
+        return false;
+      }
+      let changed = false;
+      setLogicDraftGraph((prev) => {
+        if (!prev || !Array.isArray(prev.nodes)) {
+          return prev;
+        }
+        const normalizedPosition = {
+          x: Math.max(24, Math.round(Number(nextFrame?.position?.x) || 0)),
+          y: Math.max(24, Math.round(Number(nextFrame?.position?.y) || 0))
+        };
+        const nodes = prev.nodes.map((node) => {
+          if (node.nodeId !== nodeId) {
+            return node;
+          }
+          const normalizedSize = normalizeRuntimeLogicNodeSize(nextFrame?.size, node);
+          const currentPositionX = Number(node.position?.x) || 0;
+          const currentPositionY = Number(node.position?.y) || 0;
+          const currentSize = normalizeRuntimeLogicNodeSize(node.size, node);
+          if (
+            currentPositionX === normalizedPosition.x
+            && currentPositionY === normalizedPosition.y
+            && currentSize.width === normalizedSize.width
+            && currentSize.height === normalizedSize.height
+          ) {
+            return node;
+          }
+          changed = true;
+          return {
+            ...node,
+            position: normalizedPosition,
+            size: normalizedSize
+          };
+        });
+        if (!changed) {
+          logicDraftGraphRef.current = prev;
+          return prev;
+        }
+        const nextGraph = {
+          ...prev,
+          nodes
+        };
+        logicDraftGraphRef.current = nextGraph;
+        return nextGraph;
+      });
+      if (changed) {
+        setLogicDirty(true);
+      }
+      return changed;
+    }
+
+    function zoomLogicViewportAroundClient(nextZoom, clientX, clientY) {
+      const shell = logicCanvasShellRef.current;
+      if (!shell) {
+        return;
+      }
+      const rect = shell.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+      patchLogicViewport((currentViewport) => {
+        const safeZoom = Math.min(LOGIC_CANVAS_MAX_ZOOM, Math.max(LOGIC_CANVAS_MIN_ZOOM, Number(nextZoom) || currentViewport.zoom));
+        const anchorX = clientX - rect.left;
+        const anchorY = clientY - rect.top;
+        const graphX = (anchorX - currentViewport.x) / currentViewport.zoom;
+        const graphY = (anchorY - currentViewport.y) / currentViewport.zoom;
+        return {
+          x: anchorX - (graphX * safeZoom),
+          y: anchorY - (graphY * safeZoom),
+          zoom: safeZoom
+        };
+      });
+    }
+
+    function resetLogicViewport() {
+      patchLogicViewport(LOGIC_VIEWPORT_DEFAULTS);
+    }
+
+    function stepLogicViewportZoom(direction) {
+      const shell = logicCanvasShellRef.current;
+      const rect = shell?.getBoundingClientRect();
+      const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+      const nextZoom = currentViewport.zoom + (direction > 0 ? 0.12 : -0.12);
+      if (rect?.width && rect?.height) {
+        zoomLogicViewportAroundClient(nextZoom, rect.left + (rect.width / 2), rect.top + (rect.height / 2));
+        return;
+      }
+      patchLogicViewport({
+        ...currentViewport,
+        zoom: nextZoom
+      });
+    }
+
+    function fitLogicViewport() {
+      const shell = logicCanvasShellRef.current;
+      const rect = shell?.getBoundingClientRect();
+      const graph = logicDraftGraphRef.current;
+      const nodes = Array.isArray(graph?.nodes) ? graph.nodes : [];
+      if (!rect?.width || !rect?.height || nodes.length === 0) {
+        resetLogicViewport();
+        return;
+      }
+
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      nodes.forEach((node) => {
+        const x = Number(node.position?.x) || 0;
+        const y = Number(node.position?.y) || 0;
+        const size = normalizeRuntimeLogicNodeSize(node.size, node);
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x + size.width);
+        maxY = Math.max(maxY, y + size.height);
+      });
+
+      const boundsWidth = Math.max(420, maxX - minX);
+      const boundsHeight = Math.max(280, maxY - minY);
+      const nextZoom = Math.min(
+        1,
+        Math.max(
+          LOGIC_CANVAS_MIN_ZOOM,
+          Math.min(
+            LOGIC_CANVAS_MAX_ZOOM,
+            (rect.width - (LOGIC_CANVAS_STAGE_PADDING * 2)) / boundsWidth,
+            (rect.height - (LOGIC_CANVAS_STAGE_PADDING * 2)) / boundsHeight
+          )
+        )
+      );
+
+      patchLogicViewport({
+        x: (rect.width - (boundsWidth * nextZoom)) / 2 - (minX * nextZoom),
+        y: (rect.height - (boundsHeight * nextZoom)) / 2 - (minY * nextZoom),
+        zoom: nextZoom
+      });
+    }
+
+    function beginLogicViewportPan(event) {
+      if (!event || (event.button !== 0 && event.button !== 1)) {
+        return;
+      }
+      if (event.target && event.target.closest(".logic-node-card, .logic-canvas-toolbar, .logic-edge-delete, .logic-edge-path")) {
+        return;
+      }
+      const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+      logicCanvasInteractionRef.current = {
+        mode: "pan",
+        pointerId: event.pointerId,
+        nodeId: "",
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: currentViewport.x,
+        originY: currentViewport.y
+      };
+      setLogicCanvasGesture("pan");
+      event.preventDefault();
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    }
+
+    function beginLogicNodeDrag(event, nodeId) {
+      if (!event || event.button !== 0 || !nodeId) {
+        return;
+      }
+      if (
+        event.target
+        && event.target.closest(".logic-node-actions, .logic-node-resize-handle, .btn, input, textarea, select, option, label, a")
+      ) {
+        return;
+      }
+      const graph = logicDraftGraphRef.current;
+      const node = Array.isArray(graph?.nodes) ? graph.nodes.find((item) => item.nodeId === nodeId) : null;
+      if (!node) {
+        return;
+      }
+      logicCanvasInteractionRef.current = {
+        mode: "node",
+        pointerId: event.pointerId,
+        nodeId,
+        handle: "",
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: Number(node.position?.x) || 0,
+        originY: Number(node.position?.y) || 0,
+        originWidth: normalizeRuntimeLogicNodeSize(node.size, node).width,
+        originHeight: normalizeRuntimeLogicNodeSize(node.size, node).height,
+        nodeType: node.type
+      };
+      setLogicCanvasGesture("node");
+      setLogicSelectedNodeId(nodeId);
+      setLogicSelectedEdgeId("");
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    }
+
+    function handleLogicCanvasWheel(event) {
+      if (!event) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+      const nextZoom = currentViewport.zoom + (event.deltaY < 0 ? 0.08 : -0.08);
+      zoomLogicViewportAroundClient(nextZoom, event.clientX, event.clientY);
+    }
+
+    function mutateLogicDraft(updater) {
+      setLogicDraftGraph((prev) => {
+        const current = cloneLogicGraph(prev);
+        const next = typeof updater === "function" ? updater(current) : current;
+        const cloned = cloneLogicGraph(next);
+        logicDraftGraphRef.current = cloned;
+        return cloned;
+      });
+      setLogicDirty(true);
+    }
+
+    function resetLogicConnectionState() {
+      logicCanvasInteractionRef.current = createEmptyLogicCanvasInteraction();
+      setLogicPendingSourceNodeId("");
+      setLogicConnectionPreview(null);
+      if (logicCanvasGesture === "connect") {
+        setLogicCanvasGesture("idle");
+      }
+    }
+
+    function addLogicEdge(sourceNodeId, targetNodeId, sourcePort = "main", targetPort = "main") {
+      const normalizedSourceNodeId = `${sourceNodeId || ""}`.trim();
+      const normalizedTargetNodeId = `${targetNodeId || ""}`.trim();
+      const normalizedSourcePort = `${sourcePort || "main"}`.trim().toLowerCase() || "main";
+      const normalizedTargetPort = `${targetPort || "main"}`.trim().toLowerCase() || "main";
+      if (
+        !normalizedSourceNodeId
+        || !normalizedTargetNodeId
+        || normalizedSourceNodeId === normalizedTargetNodeId
+      ) {
+        return false;
+      }
+
+      let changed = false;
+      let selectedEdgeId = "";
+      setLogicDraftGraph((prev) => {
+        if (!prev || !Array.isArray(prev.nodes) || !Array.isArray(prev.edges)) {
+          return prev;
+        }
+
+        const hasSource = prev.nodes.some((node) => node.nodeId === normalizedSourceNodeId);
+        const hasTarget = prev.nodes.some((node) => node.nodeId === normalizedTargetNodeId);
+        if (!hasSource || !hasTarget) {
+          logicDraftGraphRef.current = prev;
+          return prev;
+        }
+
+        const existingEdge = prev.edges.find((edge) =>
+          edge.sourceNodeId === normalizedSourceNodeId
+          && edge.targetNodeId === normalizedTargetNodeId
+          && `${edge.sourcePort || "main"}`.trim().toLowerCase() === normalizedSourcePort
+          && `${edge.targetPort || "main"}`.trim().toLowerCase() === normalizedTargetPort
+        );
+        if (existingEdge) {
+          selectedEdgeId = existingEdge.edgeId;
+          logicDraftGraphRef.current = prev;
+          return prev;
+        }
+
+        const nextEdges = prev.edges.filter((edge) => {
+          const edgeTargetPort = `${edge.targetPort || "main"}`.trim().toLowerCase() || "main";
+          if (normalizedTargetPort !== "main" && edge.targetNodeId === normalizedTargetNodeId && edgeTargetPort === normalizedTargetPort) {
+            return false;
+          }
+          if (normalizedTargetPort === "main" && normalizedSourcePort !== "main" && edge.sourceNodeId === normalizedSourceNodeId && edge.targetNodeId === normalizedTargetNodeId) {
+            return false;
+          }
+          return true;
+        });
+        const nextEdge = createLogicEdge("", normalizedSourceNodeId, normalizedTargetNodeId, {
+          sourcePort: normalizedSourcePort,
+          targetPort: normalizedTargetPort
+        });
+        selectedEdgeId = nextEdge.edgeId;
+        changed = true;
+        const nextGraph = {
+          ...prev,
+          edges: [...nextEdges, nextEdge]
+        };
+        logicDraftGraphRef.current = nextGraph;
+        return nextGraph;
+      });
+
+      if (selectedEdgeId) {
+        setLogicSelectedEdgeId(selectedEdgeId);
+        setLogicSelectedNodeId("");
+      }
+      if (changed) {
+        setLogicDirty(true);
+      }
+      return changed;
+    }
+
+    function selectLogicGraph(graphId) {
+      logicSelectedGraphIdRef.current = graphId || "";
+      setLogicSelectedGraphId(graphId || "");
+      setLogicSelectedNodeId("");
+      setLogicSelectedEdgeId("");
+      closeLogicPathBrowser();
+      resetLogicConnectionState();
+      logicAutoFrameKeyRef.current = "";
+      if (graphId) {
+        requestLogicGraphDetail(graphId);
+      }
+    }
+
+    function createNewLogicGraphDraft() {
+      const defaultSchedule = createEmptyLogicGraph().schedule;
+      const nextGraph = createEmptyLogicGraph({
+        viewport: { ...LOGIC_VIEWPORT_DEFAULTS },
+        schedule: {
+          ...defaultSchedule,
+          timezoneId: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Seoul"
+        }
+      });
+      logicSelectedGraphIdRef.current = "";
+      setLogicSelectedGraphId("");
+      logicAutoFrameKeyRef.current = "";
+      logicDraftGraphRef.current = nextGraph;
+      setLogicDraftGraph(nextGraph);
+      setLogicSelectedNodeId("");
+      setLogicSelectedEdgeId("");
+      closeLogicPathBrowser();
+      resetLogicConnectionState();
+      setLogicRunSnapshot(null);
+      setLogicRunEvents([]);
+      setLogicActiveRunId("");
+      setLogicLastMessage("새 작업 흐름 초안을 만들었습니다.");
+      setLogicDirty(true);
+    }
+
+    function patchLogicGraphField(field, value) {
+      mutateLogicDraft((draft) => {
+        draft[field] = value;
+        return draft;
+      });
+    }
+
+    function patchLogicScheduleField(field, value) {
+      mutateLogicDraft((draft) => {
+        draft.schedule = {
+          ...(draft.schedule || {}),
+          [field]: value
+        };
+        return draft;
+      });
+    }
+
+    function addLogicNode(type) {
+      const shell = logicCanvasShellRef.current;
+      const rect = shell?.getBoundingClientRect();
+      const currentViewport = normalizeLogicViewport(logicDraftGraphRef.current?.viewport);
+      const visibleCenterX = rect?.width
+        ? ((rect.width * 0.5) - currentViewport.x) / currentViewport.zoom
+        : 360;
+      const visibleCenterY = rect?.height
+        ? ((rect.height * 0.42) - currentViewport.y) / currentViewport.zoom
+        : 220;
+      mutateLogicDraft((draft) => {
+        const offsetIndex = draft.nodes.length % 6;
+        draft.nodes.push(createLogicNode(type, {
+          position: {
+            x: Math.max(72, Math.round(visibleCenterX - 90 + ((offsetIndex % 3) * 140))),
+            y: Math.max(72, Math.round(visibleCenterY - 54 + (Math.floor(offsetIndex / 3) * 120)))
+          }
+        }));
+        return draft;
+      });
+    }
+
+    function deleteLogicNode(nodeId) {
+      if (!nodeId) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.filter((node) => node.nodeId !== nodeId);
+        draft.edges = draft.edges.filter((edge) => edge.sourceNodeId !== nodeId && edge.targetNodeId !== nodeId);
+        return draft;
+      });
+      if (logicSelectedNodeId === nodeId) {
+        setLogicSelectedNodeId("");
+        closeLogicPathBrowser();
+      }
+      if (logicPendingSourceNodeId === nodeId) {
+        resetLogicConnectionState();
+      }
+    }
+
+    function duplicateLogicNode(nodeId) {
+      const target = (logicDraftGraph.nodes || []).find((item) => item.nodeId === nodeId);
+      if (!target) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes.push(createLogicNode(target.type, {
+          title: `${target.title} 복제`,
+          position: {
+            x: (target.position?.x || 0) + 36,
+            y: (target.position?.y || 0) + 36
+          },
+          size: normalizeRuntimeLogicNodeSize(target.size, target),
+          continueOnError: !!target.continueOnError,
+          config: { ...(target.config || {}) },
+          outputs: { ...(target.outputs || {}) }
+        }));
+        return draft;
+      });
+    }
+
+    function moveLogicNode(nodeId, dx, dy) {
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.map((node) => {
+          if (node.nodeId !== nodeId) {
+            return node;
+          }
+          return {
+            ...node,
+            position: {
+              x: Math.max(24, (node.position?.x || 0) + dx),
+              y: Math.max(24, (node.position?.y || 0) + dy)
+            }
+          };
+        });
+        return draft;
+      });
+    }
+
+    function beginLogicNodeResize(event, nodeId, handle) {
+      if (!event || event.button !== 0 || !nodeId || !handle) {
+        return;
+      }
+      const graph = logicDraftGraphRef.current;
+      const node = Array.isArray(graph?.nodes) ? graph.nodes.find((item) => item.nodeId === nodeId) : null;
+      if (!node) {
+        return;
+      }
+      const size = normalizeRuntimeLogicNodeSize(node.size, node);
+      logicCanvasInteractionRef.current = {
+        mode: "resize",
+        pointerId: event.pointerId,
+        nodeId,
+        handle,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: Number(node.position?.x) || 0,
+        originY: Number(node.position?.y) || 0,
+        originWidth: size.width,
+        originHeight: size.height,
+        nodeType: node.type
+      };
+      setLogicCanvasGesture("resize");
+      setLogicSelectedNodeId(nodeId);
+      setLogicSelectedEdgeId("");
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    }
+
+    function beginLogicEdgeConnection(event, nodeId, sourcePort = "main") {
+      if (!event || event.button !== 0 || !nodeId) {
+        return;
+      }
+      logicCanvasInteractionRef.current = {
+        mode: "connect",
+        pointerId: event.pointerId,
+        nodeId,
+        sourcePort: `${sourcePort || "main"}`.trim().toLowerCase() || "main",
+        handle: "",
+        startClientX: event.clientX,
+        startClientY: event.clientY,
+        originX: 0,
+        originY: 0,
+        originWidth: LOGIC_NODE_DEFAULT_SIZE.width,
+        originHeight: LOGIC_NODE_DEFAULT_SIZE.height
+      };
+      setLogicPendingSourceNodeId(nodeId);
+      setLogicSelectedNodeId(nodeId);
+      setLogicSelectedEdgeId("");
+      setLogicConnectionPreview({
+        sourceNodeId: nodeId,
+        sourcePort: `${sourcePort || "main"}`.trim().toLowerCase() || "main",
+        targetNodeId: "",
+        targetPort: "main",
+        clientX: event.clientX,
+        clientY: event.clientY
+      });
+      setLogicCanvasGesture("connect");
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget?.setPointerCapture?.(event.pointerId);
+    }
+
+    function selectLogicNode(nodeId) {
+      setLogicSelectedNodeId(nodeId || "");
+      setLogicSelectedEdgeId("");
+      closeLogicPathBrowser();
+    }
+
+    function selectLogicEdge(edgeId) {
+      setLogicSelectedEdgeId(edgeId || "");
+      setLogicSelectedNodeId("");
+      closeLogicPathBrowser();
+    }
+
+    function deleteLogicEdge(edgeId) {
+      if (!edgeId) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.edges = draft.edges.filter((edge) => edge.edgeId !== edgeId);
+        return draft;
+      });
+      if (logicSelectedEdgeId === edgeId) {
+        setLogicSelectedEdgeId("");
+      }
+    }
+
+    function patchLogicNodeField(field, value) {
+      if (!logicSelectedNodeId) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.map((node) => node.nodeId === logicSelectedNodeId
+          ? { ...node, [field]: value }
+          : node);
+        return draft;
+      });
+    }
+
+    function patchLogicNodeConfigById(nodeId, key, value) {
+      if (!nodeId || !key) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.map((node) => node.nodeId === nodeId
+          ? {
+            ...node,
+            config: {
+              ...(node.config || {}),
+              [key]: value
+            }
+          }
+          : node);
+        return draft;
+      });
+    }
+
+    function patchLogicNodeConfigEntriesById(nodeId, entries) {
+      if (!nodeId || !entries || typeof entries !== "object") {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.map((node) => node.nodeId === nodeId
+          ? {
+            ...node,
+            config: {
+              ...(node.config || {}),
+              ...entries
+            }
+          }
+          : node);
+        return draft;
+      });
+    }
+
+    function patchLogicNodeConfig(key, value) {
+      if (!logicSelectedNodeId) {
+        return;
+      }
+      patchLogicNodeConfigById(logicSelectedNodeId, key, value);
+    }
+
+    function removeLogicFieldEdges(nodeId, fieldKey) {
+      if (!nodeId || !fieldKey) {
+        return;
+      }
+      const removedEdgeIds = [];
+      mutateLogicDraft((draft) => {
+        draft.edges = draft.edges.filter((edge) => {
+          const matches = edge.targetNodeId === nodeId
+            && `${edge.targetPort || "main"}`.trim().toLowerCase() === `${fieldKey}`.trim().toLowerCase();
+          if (matches) {
+            removedEdgeIds.push(edge.edgeId);
+          }
+          return !matches;
+        });
+        return draft;
+      });
+      if (removedEdgeIds.includes(logicSelectedEdgeId)) {
+        setLogicSelectedEdgeId("");
+      }
+    }
+
+    function patchLogicNodeBinding(nodeId, fieldKey, patch = {}) {
+      if (!nodeId || !fieldKey) {
+        return;
+      }
+      const targetNode = (logicDraftGraphRef.current?.nodes || []).find((node) => node.nodeId === nodeId);
+      const currentConfig = targetNode?.config || {};
+      const modeKey = getLogicFieldModeKey(fieldKey);
+      const literalKey = getLogicFieldLiteralKey(fieldKey);
+      const referenceKey = getLogicFieldReferenceKey(fieldKey);
+      const currentMode = `${currentConfig[modeKey] || ""}`.trim().toLowerCase()
+        || (isLogicReferenceValue(currentConfig[fieldKey]) ? "reference" : "literal");
+      const nextMode = `${patch.mode || currentMode || "literal"}`.trim().toLowerCase();
+      const currentLiteral = typeof currentConfig[literalKey] === "string"
+        ? currentConfig[literalKey]
+        : (isLogicReferenceValue(currentConfig[fieldKey]) ? "" : `${currentConfig[fieldKey] || ""}`);
+      const currentReference = typeof currentConfig[referenceKey] === "string"
+        ? currentConfig[referenceKey]
+        : (isLogicReferenceValue(currentConfig[fieldKey]) ? `${currentConfig[fieldKey] || ""}` : "");
+      const nextLiteral = patch.literalValue !== undefined ? `${patch.literalValue}` : currentLiteral;
+      const nextReference = patch.referenceValue !== undefined
+        ? normalizeLogicReferenceValue(patch.referenceValue)
+        : currentReference;
+      const entries = {
+        [modeKey]: nextMode,
+        [literalKey]: nextLiteral,
+        [referenceKey]: nextReference
+      };
+      if (nextMode === "reference") {
+        entries[fieldKey] = nextReference;
+      } else if (nextMode === "edge") {
+        entries[fieldKey] = "";
+      } else {
+        entries[fieldKey] = nextLiteral;
+      }
+      patchLogicNodeConfigEntriesById(nodeId, entries);
+      if ((nextMode !== "edge") || patch.clearEdges) {
+        removeLogicFieldEdges(nodeId, fieldKey);
+      }
+    }
+
+    function closeLogicPathBrowser() {
+      setLogicPathBrowser(createEmptyLogicPathBrowserState());
+    }
+
+    function requestLogicPathBrowserListing(scope, rootKey, browsePath, patch = {}) {
+      if (!ensureAuthed()) {
+        return false;
+      }
+      setLogicPathBrowser((prev) => ({
+        ...prev,
+        ...patch,
+        open: true,
+        loading: true,
+        scope,
+        rootKey,
+        browsePath,
+        message: ""
+      }));
+      const ok = requestLogicPathList(send, scope, rootKey, browsePath, { silent: true, queueIfClosed: false });
+      if (!ok) {
+        setError("logic:main", "오류: WebSocket 연결이 끊어졌습니다.");
+        setLogicPathBrowser((prev) => ({
+          ...prev,
+          loading: false,
+          message: "오류: WebSocket 연결이 끊어졌습니다."
+        }));
+      }
+      return ok;
+    }
+
+    function openLogicPathBrowser(field) {
+      const pathScope = `${field?.pathScope || "workspace"}`.trim() || "workspace";
+      const nodeId = `${logicSelectedNodeId || ""}`.trim();
+      if (!nodeId || !field?.key) {
+        return;
+      }
+      const selectedNode = (logicDraftGraph?.nodes || []).find((item) => item.nodeId === nodeId);
+      const currentValue = selectedNode?.config?.[field.key] ?? "";
+      const rootKey = resolveLogicPathBrowserRoot(pathScope, currentValue);
+      const browsePath = resolveLogicPathBrowserBrowsePath(pathScope, rootKey, currentValue);
+      requestLogicPathBrowserListing(pathScope, rootKey, browsePath, {
+        nodeId,
+        fieldKey: field.key,
+        fieldLabel: field.label || field.key,
+        allowDirectorySelection: !!field.allowDirectorySelection,
+        roots: [],
+        items: [],
+        displayPath: "",
+        parentBrowsePath: null,
+        directorySelectPath: null
+      });
+    }
+
+    function changeLogicPathBrowserRoot(rootKey) {
+      if (!logicPathBrowser.open) {
+        return;
+      }
+      requestLogicPathBrowserListing(logicPathBrowser.scope, rootKey, "", {});
+    }
+
+    function navigateLogicPathBrowser(browsePath) {
+      if (!logicPathBrowser.open) {
+        return;
+      }
+      requestLogicPathBrowserListing(logicPathBrowser.scope, logicPathBrowser.rootKey, browsePath || "", {});
+    }
+
+    function selectLogicPathBrowserValue(value) {
+      const nodeId = `${logicPathBrowser.nodeId || ""}`.trim();
+      const fieldKey = `${logicPathBrowser.fieldKey || ""}`.trim();
+      if (!nodeId || !fieldKey) {
+        closeLogicPathBrowser();
+        return;
+      }
+      patchLogicNodeConfigById(nodeId, fieldKey, value);
+      closeLogicPathBrowser();
+    }
+
+    function toggleLogicNodeEnabled(nodeId) {
+      if (!nodeId) {
+        return;
+      }
+      mutateLogicDraft((draft) => {
+        draft.nodes = draft.nodes.map((node) => node.nodeId === nodeId
+          ? { ...node, enabled: node.enabled === false }
+          : node);
+        return draft;
+      });
+    }
+
+    function saveLogicGraph() {
+      if (!ensureAuthed()) {
+        return;
+      }
+      setError("logic:main", "");
+      const draftGraph = logicDraftGraphRef.current;
+      const targetGraphId = logicSelectedGraphIdRef.current || draftGraph?.graphId || "";
+      const ok = requestLogicGraphSave(send, targetGraphId, draftGraph);
+      if (!ok) {
+        setError("logic:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function runLogicGraph() {
+      if (!ensureAuthed()) {
+        return;
+      }
+      const draftGraph = logicDraftGraphRef.current;
+      const targetGraphId = logicSelectedGraphIdRef.current || draftGraph?.graphId || "";
+      if (!targetGraphId) {
+        setError("logic:main", "먼저 저장된 작업 흐름을 선택하거나 저장하세요.");
+        return;
+      }
+      setError("logic:main", "");
+      const ok = requestLogicGraphRun(send, targetGraphId);
+      if (!ok) {
+        setError("logic:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function runLogicGraphById(graphId) {
+      const targetGraphId = `${graphId || ""}`.trim();
+      if (!ensureAuthed() || !targetGraphId) {
+        return;
+      }
+      setError("logic:main", "");
+      const ok = requestLogicGraphRun(send, targetGraphId);
+      if (!ok) {
+        setError("logic:main", "오류: WebSocket 연결이 끊어졌습니다.");
+      }
+    }
+
+    function cancelLogicGraphRun(runId) {
+      if (!ensureAuthed() || !runId) {
+        return;
+      }
+      requestLogicGraphCancel(send, runId, { silent: true, queueIfClosed: false });
+    }
+
+    function refreshLogicRun(runId) {
+      if (!ensureAuthed() || !runId) {
+        return;
+      }
+      requestLogicGraphRunGet(send, runId, { silent: true, queueIfClosed: false });
+    }
+
+    function exportLogicGraphJson() {
+      const serialized = JSON.stringify(logicDraftGraphRef.current || {}, null, 2);
+      setLogicJsonBuffer(serialized);
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(serialized).catch(() => {});
+      }
+      setLogicLastMessage("현재 작업 흐름 JSON을 복사했습니다.");
+    }
+
+    function importLogicGraphJson() {
+      try {
+        const parsed = JSON.parse(logicJsonBuffer);
+        const nextGraph = cloneLogicGraph({
+          ...parsed,
+          viewport: normalizeLogicViewport(parsed?.viewport)
+        });
+        logicAutoFrameKeyRef.current = "";
+        logicDraftGraphRef.current = nextGraph;
+        logicSelectedGraphIdRef.current = parsed.graphId || "";
+        setLogicDraftGraph(nextGraph);
+        setLogicSelectedGraphId(parsed.graphId || "");
+        setLogicSelectedNodeId("");
+        setLogicSelectedEdgeId("");
+        closeLogicPathBrowser();
+        resetLogicConnectionState();
+        setLogicDirty(true);
+        setLogicLastMessage("JSON으로 작업 흐름을 불러왔습니다.");
+      } catch (error) {
+        setError("logic:main", `JSON 형식이 잘못됐습니다: ${error?.message || error}`);
+      }
     }
 
     function patchRoutineForm(formType, patch) {
@@ -4184,6 +5589,62 @@ import {
       }),
       [groqModels, copilotModels]
     );
+
+    const logicInspectorCatalogs = useMemo(() => {
+      const dedupeOptions = (items) => {
+        const seen = new Set();
+        return (Array.isArray(items) ? items : []).filter((item) => {
+          const value = `${item?.value || ""}`;
+          if (seen.has(value)) {
+            return false;
+          }
+          seen.add(value);
+          return true;
+        });
+      };
+
+      const groqBaseOptions = Array.isArray(groqModels) && groqModels.length > 0
+        ? groqModels.map((item) => ({ value: item.id, label: item.id }))
+        : [{ value: "", label: "Groq 모델 로딩 전" }];
+      const copilotBaseOptions = Array.isArray(copilotModels) && copilotModels.length > 0
+        ? copilotModels.map((item) => ({ value: item.id, label: item.id }))
+        : [{ value: "", label: "Copilot 모델 로딩 전" }];
+
+      return {
+        groqModelOptions: groqBaseOptions,
+        copilotModelOptions: copilotBaseOptions,
+        codexModelOptions: CODEX_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label })),
+        geminiModelOptions: GEMINI_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label })),
+        cerebrasModelOptions: CEREBRAS_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label })),
+        groqWorkerOptions: dedupeOptions([
+          { value: NONE_MODEL, label: "Groq: 선택 안 함" },
+          { value: DEFAULT_GROQ_WORKER_MODEL, label: `Groq 기본: ${DEFAULT_GROQ_WORKER_MODEL}` },
+          ...groqBaseOptions
+        ]),
+        geminiWorkerOptions: dedupeOptions([
+          { value: NONE_MODEL, label: "Gemini: 선택 안 함" },
+          ...GEMINI_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label }))
+        ]),
+        cerebrasWorkerOptions: dedupeOptions([
+          { value: NONE_MODEL, label: "Cerebras: 선택 안 함" },
+          ...CEREBRAS_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label }))
+        ]),
+        copilotWorkerOptions: dedupeOptions([
+          { value: NONE_MODEL, label: "Copilot: 선택 안 함" },
+          ...copilotBaseOptions
+        ]),
+        codexWorkerOptions: dedupeOptions([
+          { value: NONE_MODEL, label: "Codex: 선택 안 함" },
+          ...CODEX_MODEL_CHOICES.map((item) => ({ value: item.id, label: item.label }))
+        ]),
+        routineOptions: (Array.isArray(routines) ? routines : []).map((item) => ({
+          value: item?.id || "",
+          label: item?.title
+            ? `${item.title} (${item.id || "-"})`
+            : (item?.id || "")
+        }))
+      };
+    }, [groqModels, copilotModels, routines]);
 
     const {
       groqRows,
@@ -4808,6 +6269,88 @@ import {
       });
     }
 
+    function renderLogic() {
+      const selectedNode = (logicDraftGraph?.nodes || []).find((item) => item.nodeId === logicSelectedNodeId) || null;
+      const selectedEdge = (logicDraftGraph?.edges || []).find((item) => item.edgeId === logicSelectedEdgeId) || null;
+      return renderLogicTabModule({
+        e,
+        graphs: logicGraphs,
+        selectedGraphId: logicSelectedGraphId,
+        draftGraph: logicDraftGraph,
+        selectedNode,
+        selectedEdge,
+        selectedNodeId: logicSelectedNodeId,
+        selectedEdgeId: logicSelectedEdgeId,
+        pendingSourceNodeId: logicPendingSourceNodeId,
+        connectionPreview: logicConnectionPreview,
+        activeRunId: logicActiveRunId,
+        runSnapshot: logicRunSnapshot,
+        runEvents: logicRunEvents,
+        viewport: normalizeLogicViewport(logicDraftGraph?.viewport),
+        canvasGesture: logicCanvasGesture,
+        resolveNodeSize: (node) => normalizeRuntimeLogicNodeSize(node?.size, node || null, node?.type || ""),
+        jsonBuffer: logicJsonBuffer,
+        dirty: logicDirty,
+        lastMessage: logicLastMessage,
+        logicInspectorCatalogs,
+        logicPathBrowser,
+        paletteGroup: logicPaletteGroup,
+        currentLogicPane,
+        isPortraitMobileLayout,
+        renderResponsiveSectionTabs,
+        setResponsivePane,
+        canvasShellRef: logicCanvasShellRef,
+        onSelectGraph: selectLogicGraph,
+        onCreateNewGraph: createNewLogicGraphDraft,
+        onDeleteGraph: (graphId) => {
+          if (!ensureAuthed() || !graphId) {
+            return;
+          }
+          requestLogicGraphDelete(send, graphId, { silent: true, queueIfClosed: false });
+        },
+        onExportGraph: exportLogicGraphJson,
+        onJsonBufferChange: setLogicJsonBuffer,
+        onImportGraph: importLogicGraphJson,
+        onSelectNode: selectLogicNode,
+        onSelectEdge: selectLogicEdge,
+        onMoveNode: moveLogicNode,
+        onCanvasPointerDown: beginLogicViewportPan,
+        onNodePointerDown: beginLogicNodeDrag,
+        onNodeResizePointerDown: beginLogicNodeResize,
+        onConnectionStart: beginLogicEdgeConnection,
+        onViewportReset: resetLogicViewport,
+        onViewportFit: fitLogicViewport,
+        onViewportZoomIn: () => stepLogicViewportZoom(1),
+        onViewportZoomOut: () => stepLogicViewportZoom(-1),
+        onDeleteEdge: deleteLogicEdge,
+        onDeleteNode: deleteLogicNode,
+        onDuplicateNode: duplicateLogicNode,
+        onGraphFieldChange: patchLogicGraphField,
+        onScheduleFieldChange: patchLogicScheduleField,
+        onNodeFieldChange: patchLogicNodeField,
+        onNodeConfigChange: patchLogicNodeConfig,
+        onNodeBindingChange: patchLogicNodeBinding,
+        onOpenPathBrowser: openLogicPathBrowser,
+        onClosePathBrowser: closeLogicPathBrowser,
+        onSelectPathBrowserRoot: changeLogicPathBrowserRoot,
+        onNavigatePathBrowser: navigateLogicPathBrowser,
+        onSelectPathBrowserValue: selectLogicPathBrowserValue,
+        onToggleNodeEnabled: toggleLogicNodeEnabled,
+        onPaletteGroupChange: setLogicPaletteGroup,
+        onSelectNodeType: addLogicNode,
+        onRun: runLogicGraph,
+        onRunGraph: runLogicGraphById,
+        onCancelRun: cancelLogicGraphRun,
+        onSave: saveLogicGraph,
+        onRefresh: () => {
+          refreshLogicGraphs();
+          if (logicActiveRunId) {
+            refreshLogicRun(logicActiveRunId);
+          }
+        }
+      });
+    }
+
     function renderToolControlPanel() {
       return renderToolControlPanelModule({
         e,
@@ -5016,6 +6559,8 @@ import {
           ? renderSettings()
           : rootTab === "routine"
             ? renderRoutine()
+            : rootTab === "logic"
+              ? renderLogic()
             : renderWorkspace()
       ),
       renderCodingResultOverlay(),

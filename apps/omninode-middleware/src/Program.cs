@@ -220,6 +220,9 @@ internal static class Program
         var memoryApplicationService = new MemoryApplicationService(commandService);
         var toolApplicationService = new ToolApplicationService(commandService);
         var routineApplicationService = new RoutineApplicationService(commandService);
+        var logicGraphRuntimeCoordinator = new LogicGraphRuntimeCoordinator(pathResolver);
+        commandService.ConfigureLogicGraphRuntime(pathResolver, logicGraphRuntimeCoordinator);
+        var logicApplicationService = new LogicApplicationService(commandService);
         var doctorApplicationService = new DoctorApplicationService(commandService);
         var planApplicationService = new PlanApplicationService(commandService);
         var taskGraphApplicationService = new TaskGraphApplicationService(commandService);
@@ -241,6 +244,7 @@ internal static class Program
             memoryApplicationService,
             toolApplicationService,
             routineApplicationService,
+            logicApplicationService,
             doctorApplicationService,
             planApplicationService,
             taskGraphApplicationService,
@@ -288,5 +292,6 @@ internal static class Program
 
         await Task.WhenAll(webTask, telegramTask);
         await taskGraphCoordinator.StopAsync();
+        await logicGraphRuntimeCoordinator.StopAsync();
     }
 }

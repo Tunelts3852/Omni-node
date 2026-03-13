@@ -1,6 +1,6 @@
 # Omni-node 정리 기준
 
-업데이트 기준: 2026-03-10
+업데이트 기준: 2026-03-12
 
 이 문서는 나중에 저장소를 다시 열었을 때 `무엇을 지워도 되는지`, `무엇을 보존해야 하는지`, `어떤 경로를 기준으로 기억할지`를 빠르게 판단하기 위한 위생 기준표입니다.
 
@@ -34,6 +34,7 @@
 | `apps/omninode-middleware/bin/` | 빌드 산출물 | 삭제 가능 |
 | `apps/omninode-middleware/obj/` | 빌드 산출물 | 삭제 가능 |
 | `workspace/.runtime/` | 회귀 결과/임시 분석물 | 보관 이유가 없으면 정리 가능 |
+| `workspace/.runtime/logic/` | 로직 그래프 실행 스냅샷과 이벤트 로그 | 과거 로직 실행 추적이 필요 없으면 정리 가능 |
 | `workspace/runtime/` | 현재 세션 상태 스냅샷 | 세션 종료 후 필요 없으면 정리 가능 |
 | `/tmp/omninode_core.<uid>.sock` | 임시 실행 상태 | 프로세스가 내려간 뒤 꼬였을 때만 정리 |
 | `/tmp/omninode.<uid>.lock` | 임시 실행 상태 | 프로세스가 내려간 뒤 꼬였을 때만 정리 |
@@ -45,7 +46,7 @@
 | `~/.omninode/plans/` | 상태 원본 | 계획/리뷰/실행 이력을 보존하려면 유지 |
 | `~/.omninode/tasks/` | 상태 원본 | task graph 정의와 최근 실행 상태를 보존하려면 유지 |
 | `~/.omninode/notebooks/` | 상태 원본 | learnings / decisions / verification / handoff를 보존하려면 유지 |
-| `~/.omninode/routines.json` | 상태 원본 | 루틴 정의를 보존하려면 유지 |
+| `~/.omninode/routines.json` | 상태 원본 | 루틴과 `logic_graph` 정의를 보존하려면 유지 |
 | `~/.omninode/conversations.json` | 상태 원본 | 대화 기록을 보존하려면 유지 |
 | `~/.omninode/auth_sessions.json` | 상태 원본 | 세션 복구 상태를 보존하려면 유지 |
 | `~/.omninode/telegram_update_offset.txt` | 상태 원본 | 텔레그램 polling 재시작 지점을 보존하려면 유지 |
@@ -78,9 +79,11 @@ Omni-node 상태는 세 층으로 기억하면 덜 헷갈립니다.
 루틴은 특히 아래처럼 봅니다.
 
 - 루틴 정의를 살리고 싶으면 `~/.omninode/routines.json`이 중요합니다.
+- 로직 탭 그래프도 같은 `~/.omninode/routines.json`에 저장되므로, 로직 워크플로를 남기려면 같이 보존해야 합니다.
 - 코딩 탭에서 만들어진 실제 파일까지 남기려면 `workspace/coding/runs/`를 같이 봐야 합니다.
 - 최근 코딩 결과 복원과 다중 코딩 비교 메타를 남기려면 `~/.omninode/conversations.json`도 같이 봐야 합니다.
 - 과거 실행 결과까지 남기려면 `workspace/coding/routines/`도 같이 봐야 합니다.
+- 로직 그래프 실행 흔적까지 남기려면 `workspace/.runtime/logic/`도 같이 봐야 합니다.
 - Task graph를 다시 열어야 하면 `~/.omninode/tasks/`와 `workspace/.runtime/tasks/`를 같이 봐야 합니다.
 - 세션 handoff를 다시 열어야 하면 `~/.omninode/notebooks/`를 같이 봐야 합니다.
 
@@ -98,12 +101,13 @@ Omni-node 상태는 세 층으로 기억하면 덜 헷갈립니다.
 
 1. 기본 워크스페이스 예시를 `workspace/coding` 하나로만 쓰고 있는지 본다.
 2. `workspace/.runtime/`, `workspace/runtime/`에 남겨둘 이유 없는 임시 산출물이 쌓였는지 본다.
-3. `node_modules/`, `output/playwright/`, `bin/`, `obj/`, `venv/`처럼 다시 만들 수 있는 캐시가 과하게 커졌는지 본다.
-4. 지우기 전에 `~/.omninode`, `workspace/coding/runs/`, `workspace/coding/routines/` 중 무엇을 보존해야 하는지 먼저 판단한다.
-5. 점검은 `부팅 검증 -> readyz/WS roundtrip 확인 -> 기본 건강검진(npm test 가능 시, repo hygiene gate 포함) -> 샌드박스 직접 실행` 순서로 기억한다.
-6. `~/.omninode/doctor/history/`는 보관 이유가 없을 때만 정리하고, 최신 진단이 필요하면 `last-report.json`은 남긴다.
-7. `~/.omninode/plans/`는 재생성 캐시가 아니라 계획 원본이므로, 진행 중인 작업을 다시 열 가능성이 있으면 지우지 않는다.
-8. `~/.omninode/tasks/`와 `workspace/.runtime/tasks/`는 Task graph 재개 근거가 되므로, 세션 복구가 필요하면 지우지 않는다.
-9. `~/.omninode/notebooks/`는 handoff 원본이므로, 다음 세션 인수인계가 필요하면 지우지 않는다.
-10. `AGENTS.md`, `AGENTS.override.md`, `.omni/skills/`, `.omni/commands/`는 project context 원본이므로 캐시처럼 지우지 않는다.
-11. `~/.omninode/AGENTS.md`, `~/.omninode/skills/`, `~/.omninode/commands/`도 전역 문맥 원본이므로 보존 여부를 먼저 판단한다.
+3. `workspace/.runtime/logic/`에 오래된 로직 런 스냅샷이 쌓였는지 본다.
+4. `node_modules/`, `output/playwright/`, `bin/`, `obj/`, `venv/`처럼 다시 만들 수 있는 캐시가 과하게 커졌는지 본다.
+5. 지우기 전에 `~/.omninode`, `workspace/coding/runs/`, `workspace/coding/routines/`, `workspace/.runtime/logic/` 중 무엇을 보존해야 하는지 먼저 판단한다.
+6. 점검은 `부팅 검증 -> readyz/WS roundtrip 확인 -> 기본 건강검진(npm test 가능 시, repo hygiene gate 포함) -> 샌드박스 직접 실행` 순서로 기억한다.
+7. `~/.omninode/doctor/history/`는 보관 이유가 없을 때만 정리하고, 최신 진단이 필요하면 `last-report.json`은 남긴다.
+8. `~/.omninode/plans/`는 재생성 캐시가 아니라 계획 원본이므로, 진행 중인 작업을 다시 열 가능성이 있으면 지우지 않는다.
+9. `~/.omninode/tasks/`와 `workspace/.runtime/tasks/`는 Task graph 재개 근거가 되므로, 세션 복구가 필요하면 지우지 않는다.
+10. `~/.omninode/notebooks/`는 handoff 원본이므로, 다음 세션 인수인계가 필요하면 지우지 않는다.
+11. `AGENTS.md`, `AGENTS.override.md`, `.omni/skills/`, `.omni/commands/`는 project context 원본이므로 캐시처럼 지우지 않는다.
+12. `~/.omninode/AGENTS.md`, `~/.omninode/skills/`, `~/.omninode/commands/`도 전역 문맥 원본이므로 보존 여부를 먼저 판단한다.

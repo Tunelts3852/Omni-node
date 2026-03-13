@@ -340,6 +340,8 @@ public sealed partial class WebSocketGateway
         public string? Kind { get; set; }
         public string? PlanId { get; set; }
         public string? GraphId { get; set; }
+        public string? LogicGraphJson { get; set; }
+        public string? LogicRunId { get; set; }
         public string? TaskId { get; set; }
         public string? PreviewId { get; set; }
         public string? Language { get; set; }

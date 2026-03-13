@@ -86,6 +86,28 @@ public interface ITaskGraphApplicationService
     TaskOutputResult? GetTaskOutput(string graphId, string taskId);
 }
 
+public interface ILogicApplicationService
+{
+    LogicGraphListResult ListLogicGraphs();
+    LogicGraphActionResult GetLogicGraph(string graphId);
+    LogicPathBrowseResult BrowseLogicPath(string scope, string? rootKey, string? browsePath);
+    Task<LogicGraphActionResult> SaveLogicGraphAsync(
+        string? graphId,
+        string logicGraphJson,
+        string source,
+        CancellationToken cancellationToken
+    );
+    LogicGraphActionResult DeleteLogicGraph(string graphId);
+    Task<LogicRunActionResult> RunLogicGraphAsync(
+        string graphId,
+        string source,
+        Action<LogicRunEvent>? eventCallback,
+        CancellationToken cancellationToken
+    );
+    LogicRunActionResult CancelLogicGraphRun(string runId);
+    LogicRunSnapshot? GetLogicGraphRun(string runId);
+}
+
 public interface IRefactorApplicationService
 {
     Task<RefactorActionResult> ReadWithAnchorsAsync(string path, CancellationToken cancellationToken);
@@ -381,6 +403,7 @@ public interface IGatewayApplicationService :
     IMemoryApplicationService,
     IToolApplicationService,
     ITaskGraphApplicationService,
+    ILogicApplicationService,
     IRefactorApplicationService,
     IContextApplicationService,
     INotebookApplicationService,

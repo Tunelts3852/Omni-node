@@ -1,6 +1,6 @@
 # Omni-node Safe Refactoring
 
-업데이트 기준: 2026-03-10
+업데이트 기준: 2026-03-12
 
 이 문서는 코딩 탭의 `Safe Refactor` 패널과 미들웨어의 안전한 refactor preview/apply 흐름을 설명한다.
 

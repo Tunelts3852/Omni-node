@@ -4,6 +4,18 @@ import {
   summarizeToolResult
 } from "./modules/dashboard-server-message-router.mjs";
 
+function createLogicDraft(graphId = "", title = "새 작업 흐름") {
+  return {
+    graphId,
+    title,
+    description: "",
+    schedule: { enabled: false, scheduleKind: "daily", scheduleTime: "08:00" },
+    enabled: true,
+    nodes: [],
+    edges: []
+  };
+}
+
 function createStateStore() {
   return {
     rootTab: "settings",
@@ -14,10 +26,12 @@ function createStateStore() {
     routingPolicyState: { lastAction: "" },
     plansState: { selectedPlanId: "plan-1", lastAction: "" },
     taskGraphState: { selectedGraphId: "graph-1", selectedTaskId: "task-1", lastAction: "" },
+    logicSelectedGraphId: "",
     refactorState: { lastAction: "", mode: "anchor" },
     notebooksState: { lastAction: "" },
     filePreviewByConversation: {},
     codingResultByConversation: {},
+    logicDraftGraph: createLogicDraft(),
     authMeta: {},
     authed: false,
     authLocalOffset: "",
@@ -68,6 +82,26 @@ function createStateStore() {
     routineSelectedId: "",
     routineProgress: {},
     routineOutputPreview: {},
+    logicGraphs: [],
+    logicSelectedNodeId: "",
+    logicSelectedEdgeId: "",
+    logicPendingSourceNodeId: "",
+    logicActiveRunId: "",
+    logicRunSnapshot: null,
+    logicRunEvents: [],
+    logicJsonBuffer: "",
+    logicDirty: false,
+    logicLastMessage: "",
+    logicPathBrowser: {
+      open: false,
+      loading: false,
+      nodeId: "",
+      fieldKey: "",
+      rootKey: "workspace",
+      roots: [],
+      items: [],
+      message: ""
+    },
     metrics: "",
     errors: {}
   };
@@ -91,10 +125,13 @@ function createContext(store, calls) {
       routingPolicyState: store.routingPolicyState,
       plansState: store.plansState,
       taskGraphState: store.taskGraphState,
+      logicSelectedGraphId: store.logicSelectedGraphId,
       refactorState: store.refactorState,
       notebooksState: store.notebooksState,
       filePreviewByConversation: store.filePreviewByConversation,
-      codingResultByConversation: store.codingResultByConversation
+      codingResultByConversation: store.codingResultByConversation,
+      logicDraftGraph: store.logicDraftGraph,
+      logicPathBrowser: store.logicPathBrowser
     },
     refs: {
       autoCreateConversationRef: { current: {} },
@@ -155,7 +192,20 @@ function createContext(store, calls) {
       setRoutines: createSetter(store, "routines"),
       setRoutineSelectedId: createSetter(store, "routineSelectedId"),
       setRoutineProgress: createSetter(store, "routineProgress"),
-      setRoutineOutputPreview: createSetter(store, "routineOutputPreview")
+      setRoutineOutputPreview: createSetter(store, "routineOutputPreview"),
+      setLogicGraphs: createSetter(store, "logicGraphs"),
+      setLogicSelectedGraphId: createSetter(store, "logicSelectedGraphId"),
+      setLogicDraftGraph: createSetter(store, "logicDraftGraph"),
+      setLogicSelectedNodeId: createSetter(store, "logicSelectedNodeId"),
+      setLogicSelectedEdgeId: createSetter(store, "logicSelectedEdgeId"),
+      setLogicPendingSourceNodeId: createSetter(store, "logicPendingSourceNodeId"),
+      setLogicActiveRunId: createSetter(store, "logicActiveRunId"),
+      setLogicRunSnapshot: createSetter(store, "logicRunSnapshot"),
+      setLogicRunEvents: createSetter(store, "logicRunEvents"),
+      setLogicJsonBuffer: createSetter(store, "logicJsonBuffer"),
+      setLogicDirty: createSetter(store, "logicDirty"),
+      setLogicLastMessage: createSetter(store, "logicLastMessage"),
+      setLogicPathBrowser: createSetter(store, "logicPathBrowser")
     },
     actions: {
       send: (payload) => {
@@ -211,6 +261,9 @@ function createContext(store, calls) {
       requestTaskGraphList: (_send, options) => {
         calls.requests.push({ type: "task_graph_list", options });
       },
+      requestLogicGraphList: (_send, options) => {
+        calls.requests.push({ type: "logic_graph_list", options });
+      },
       requestContextScan: (_send, options) => {
         calls.requests.push({ type: "context_scan", options });
       },
@@ -228,6 +281,9 @@ function createContext(store, calls) {
       },
       requestTaskGraphGet: (_send, graphId, options) => {
         calls.requests.push({ type: "task_graph_get", graphId, options });
+      },
+      requestLogicGraphGet: (_send, graphId, options) => {
+        calls.requests.push({ type: "logic_graph_get", graphId, options });
       },
       requestTaskOutput: (_send, graphId, taskId, options) => {
         calls.requests.push({ type: "task_output", graphId, taskId, options });
@@ -342,6 +398,7 @@ function run() {
       "routing_decision_get_last",
       "plan_list",
       "task_graph_list",
+      "logic_graph_list",
       "context_scan",
       "skills_list",
       "commands_list",
@@ -396,6 +453,151 @@ function run() {
   assert.equal(store.guardAlertDispatchState.statusLabel, "sent");
   assert.equal(store.guardAlertDispatchState.sentCount, 1);
 
+  const logicStore = createStateStore();
+  const logicCalls = createCallStore();
+  logicStore.rootTab = "logic";
+
+  handleDashboardServerMessage({
+    type: "logic_graph_list_result",
+    items: [
+      { graphId: "logic-a", title: "A", nodeCount: 2, edgeCount: 1 },
+      { graphId: "logic-b", title: "B", nodeCount: 3, edgeCount: 2 }
+    ]
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicGraphs.length, 2);
+  assert.equal(logicStore.logicSelectedGraphId, "logic-a");
+  assert.deepEqual(
+    logicCalls.requests.filter((entry) => entry.type === "logic_graph_get").map((entry) => entry.graphId),
+    ["logic-a"]
+  );
+
+  handleDashboardServerMessage({
+    type: "logic_graph_result",
+    ok: true,
+    message: "작업 흐름을 불러왔습니다.",
+    graph: createLogicDraft("logic-a", "그래프 A"),
+    summary: { graphId: "logic-a" }
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicDraftGraph.graphId, "logic-a");
+  assert.equal(logicStore.logicJsonBuffer.includes("\"graphId\": \"logic-a\""), true);
+  assert.equal(logicStore.logicDirty, false);
+
+  handleDashboardServerMessage({
+    type: "logic_graph_list_result",
+    items: [
+      { graphId: "logic-a", title: "A", nodeCount: 2, edgeCount: 1 }
+    ]
+  }, createContext(logicStore, logicCalls));
+
+  assert.deepEqual(
+    logicCalls.requests.filter((entry) => entry.type === "logic_graph_get").map((entry) => entry.graphId),
+    ["logic-a"]
+  );
+
+  handleDashboardServerMessage({
+    type: "logic_graph_run_result",
+    ok: true,
+    message: "흐름 실행을 시작했습니다.",
+    runId: "logic-run-1",
+    snapshot: {
+      runId: "logic-run-1",
+      graphId: "logic-a",
+      title: "그래프 A",
+      status: "running",
+      source: "web",
+      startedAtUtc: "2026-03-12T00:00:00Z",
+      updatedAtUtc: "2026-03-12T00:00:00Z",
+      completedAtUtc: "",
+      resultText: "",
+      error: "",
+      logs: [],
+      nodes: []
+    }
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicActiveRunId, "logic-run-1");
+  assert.equal(logicStore.logicRunSnapshot.status, "running");
+  assert.equal(logicStore.logicRunEvents.length, 1);
+
+  handleDashboardServerMessage({
+    type: "logic_graph_run_event",
+    runId: "logic-run-1",
+    graphId: "logic-a",
+    kind: "node_completed",
+    message: "start 완료",
+    nodeId: "start",
+    snapshot: {
+      runId: "logic-run-1",
+      graphId: "logic-a",
+      title: "그래프 A",
+      status: "running",
+      source: "web",
+      startedAtUtc: "2026-03-12T00:00:00Z",
+      updatedAtUtc: "2026-03-12T00:00:01Z",
+      completedAtUtc: "",
+      resultText: "",
+      error: "",
+      logs: [],
+      nodes: []
+    }
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicRunEvents[0].nodeId, "start");
+  assert.equal(logicStore.logicLastMessage, "start 완료");
+
+  logicStore.logicPathBrowser = {
+    open: true,
+    loading: true,
+    nodeId: "node-1",
+    fieldKey: "path",
+    rootKey: "workspace",
+    roots: [],
+    items: [],
+    message: ""
+  };
+
+  handleDashboardServerMessage({
+    type: "logic_path_list_result",
+    ok: true,
+    message: "경로 목록을 불러왔습니다.",
+    scope: "workspace",
+    rootKey: "workspace",
+    rootLabel: "워크스페이스",
+    displayPath: "워크스페이스 / docs",
+    browsePath: "docs",
+    parentBrowsePath: "",
+    directorySelectPath: "docs/",
+    roots: [
+      { key: "workspace", label: "워크스페이스" }
+    ],
+    items: [
+      { name: "README.md", isDirectory: false, browsePath: "", selectPath: "docs/README.md", description: "1.2 KB · 2026-03-13 00:00" }
+    ]
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicPathBrowser.loading, false);
+  assert.equal(logicStore.logicPathBrowser.browsePath, "docs");
+  assert.equal(logicStore.logicPathBrowser.items[0].selectPath, "docs/README.md");
+
+  handleDashboardServerMessage({
+    type: "logic_graph_list_result",
+    items: []
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.logicSelectedGraphId, "");
+  assert.equal(logicStore.logicDraftGraph.graphId, "");
+  assert.equal(logicStore.logicRunEvents.length, 0);
+  assert.equal(logicStore.logicLastMessage, "저장된 작업 흐름이 없습니다.");
+
+  handleDashboardServerMessage({
+    type: "error",
+    message: "graphId가 필요합니다."
+  }, createContext(logicStore, logicCalls));
+
+  assert.equal(logicStore.errors["logic:main"], "오류: graphId가 필요합니다.");
+
   handleDashboardServerMessage({
     type: "error",
     message: "coding unauthorized"
@@ -410,7 +612,7 @@ function run() {
 
   console.log(JSON.stringify({
     ok: true,
-    assertions: 20,
+    assertions: 33,
     delegated: calls.delegated,
     requestTypes: calls.requests.map((entry) => entry.type),
     toolResultType: store.toolResultItems[0].type,

@@ -2923,7 +2923,1151 @@ body,
   color: var(--muted);
 }
 
-@media (max-width: 1280px) {
+/* ─── Logic ─── */
+.logic-tab-shell {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 0;
+  max-height: none;
+  padding: 18px 20px 26px;
+  overflow: auto;
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 16px;
+  align-items: stretch;
+}
+
+.logic-tab-shell.mobile {
+  min-height: 100vh;
+  max-height: none;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px;
+}
+
+.logic-top-grid {
+  min-height: min(72vh, 960px);
+  display: grid;
+  grid-template-columns: minmax(182px, 0.7fr) minmax(0, 2.3fr) minmax(260px, 1fr);
+  grid-template-areas: "list canvas palette";
+  gap: 16px;
+  align-items: stretch;
+}
+
+.logic-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(213, 223, 236, 0.9);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(247, 250, 255, 0.965));
+  box-shadow: 0 14px 30px rgba(18, 31, 53, 0.05);
+}
+
+.logic-pane-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.logic-pane-head strong {
+  font-size: 18px;
+  line-height: 1.2;
+  color: #1c314f;
+}
+
+.logic-list-pane {
+  grid-area: list;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  align-content: start;
+  overflow: hidden;
+}
+
+.logic-canvas-pane {
+  grid-area: canvas;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.logic-palette-pane {
+  grid-area: palette;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.logic-inspector-pane {
+  height: auto;
+  min-height: 340px;
+  overflow: hidden;
+}
+
+.logic-graph-list,
+.logic-palette-list {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  gap: 10px;
+}
+
+.logic-current-graph-card,
+.logic-graph-list-row,
+.logic-json-card,
+.logic-run-log-item,
+.logic-run-summary,
+.logic-empty-card,
+.logic-palette-item-card,
+.logic-palette-tab {
+  border: 1px solid rgba(214, 224, 236, 0.94);
+  border-radius: 16px;
+  background: rgba(250, 252, 255, 0.96);
+}
+
+.logic-current-graph-card,
+.logic-json-card,
+.logic-empty-card {
+  padding: 14px;
+}
+
+.logic-current-graph-card {
+  display: grid;
+  gap: 12px;
+}
+
+.logic-graph-current-meta,
+.logic-side-actions,
+.logic-graph-row-meta,
+.logic-graph-row-actions,
+.logic-canvas-meta,
+.logic-canvas-toolbar,
+.logic-selected-node-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.logic-graph-list-row {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), transform var(--transition-fast);
+}
+
+.logic-graph-list-row:hover {
+  border-color: rgba(178, 199, 231, 0.98);
+  background: rgba(246, 250, 255, 0.98);
+  box-shadow: 0 10px 20px rgba(31, 58, 97, 0.05);
+  transform: translateY(-1px);
+}
+
+.logic-graph-list-row.active {
+  border-color: rgba(146, 182, 238, 0.98);
+  background:
+    linear-gradient(180deg, rgba(238, 245, 255, 0.98), rgba(255, 255, 255, 0.98));
+  box-shadow: 0 12px 24px rgba(39, 85, 165, 0.08);
+}
+
+.logic-graph-list-main {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.logic-graph-list-main-static {
+  cursor: default;
+}
+
+.logic-graph-title-input {
+  min-width: 0;
+}
+
+.logic-graph-row-meta {
+  justify-content: space-between;
+}
+
+.logic-graph-row-actions {
+  align-items: flex-start;
+}
+
+.logic-graph-id-text,
+.logic-json-textarea,
+.logic-config-textarea {
+  font-family: "SF Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.logic-graph-id-text {
+  color: #7085a1;
+}
+
+.logic-empty-card {
+  display: grid;
+  place-items: center;
+  min-height: 132px;
+  color: #60758e;
+  text-align: center;
+}
+
+.logic-json-textarea {
+  min-height: 160px;
+  max-height: 260px;
+  resize: vertical;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.logic-palette-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.logic-palette-tab {
+  padding: 9px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #445d7f;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), transform var(--transition-fast);
+}
+
+.logic-palette-tab:hover {
+  transform: translateY(-1px);
+}
+
+.logic-palette-tab.active {
+  border-color: rgba(150, 178, 221, 0.98);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.48);
+}
+
+.logic-palette-tab-flow.active {
+  background: linear-gradient(180deg, rgba(233, 242, 255, 0.98), rgba(247, 250, 255, 0.98));
+}
+
+.logic-palette-tab-ai.active {
+  background: linear-gradient(180deg, rgba(255, 238, 234, 0.98), rgba(255, 249, 247, 0.98));
+}
+
+.logic-palette-tab-automation.active {
+  background: linear-gradient(180deg, rgba(233, 248, 243, 0.98), rgba(248, 252, 250, 0.98));
+}
+
+.logic-palette-tab-data.active {
+  background: linear-gradient(180deg, rgba(232, 249, 248, 0.98), rgba(248, 252, 252, 0.98));
+}
+
+.logic-palette-tab-ops.active {
+  background: linear-gradient(180deg, rgba(242, 239, 255, 0.98), rgba(249, 247, 255, 0.98));
+}
+
+.logic-palette-item-card {
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition-fast);
+  border-color: var(--logic-node-border, rgba(214, 224, 236, 0.94));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), var(--logic-node-surface, rgba(250, 252, 255, 0.96)));
+}
+
+.logic-palette-item-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 24px rgba(18, 31, 53, 0.07);
+}
+
+.logic-palette-item-head,
+.logic-palette-item-footer {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.logic-palette-description,
+.logic-palette-output {
+  color: #556c87;
+}
+
+.logic-palette-description,
+.logic-palette-output {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.logic-palette-description {
+  -webkit-line-clamp: 1;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.logic-palette-output {
+  -webkit-line-clamp: 1;
+}
+
+.logic-palette-item-head strong {
+  display: block;
+  max-width: 100%;
+  font-size: 13px;
+  line-height: 1.2;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.logic-palette-item-summary {
+  margin-top: 2px;
+  line-height: 1.25;
+  color: #5b708c;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.logic-canvas-head {
+  align-items: center;
+}
+
+.logic-canvas-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.logic-canvas-toolbar {
+  justify-content: flex-end;
+}
+
+.logic-canvas-zoom-label {
+  min-width: 56px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  color: #35527d;
+}
+
+.logic-canvas-shell,
+.logic-canvas-stage,
+.logic-canvas-lines,
+.logic-node-card {
+  user-select: none;
+}
+
+.logic-canvas-shell {
+  position: relative;
+  min-height: 620px;
+  overflow: hidden;
+  border: 1px solid rgba(212, 223, 236, 0.94);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top left, rgba(155, 183, 228, 0.18), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(215, 225, 248, 0.2), transparent 24%),
+    linear-gradient(180deg, rgba(249, 252, 255, 0.98), rgba(241, 246, 255, 0.95));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
+  cursor: grab;
+  touch-action: none;
+  overscroll-behavior: contain;
+}
+
+.logic-canvas-shell.is-interacting {
+  cursor: grabbing;
+}
+
+.logic-canvas-shell.is-connecting {
+  cursor: crosshair;
+}
+
+.logic-canvas-surface {
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(194, 208, 228, 0.18) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(194, 208, 228, 0.18) 1px, transparent 1px),
+    linear-gradient(rgba(171, 189, 214, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(171, 189, 214, 0.08) 1px, transparent 1px);
+  background-size: 32px 32px, 32px 32px, 160px 160px, 160px 160px;
+  opacity: 0.98;
+}
+
+.logic-canvas-stage {
+  position: absolute;
+  inset: 0 auto auto 0;
+  transform-origin: top left;
+  will-change: transform;
+}
+
+.logic-canvas-lines,
+.logic-canvas-preview-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.logic-canvas-lines {
+  pointer-events: auto;
+}
+
+.logic-canvas-preview-overlay {
+  pointer-events: none;
+  z-index: 2;
+}
+
+.logic-edge-path {
+  fill: none;
+  stroke: rgba(114, 142, 184, 0.72);
+  stroke-width: 3;
+  stroke-linecap: round;
+  pointer-events: stroke;
+  cursor: pointer;
+  transition: stroke var(--transition), stroke-width var(--transition), filter var(--transition);
+}
+
+.logic-edge-path:hover,
+.logic-edge-path.active {
+  stroke: rgba(54, 100, 176, 0.92);
+  stroke-width: 4;
+  filter: drop-shadow(0 4px 10px rgba(46, 92, 170, 0.22));
+}
+
+.logic-edge-path.preview {
+  stroke: rgba(54, 100, 176, 0.78);
+  stroke-width: 3;
+  stroke-dasharray: 8 6;
+  pointer-events: none;
+  filter: drop-shadow(0 3px 8px rgba(46, 92, 170, 0.18));
+}
+
+.logic-preview-pointer {
+  fill: rgba(54, 100, 176, 0.98);
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3;
+  filter: drop-shadow(0 4px 12px rgba(46, 92, 170, 0.22));
+}
+
+.logic-preview-target {
+  fill: rgba(54, 100, 176, 0.12);
+  stroke: rgba(54, 100, 176, 0.72);
+  stroke-width: 2;
+}
+
+.logic-node-card {
+  --logic-node-surface: rgba(248, 251, 255, 0.98);
+  --logic-node-border: rgba(210, 221, 236, 0.96);
+  --logic-node-tint: rgba(236, 242, 255, 0.96);
+  --logic-node-badge-bg: rgba(214, 232, 255, 0.95);
+  --logic-node-badge-fg: #2f5b9c;
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  width: 168px;
+  padding: 8px;
+  border: 1px solid var(--logic-node-border);
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), var(--logic-node-surface));
+  box-shadow: 0 14px 26px rgba(16, 33, 61, 0.08);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition-fast);
+  cursor: grab;
+  overflow: visible;
+}
+
+.logic-node-frame {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.logic-node-card.active {
+  border-color: rgba(122, 162, 230, 0.98);
+  box-shadow: 0 0 0 2px rgba(122, 162, 230, 0.18), 0 18px 32px rgba(44, 82, 151, 0.16);
+}
+
+.logic-node-card.running {
+  box-shadow: 0 0 0 2px rgba(227, 191, 116, 0.18), 0 18px 32px rgba(184, 145, 58, 0.16);
+}
+
+.logic-node-card.completed {
+  box-shadow: 0 0 0 2px rgba(124, 199, 159, 0.18), 0 18px 32px rgba(67, 138, 101, 0.14);
+}
+
+.logic-node-card.error {
+  box-shadow: 0 0 0 2px rgba(229, 153, 153, 0.16), 0 18px 32px rgba(170, 73, 73, 0.14);
+}
+
+.logic-node-card.disabled {
+  opacity: 0.68;
+  filter: saturate(0.82);
+}
+
+.logic-node-port-anchor {
+  position: absolute;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transform: translateY(-50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.logic-node-port-anchor-input {
+  justify-content: flex-start;
+}
+
+.logic-node-port-anchor-output {
+  justify-content: flex-end;
+}
+
+.logic-node-port-anchor .logic-node-port,
+.logic-node-port-anchor .logic-node-port-label {
+  pointer-events: auto;
+}
+
+.logic-node-port {
+  position: relative;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  border: 2px solid rgba(58, 101, 176, 0.7);
+  background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(222, 233, 248, 0.72);
+  cursor: crosshair;
+  transition: transform var(--transition-fast), box-shadow var(--transition), border-color var(--transition), background var(--transition);
+  z-index: 3;
+}
+
+.logic-node-port:hover {
+  border-color: rgba(39, 82, 159, 0.94);
+  background: rgba(238, 245, 255, 0.98);
+  box-shadow: 0 0 0 6px rgba(211, 226, 247, 0.72);
+  transform: scale(1.08);
+}
+
+.logic-node-port.active {
+  border-color: rgba(39, 82, 159, 0.96);
+  background: rgba(225, 238, 255, 0.98);
+  box-shadow: 0 0 0 6px rgba(196, 219, 247, 0.86);
+}
+
+.logic-node-port-input {
+  transform: translateX(-50%);
+}
+
+.logic-node-port-output {
+  transform: translateX(50%);
+}
+
+.logic-node-port-output:hover {
+  transform: translateX(50%) scale(1.08);
+}
+
+.logic-node-port-input:hover {
+  transform: translateX(-50%) scale(1.08);
+}
+
+.logic-node-port-label {
+  max-width: 110px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(212, 224, 238, 0.96);
+  color: #4c6482;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 6px 14px rgba(17, 34, 60, 0.06);
+}
+
+.logic-node-port-label-input {
+  margin-left: 2px;
+}
+
+.logic-node-port-label-output {
+  margin-right: 2px;
+}
+
+.logic-node-drag-handle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, var(--logic-node-tint), rgba(255, 255, 255, 0.94));
+  border: 1px solid rgba(255, 255, 255, 0.68);
+  color: #1d3556;
+  cursor: inherit;
+}
+
+.logic-node-title-block {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.logic-node-title-block strong {
+  font-size: 14px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.logic-node-title-block .tiny {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.logic-node-body {
+  display: grid;
+  grid-auto-rows: min-content;
+  gap: 7px;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-content: start;
+  overflow: hidden;
+}
+
+.logic-node-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  background: var(--logic-node-badge-bg, rgba(214, 232, 255, 0.95));
+  color: var(--logic-node-badge-fg, #2f5b9c);
+}
+
+.logic-node-meta-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.logic-node-meta-chips-wide {
+  margin-top: 8px;
+}
+
+.logic-node-meta-chips-compact {
+  gap: 4px;
+}
+
+.logic-node-meta-chips-compact .logic-node-meta-chip {
+  min-height: 20px;
+  padding: 0 7px;
+  font-size: 10px;
+}
+
+.logic-node-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.84);
+  border: 1px solid rgba(213, 224, 238, 0.94);
+  color: #45607e;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.logic-node-meta-chip-label {
+  flex: 0 0 auto;
+  color: #7a8ea8;
+}
+
+.logic-node-meta-chip-value {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 700;
+  color: #365474;
+}
+
+.logic-node-preview {
+  min-height: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #4c617d;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.logic-node-preview.muted {
+  color: #7d91ab;
+}
+
+.logic-node-actions {
+  margin-top: auto;
+  padding-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.logic-node-resize-handle {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid rgba(122, 162, 230, 0.74);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 2px 6px rgba(42, 83, 154, 0.12);
+  opacity: 0.78;
+  transition: opacity var(--transition), transform var(--transition-fast), box-shadow var(--transition);
+}
+
+.logic-node-card:hover .logic-node-resize-handle,
+.logic-node-card.active .logic-node-resize-handle {
+  opacity: 1;
+}
+
+.logic-node-resize-handle:hover {
+  box-shadow: 0 4px 10px rgba(42, 83, 154, 0.18);
+}
+
+.logic-node-resize-handle-n,
+.logic-node-resize-handle-s {
+  left: 50%;
+  width: 28px;
+  height: 6px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  cursor: ns-resize;
+}
+
+.logic-node-resize-handle-n {
+  top: 0;
+}
+
+.logic-node-resize-handle-s {
+  top: 100%;
+}
+
+.logic-node-resize-handle-e,
+.logic-node-resize-handle-w {
+  top: 50%;
+  width: 6px;
+  height: 28px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  cursor: ew-resize;
+}
+
+.logic-node-resize-handle-e {
+  left: 100%;
+}
+
+.logic-node-resize-handle-w {
+  left: 0;
+}
+
+.logic-node-resize-handle-ne,
+.logic-node-resize-handle-nw,
+.logic-node-resize-handle-se,
+.logic-node-resize-handle-sw {
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+}
+
+.logic-node-resize-handle-ne,
+.logic-node-resize-handle-se {
+  left: 100%;
+}
+
+.logic-node-resize-handle-nw,
+.logic-node-resize-handle-sw {
+  left: 0;
+}
+
+.logic-node-resize-handle-ne,
+.logic-node-resize-handle-nw {
+  top: 0;
+}
+
+.logic-node-resize-handle-se,
+.logic-node-resize-handle-sw {
+  top: 100%;
+}
+
+.logic-node-resize-handle-ne {
+  transform: translate(50%, -50%);
+  cursor: nesw-resize;
+}
+
+.logic-node-resize-handle-nw {
+  transform: translate(-50%, -50%);
+  cursor: nwse-resize;
+}
+
+.logic-node-resize-handle-se {
+  transform: translate(50%, 50%);
+  cursor: nwse-resize;
+}
+
+.logic-node-resize-handle-sw {
+  transform: translate(-50%, 50%);
+  cursor: nesw-resize;
+}
+
+.logic-edge-delete {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+}
+
+.logic-canvas-empty {
+  position: absolute;
+  top: 160px;
+  left: 180px;
+  width: 320px;
+  padding: 16px 18px;
+  border: 1px dashed rgba(194, 208, 228, 0.96);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #5d738f;
+  font-size: 13px;
+  line-height: 1.6;
+  box-shadow: 0 14px 32px rgba(17, 34, 60, 0.06);
+}
+
+.logic-inspector-scroll {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.logic-inspector-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.65fr) minmax(320px, 1fr);
+  gap: 14px;
+}
+
+.logic-inspector-main-column,
+.logic-inspector-side-column {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.logic-inspector-card {
+  padding: 16px;
+  border: 1px solid rgba(214, 224, 236, 0.94);
+  border-radius: 16px;
+  background: rgba(250, 252, 255, 0.96);
+  box-shadow: 0 10px 22px rgba(18, 31, 53, 0.04);
+}
+
+.logic-selected-node-summary,
+.logic-node-doc-card,
+.logic-node-config-grid,
+.logic-extra-config-block,
+.logic-run-summary,
+.logic-run-log-list,
+.logic-node-doc-list {
+  display: grid;
+  gap: 10px;
+}
+
+.logic-node-doc-card {
+  padding: 14px;
+  border: 1px solid rgba(215, 225, 238, 0.96);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(244, 248, 255, 0.98), rgba(250, 252, 255, 0.98));
+}
+
+.logic-node-doc-item {
+  color: #4a6180;
+}
+
+.logic-inspector-docs {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px dashed rgba(198, 212, 232, 0.96);
+}
+
+.logic-node-config-group {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid rgba(221, 230, 241, 0.96);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.logic-node-config-group-head {
+  display: grid;
+  gap: 4px;
+}
+
+.logic-node-config-group-body {
+  display: grid;
+  gap: 10px;
+}
+
+.logic-field-with-binding {
+  gap: 8px;
+}
+
+.logic-field-mode-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.logic-field-mode-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(207, 220, 236, 0.96);
+  background: rgba(255, 255, 255, 0.86);
+  color: #526b8b;
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), color var(--transition);
+}
+
+.logic-field-mode-tab.active {
+  border-color: rgba(115, 152, 219, 0.94);
+  background: rgba(233, 241, 255, 0.98);
+  color: #2f568f;
+}
+
+.logic-binding-mode-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.logic-inline-reference-tools {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(196, 212, 233, 0.96);
+  background: rgba(247, 250, 255, 0.96);
+}
+
+.logic-inline-reference-label {
+  color: #5a7393;
+  font-weight: 800;
+}
+
+.logic-inline-reference-select {
+  min-height: 34px;
+}
+
+.logic-binding-mode-panel-edge {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px dashed rgba(196, 212, 233, 0.96);
+  background: rgba(249, 251, 255, 0.94);
+}
+
+.logic-binding-help {
+  color: #607793;
+  line-height: 1.55;
+}
+
+.logic-path-field {
+  display: grid;
+  gap: 8px;
+}
+
+.logic-path-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.logic-path-browser-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(209, 221, 238, 0.96);
+  background: linear-gradient(180deg, rgba(246, 250, 255, 0.98), rgba(252, 253, 255, 0.98));
+}
+
+.logic-path-browser-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.logic-path-browser-root-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.logic-path-browser-root-tab {
+  min-height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(208, 220, 238, 0.96);
+  background: rgba(255, 255, 255, 0.88);
+  color: #4f6786;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color var(--transition), background var(--transition), color var(--transition);
+}
+
+.logic-path-browser-root-tab.active {
+  border-color: rgba(130, 165, 230, 0.98);
+  background: rgba(231, 240, 255, 0.98);
+  color: #28539a;
+}
+
+.logic-path-browser-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.logic-path-browser-status {
+  color: #6d8097;
+}
+
+.logic-path-browser-list {
+  display: grid;
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.logic-path-browser-entry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(217, 227, 240, 0.94);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.logic-path-browser-entry.directory {
+  background: linear-gradient(180deg, rgba(244, 248, 255, 0.98), rgba(255, 255, 255, 0.92));
+}
+
+.logic-path-browser-entry-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: #29405f;
+}
+
+.logic-path-browser-entry-main strong,
+.logic-path-browser-entry-main .tiny {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logic-path-browser-empty {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px dashed rgba(205, 217, 235, 0.96);
+  color: #7386a1;
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.logic-config-textarea {
+  min-height: 78px;
+  font-size: 12px;
+}
+
+.logic-inspector-textarea {
+  min-height: 92px;
+  padding-top: 10px;
+}
+
+.logic-extra-config-block {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px dashed rgba(206, 219, 236, 0.94);
+}
+
+.logic-run-summary {
+  padding: 12px 14px;
+}
+
+.logic-run-log-list {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.logic-run-log-item {
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+}
+
+.logic-mobile-only {
+  display: none;
+}
+
+.pill.error {
+  border-color: rgba(236, 181, 181, 0.92);
+  background: rgba(255, 239, 239, 0.98);
+  color: #b33c3c;
+}
+
+@media (max-width: 1360px) {
   .routine-overview-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2946,6 +4090,66 @@ body,
 
   .routine-stats-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .logic-top-grid {
+    grid-template-columns: minmax(168px, 0.67fr) minmax(0, 1.98fr) minmax(240px, 0.95fr);
+  }
+
+  .logic-inspector-layout {
+    grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.95fr);
+  }
+}
+
+@media (max-width: 1140px) {
+  .logic-top-grid {
+    min-height: auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "canvas canvas"
+      "list palette";
+  }
+
+  .logic-graph-list-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 960px) {
+  .logic-tab-shell {
+    padding: 16px;
+  }
+
+  .logic-pane {
+    padding: 16px;
+    border-radius: 18px;
+  }
+
+  .logic-inspector-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .logic-canvas-head {
+    align-items: flex-start;
+  }
+
+  .logic-canvas-toolbar {
+    justify-content: flex-start;
+  }
+
+  .logic-canvas-shell {
+    min-height: 58vh;
+  }
+}
+
+@media (max-width: 760px) {
+  .logic-graph-list-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .logic-palette-item-head,
+  .logic-palette-item-footer {
+    flex-direction: column;
   }
 }
 
@@ -3153,6 +4357,40 @@ select.input {
 
 .btn.ghost:hover {
   background: var(--surface-hover);
+}
+
+.btn.secondary {
+  border-color: rgba(170, 195, 232, 0.96);
+  background: rgba(236, 244, 255, 0.92);
+  color: #2458a6;
+  font-weight: 600;
+}
+
+.btn.secondary:hover {
+  border-color: rgba(139, 173, 224, 0.98);
+  background: rgba(228, 239, 255, 0.98);
+  color: #1c4d96;
+}
+
+.btn.danger {
+  border-color: rgba(231, 190, 190, 0.96);
+  background: rgba(255, 240, 240, 0.94);
+  color: #b33c3c;
+  font-weight: 600;
+}
+
+.btn.danger:hover {
+  border-color: rgba(220, 161, 161, 0.98);
+  background: rgba(255, 233, 233, 0.98);
+  color: #a43131;
+}
+
+.tiny-btn {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+  border-radius: 10px;
 }
 
 .btn:disabled {

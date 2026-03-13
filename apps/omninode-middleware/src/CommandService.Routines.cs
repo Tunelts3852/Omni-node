@@ -35,6 +35,7 @@ public sealed partial class CommandService
         lock (_routineLock)
         {
             return _routinesById.Values
+                .Where(routine => !IsLogicGraphRoutine(routine))
                 .OrderBy(x => x.NextRunUtc)
                 .Select(ToRoutineSummary)
                 .ToArray();
@@ -477,6 +478,32 @@ public sealed partial class CommandService
         var startedAtUtc = DateTimeOffset.UtcNow;
         var taskRequest = ResolveRoutineExecutionRequestText(routine.Request, routine.Title, routine.ScheduleSourceMode);
         var executionRoute = ResolveRoutineExecutionRoute(taskRequest, routine.ExecutionMode);
+        if (string.Equals(executionRoute.Mode, LogicGraphExecutionMode, StringComparison.Ordinal))
+        {
+            var runId = $"logicrun-{startedAtUtc:yyyyMMddHHmmss}-{Guid.NewGuid().ToString("N")[..8]}";
+            var snapshot = await ExecuteLogicGraphRunCoreAsync(
+                routine.Id,
+                runId,
+                source,
+                null,
+                cancellationToken
+            ).ConfigureAwait(false);
+            RoutineDefinition? updatedRoutine;
+            lock (_routineLock)
+            {
+                _routinesById.TryGetValue(key, out updatedRoutine);
+            }
+
+            var finalMessage = string.IsNullOrWhiteSpace(snapshot.ResultText)
+                ? (string.IsNullOrWhiteSpace(snapshot.Error) ? "흐름 실행이 끝났습니다." : snapshot.Error)
+                : snapshot.ResultText;
+            return new RoutineActionResult(
+                string.Equals(snapshot.Status, "completed", StringComparison.Ordinal),
+                finalMessage,
+                updatedRoutine == null ? null : ToRoutineSummary(updatedRoutine)
+            );
+        }
+
         var maxAttempts = NormalizeRoutineRetryCount(routine.MaxRetries) + 1;
         var retryDelaySeconds = NormalizeRoutineRetryDelaySeconds(routine.RetryDelaySeconds);
         var attemptCount = 0;

@@ -1,0 +1,480 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+resolve_script_path() {
+  local source_path="$1"
+  while [ -L "$source_path" ]; do
+    local source_dir
+    source_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+    local linked_path
+    linked_path="$(readlink "$source_path")"
+    if [[ "$linked_path" != /* ]]; then
+      source_path="$source_dir/$linked_path"
+    else
+      source_path="$linked_path"
+    fi
+  done
+
+  local final_dir
+  final_dir="$(cd -P "$(dirname "$source_path")" && pwd)"
+  printf '%s/%s\n' "$final_dir" "$(basename "$source_path")"
+}
+
+SCRIPT_PATH="$(resolve_script_path "${BASH_SOURCE[0]:-$0}")"
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+
+STATE_DIR="${HOME}/.omninode/cli"
+PID_FILE="${STATE_DIR}/middleware.pid"
+CORE_PIDS_FILE="${STATE_DIR}/core.pids"
+LOG_FILE="${STATE_DIR}/middleware.log"
+META_FILE="${STATE_DIR}/last-start.env"
+MIDDLEWARE_PROJECT="${REPO_ROOT}/apps/omninode-middleware/OmniNode.Middleware.csproj"
+CORE_BINARY="${REPO_ROOT}/apps/omninode-core/omninode_core"
+PACKAGE_LOCK="${REPO_ROOT}/package-lock.json"
+DEFAULT_PORT="${OMNINODE_WS_PORT:-8080}"
+DEFAULT_BASE_URL="http://127.0.0.1:${DEFAULT_PORT}"
+
+usage() {
+  cat <<'EOF'
+사용법:
+  Omni-node           서버 시작
+  Omni-node shutdown  서버 종료
+  Omni-node setup     의존성 설치, 빌드, 검증, 명령 등록
+EOF
+}
+
+info() {
+  printf '[Omni-node] %s\n' "$1"
+}
+
+fail() {
+  printf '[Omni-node] %s\n' "$1" >&2
+  exit 1
+}
+
+ensure_state_dir() {
+  mkdir -p "$STATE_DIR"
+}
+
+current_port() {
+  printf '%s\n' "${OMNINODE_WS_PORT:-8080}"
+}
+
+current_base_url() {
+  printf 'http://127.0.0.1:%s\n' "$(current_port)"
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+read_pid_file() {
+  if [ -f "$PID_FILE" ]; then
+    tr -d '[:space:]' < "$PID_FILE"
+  fi
+}
+
+is_pid_alive() {
+  local pid="$1"
+  [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1
+}
+
+server_health_ok() {
+  curl -fsS "$(current_base_url)/healthz" >/dev/null 2>&1
+}
+
+server_ready_ok() {
+  curl -fsS "$(current_base_url)/readyz" >/dev/null 2>&1
+}
+
+cleanup_stale_state() {
+  local pid
+  pid="$(read_pid_file || true)"
+  if [ -n "$pid" ] && ! is_pid_alive "$pid"; then
+    rm -f "$PID_FILE" "$CORE_PIDS_FILE"
+  fi
+}
+
+middleware_pids() {
+  if ! command_exists pgrep; then
+    return 0
+  fi
+
+  pgrep -f "$MIDDLEWARE_PROJECT" || true
+}
+
+repo_core_pids() {
+  if ! command_exists pgrep; then
+    return 0
+  fi
+
+  pgrep -f "$CORE_BINARY" || true
+}
+
+record_new_core_pids() {
+  local before_file="$1"
+  local after_file="$2"
+
+  if ! command_exists comm; then
+    return 0
+  fi
+
+  comm -13 "$before_file" "$after_file" > "$CORE_PIDS_FILE" || true
+}
+
+attach_to_existing_server_if_possible() {
+  if ! server_health_ok; then
+    return 1
+  fi
+
+  local pids
+  pids="$(middleware_pids)"
+  if [ -z "$pids" ]; then
+    return 1
+  fi
+
+  local adopted_pid
+  adopted_pid="$(printf '%s\n' "$pids" | tail -n 1)"
+  if [ -z "$adopted_pid" ]; then
+    return 1
+  fi
+
+  ensure_state_dir
+  printf '%s\n' "$adopted_pid" > "$PID_FILE"
+  rm -f "$CORE_PIDS_FILE"
+  info "이미 실행 중인 서버를 재사용합니다. pid=${adopted_pid} url=$(current_base_url)/"
+  return 0
+}
+
+ensure_runtime_commands() {
+  local missing=()
+  local required=(dotnet python3 node npm make cc curl)
+  local tool
+  for tool in "${required[@]}"; do
+    if ! command_exists "$tool"; then
+      missing+=("$tool")
+    fi
+  done
+
+  if [ "${#missing[@]}" -gt 0 ]; then
+    fail "필수 도구가 없습니다: ${missing[*]}. 먼저 'Omni-node setup'을 실행하세요."
+  fi
+}
+
+ensure_core_binary() {
+  if [ -x "$CORE_BINARY" ]; then
+    return
+  fi
+
+  info "코어 바이너리가 없어 빌드합니다."
+  (cd "$REPO_ROOT" && make -C apps/omninode-core)
+}
+
+port_in_use_by_other_process() {
+  local port
+  port="$(current_port)"
+  if ! command_exists lsof; then
+    return 1
+  fi
+
+  local lsof_output
+  lsof_output="$(lsof -iTCP:"$port" -sTCP:LISTEN -n -P 2>/dev/null || true)"
+  [ -n "$lsof_output" ]
+}
+
+wait_for_ready() {
+  local pid="$1"
+  local attempts=60
+  local step=0
+
+  while [ "$step" -lt "$attempts" ]; do
+    if ! is_pid_alive "$pid"; then
+      printf '\n' >&2
+      tail -n 40 "$LOG_FILE" >&2 || true
+      fail "서버 프로세스가 준비 전에 종료됐습니다. 로그를 확인하세요: $LOG_FILE"
+    fi
+
+    if server_health_ok && server_ready_ok; then
+      return 0
+    fi
+
+    sleep 1
+    step=$((step + 1))
+  done
+
+  printf '\n' >&2
+  tail -n 40 "$LOG_FILE" >&2 || true
+  fail "서버가 $(current_base_url) 에서 준비 상태가 되지 않았습니다. 로그: $LOG_FILE"
+}
+
+write_start_metadata() {
+  local pid="$1"
+  cat > "$META_FILE" <<EOF
+pid=$pid
+port=$(current_port)
+url=$(current_base_url)/
+repo=$REPO_ROOT
+log=$LOG_FILE
+started_at=$(date '+%Y-%m-%d %H:%M:%S %z')
+EOF
+}
+
+start_server() {
+  ensure_state_dir
+  cleanup_stale_state
+  ensure_runtime_commands
+
+  local current_pid
+  current_pid="$(read_pid_file || true)"
+  if is_pid_alive "$current_pid"; then
+    if server_health_ok; then
+      info "이미 실행 중입니다. pid=${current_pid} url=$(current_base_url)/"
+      return 0
+    fi
+  fi
+
+  if attach_to_existing_server_if_possible; then
+    return 0
+  fi
+
+  if port_in_use_by_other_process; then
+    fail "포트 $(current_port) 가 이미 사용 중입니다. 기존 서버를 정리한 뒤 다시 시도하세요."
+  fi
+
+  ensure_core_binary
+
+  local before_core_file
+  local after_core_file
+  before_core_file="$(mktemp)"
+  after_core_file="$(mktemp)"
+  repo_core_pids | sort -u > "$before_core_file"
+
+  {
+    printf '\n[%s] Omni-node start\n' "$(date '+%Y-%m-%d %H:%M:%S %z')"
+  } >> "$LOG_FILE"
+
+  local pid
+  pid="$(
+    python3 - "$REPO_ROOT" "$MIDDLEWARE_PROJECT" "$LOG_FILE" <<'PY'
+import os
+import subprocess
+import sys
+
+repo_root, project_path, log_path = sys.argv[1:4]
+env = os.environ.copy()
+env.setdefault("OMNINODE_WORKSPACE_ROOT", os.path.join(repo_root, "workspace", "coding"))
+env.setdefault("OMNINODE_ENABLE_LOCAL_OTP_FALLBACK", "1")
+env.setdefault("OMNINODE_GATEWAY_STARTUP_PROBE", "1")
+
+with open(log_path, "ab", buffering=0) as log_file:
+    process = subprocess.Popen(
+        ["dotnet", "run", "--project", project_path],
+        cwd=repo_root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True
+    )
+
+print(process.pid)
+PY
+  )"
+  printf '%s\n' "$pid" > "$PID_FILE"
+  write_start_metadata "$pid"
+
+  info "서버 시작 중입니다. pid=${pid}"
+  wait_for_ready "$pid"
+
+  repo_core_pids | sort -u > "$after_core_file"
+  record_new_core_pids "$before_core_file" "$after_core_file"
+  rm -f "$before_core_file" "$after_core_file"
+
+  info "서버가 준비됐습니다."
+  info "대시보드: $(current_base_url)/"
+  info "로그: $LOG_FILE"
+}
+
+stop_pid_gracefully() {
+  local pid="$1"
+  local label="$2"
+  if ! is_pid_alive "$pid"; then
+    return 0
+  fi
+
+  kill "$pid" >/dev/null 2>&1 || true
+  local attempt=0
+  while [ "$attempt" -lt 15 ]; do
+    if ! is_pid_alive "$pid"; then
+      info "$label 종료 완료 (pid=$pid)"
+      return 0
+    fi
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+
+  kill -9 "$pid" >/dev/null 2>&1 || true
+  sleep 1
+  if is_pid_alive "$pid"; then
+    fail "$label 종료에 실패했습니다. pid=$pid"
+  fi
+  info "$label 강제 종료 완료 (pid=$pid)"
+}
+
+shutdown_server() {
+  ensure_state_dir
+  cleanup_stale_state
+
+  local pid
+  pid="$(read_pid_file || true)"
+  if [ -z "$pid" ] && attach_to_existing_server_if_possible; then
+    pid="$(read_pid_file || true)"
+  fi
+
+  if [ -z "$pid" ]; then
+    info "종료할 서버 PID를 찾지 못했습니다."
+    return 0
+  fi
+
+  stop_pid_gracefully "$pid" "미들웨어"
+
+  if [ -f "$CORE_PIDS_FILE" ]; then
+    while IFS= read -r core_pid; do
+      if [ -n "$core_pid" ]; then
+        stop_pid_gracefully "$core_pid" "코어"
+      fi
+    done < "$CORE_PIDS_FILE"
+  fi
+
+  rm -f "$PID_FILE" "$CORE_PIDS_FILE"
+  info "Omni-node 종료 완료"
+}
+
+detect_install_dir() {
+  local candidate
+  local path_entry
+  IFS=':' read -r -a path_entries <<< "$PATH"
+
+  local preferred=(
+    "/opt/homebrew/bin"
+    "$HOME/.npm-global/bin"
+    "$HOME/.local/bin"
+  )
+
+  for candidate in "${preferred[@]}"; do
+    if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for path_entry in "${path_entries[@]}"; do
+    if [ -n "$path_entry" ] && [ -d "$path_entry" ] && [ -w "$path_entry" ]; then
+      printf '%s\n' "$path_entry"
+      return 0
+    fi
+  done
+
+  mkdir -p "$HOME/.local/bin"
+  printf '%s\n' "$HOME/.local/bin"
+}
+
+install_cli_link() {
+  local install_dir
+  install_dir="$(detect_install_dir)"
+  mkdir -p "$install_dir"
+  ln -sf "$SCRIPT_PATH" "$install_dir/Omni-node"
+  info "명령 등록 완료: $install_dir/Omni-node"
+}
+
+ensure_macos_build_tools() {
+  if command_exists cc && command_exists make; then
+    return 0
+  fi
+
+  if command_exists xcode-select; then
+    xcode-select --install >/dev/null 2>&1 || true
+  fi
+
+  fail "macOS 빌드 도구가 없습니다. Xcode Command Line Tools 설치를 마친 뒤 다시 실행하세요."
+}
+
+brew_install_formula_if_missing() {
+  local command_name="$1"
+  local formula_name="$2"
+  if command_exists "$command_name"; then
+    return 0
+  fi
+
+  info "Homebrew로 $formula_name 설치 중"
+  brew list --formula "$formula_name" >/dev/null 2>&1 || brew install "$formula_name"
+}
+
+brew_install_cask_if_missing() {
+  local command_name="$1"
+  local cask_name="$2"
+  if command_exists "$command_name"; then
+    return 0
+  fi
+
+  info "Homebrew로 $cask_name 설치 중"
+  brew list --cask "$cask_name" >/dev/null 2>&1 || brew install --cask "$cask_name"
+}
+
+run_setup() {
+  if [ "$(uname -s)" != "Darwin" ]; then
+    fail "현재 setup 자동 설치는 macOS(Homebrew)만 지원합니다."
+  fi
+
+  command_exists brew || fail "Homebrew가 필요합니다. 먼저 Homebrew를 설치하세요."
+  ensure_macos_build_tools
+
+  brew_install_formula_if_missing node node
+  brew_install_formula_if_missing npm node
+  brew_install_formula_if_missing python3 python
+  brew_install_formula_if_missing sqlite3 sqlite
+  brew_install_cask_if_missing dotnet dotnet-sdk
+
+  install_cli_link
+
+  info "Node 의존성 설치"
+  (cd "$REPO_ROOT" && npm ci)
+
+  info "코어 빌드"
+  (cd "$REPO_ROOT" && make -C apps/omninode-core)
+
+  info ".NET 빌드"
+  (cd "$REPO_ROOT" && dotnet build apps/omninode-middleware/OmniNode.Middleware.csproj)
+
+  info "샌드박스 smoke"
+  (cd "$REPO_ROOT" && python3 apps/omninode-sandbox/executor.py --code "print('ok')")
+
+  info "통합 테스트"
+  (cd "$REPO_ROOT" && npm test)
+
+  info "setup 완료"
+}
+
+main() {
+  case "${1:-start}" in
+    start)
+      start_server
+      ;;
+    shutdown)
+      shutdown_server
+      ;;
+    setup)
+      run_setup
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

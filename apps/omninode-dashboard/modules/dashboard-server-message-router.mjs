@@ -1,3 +1,5 @@
+import { createEmptyLogicGraph } from "./logic-state.js";
+
 function createItemId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
@@ -322,6 +324,7 @@ export function handleDashboardServerMessage(msg, context) {
       actions.requestRoutingDecisionGetLast(actions.send, { silent: true, queueIfClosed: false })
       actions.requestPlanList(actions.send, { silent: true, queueIfClosed: false })
       actions.requestTaskGraphList(actions.send, { silent: true, queueIfClosed: false })
+      actions.requestLogicGraphList(actions.send, { silent: true, queueIfClosed: false })
       actions.requestContextScan(actions.send, { silent: true, queueIfClosed: false })
       actions.requestSkillsList(actions.send, { silent: true, queueIfClosed: false })
       actions.requestCommandsList(actions.send, { silent: true, queueIfClosed: false })
@@ -547,6 +550,140 @@ export function handleDashboardServerMessage(msg, context) {
       actions.requestTaskGraphGet(actions.send, nextSelectedGraphId, { silent: true, queueIfClosed: false })
     }
 
+    return true
+  }
+
+  if (msg.type === "logic_graph_list_result") {
+    const items = Array.isArray(msg.items) ? msg.items : []
+    const currentSelectedGraphId = `${state.logicSelectedGraphId || ""}`.trim()
+    const currentDraftGraphId = `${state.logicDraftGraph?.graphId || ""}`.trim()
+    const nextSelectedGraphId = items.some((item) => item.graphId === currentSelectedGraphId)
+      ? currentSelectedGraphId
+      : (items.some((item) => item.graphId === currentDraftGraphId)
+        ? currentDraftGraphId
+        : (items[0]?.graphId || ""))
+
+    setters.setLogicGraphs(items)
+    setters.setLogicSelectedGraphId(nextSelectedGraphId || "")
+    if (!nextSelectedGraphId) {
+      setters.setLogicDraftGraph(createEmptyLogicGraph())
+      setters.setLogicSelectedNodeId("")
+      setters.setLogicSelectedEdgeId("")
+      setters.setLogicPendingSourceNodeId("")
+      setters.setLogicActiveRunId("")
+      setters.setLogicRunSnapshot(null)
+      setters.setLogicRunEvents([])
+      setters.setLogicJsonBuffer("")
+      setters.setLogicDirty(false)
+      setters.setLogicLastMessage("저장된 작업 흐름이 없습니다.")
+      return true
+    }
+
+    if (nextSelectedGraphId !== currentSelectedGraphId || currentDraftGraphId !== nextSelectedGraphId) {
+      actions.requestLogicGraphGet(actions.send, nextSelectedGraphId, { silent: true, queueIfClosed: false })
+    }
+    return true
+  }
+
+  if (msg.type === "logic_graph_result") {
+    const ok = msg.ok !== false
+    const graph = msg.graph || null
+    const summary = msg.summary || null
+    const nextGraphId = graph?.graphId || summary?.graphId || ""
+    const currentGraphId = `${state.logicDraftGraph?.graphId || ""}`.trim()
+    if (graph) {
+      setters.setLogicDraftGraph(graph)
+      setters.setLogicSelectedGraphId(nextGraphId)
+      setters.setLogicSelectedNodeId("")
+      setters.setLogicSelectedEdgeId("")
+      setters.setLogicPendingSourceNodeId("")
+      setters.setLogicDirty(false)
+      setters.setLogicJsonBuffer(JSON.stringify(graph, null, 2))
+      if (!currentGraphId || currentGraphId !== nextGraphId) {
+        setters.setLogicActiveRunId("")
+        setters.setLogicRunSnapshot(null)
+        setters.setLogicRunEvents([])
+      }
+    }
+
+    setters.setLogicLastMessage(msg.message || (ok ? "작업 흐름을 불러왔습니다." : "작업 흐름을 불러오지 못했습니다."))
+    actions.log(
+      `[logic] ${msg.message || (ok ? "흐름 불러오기 완료" : "흐름 불러오기 실패")}`,
+      ok ? "info" : "error"
+    )
+    return true
+  }
+
+  if (msg.type === "logic_path_list_result") {
+    const ok = msg.ok !== false
+    setters.setLogicPathBrowser((prev) => {
+      if (!prev?.open) {
+        return prev
+      }
+      return {
+        ...prev,
+        loading: false,
+        scope: msg.scope || prev.scope,
+        rootKey: msg.rootKey || prev.rootKey,
+        browsePath: msg.browsePath || "",
+        displayPath: msg.displayPath || "",
+        parentBrowsePath: msg.parentBrowsePath ?? null,
+        directorySelectPath: msg.directorySelectPath ?? null,
+        roots: Array.isArray(msg.roots) ? msg.roots : [],
+        items: Array.isArray(msg.items) ? msg.items : [],
+        message: msg.message || (ok ? "경로 목록을 불러왔습니다." : "경로 목록을 불러오지 못했습니다.")
+      }
+    })
+    if (!ok) {
+      actions.log(`[logic-path] ${msg.message || "경로 목록을 불러오지 못했습니다."}`, "error")
+    }
+    return true
+  }
+
+  if (msg.type === "logic_graph_run_result") {
+    const ok = msg.ok !== false
+    setters.setLogicActiveRunId(msg.runId || "")
+    setters.setLogicRunSnapshot(msg.snapshot || null)
+    setters.setLogicRunEvents(msg.snapshot && msg.snapshot.status
+      ? [{
+        runId: msg.runId || "",
+        graphId: msg.snapshot.graphId || "",
+        kind: "run_snapshot",
+        message: msg.snapshot.resultText || msg.snapshot.error || msg.snapshot.status,
+        nodeId: "",
+        snapshot: msg.snapshot
+      }]
+      : [])
+    setters.setLogicLastMessage(msg.message || (ok ? "흐름 실행을 시작했습니다." : "흐름 실행을 시작하지 못했습니다."))
+    actions.log(
+      `[logic-run] ${msg.message || (ok ? "흐름 실행 시작" : "흐름 실행 실패")}`,
+      ok ? "info" : "error"
+    )
+    return true
+  }
+
+  if (msg.type === "logic_graph_run_event") {
+    setters.setLogicActiveRunId(msg.runId || "")
+    setters.setLogicRunSnapshot(msg.snapshot || null)
+    setters.setLogicRunEvents((prev) => {
+      const next = [
+        {
+          runId: msg.runId || "",
+          graphId: msg.graphId || "",
+          kind: msg.kind || "event",
+          message: msg.message || "",
+          nodeId: msg.nodeId || "",
+          snapshot: msg.snapshot || null
+        },
+        ...prev
+      ]
+      return next.slice(0, 64)
+    })
+    setters.setLogicLastMessage(msg.message || msg.kind || "흐름 이벤트를 받았습니다.")
+    const tone = msg.kind === "run_failed" || msg.kind === "node_failed"
+      ? "error"
+      : "info"
+    actions.log(`[logic-event] ${msg.kind || "event"} · ${msg.message || "-"}`, tone)
     return true
   }
 
@@ -1028,8 +1165,12 @@ export function handleDashboardServerMessage(msg, context) {
 
   if (msg.type === "error") {
     const errorText = `오류: ${msg.message || "-"}`
-    const targetKey = actions.inferErrorKey(msg.message)
     const rawMessage = typeof msg.message === "string" ? msg.message : ""
+    const looksLikeLogicError = /(logic|logicgraph|graphid|runid)/i.test(rawMessage)
+    const looksLikeOtherDomainError = /(coding|chat|routine|task|plan|refactor|doctor|notebook|settings|sessions_|cron|browser|canvas|nodes|telegram_stub|memory_|web_)/i.test(rawMessage)
+    const targetKey = (state.rootTab === "logic" && (looksLikeLogicError || !looksLikeOtherDomainError))
+      ? "logic:main"
+      : actions.inferErrorKey(msg.message)
     if (state.rootTab === "settings" && /(sessions_|cron|browser|canvas|nodes|telegram_stub|memory_|web_)/i.test(rawMessage)) {
       setters.setToolControlError(rawMessage)
     }

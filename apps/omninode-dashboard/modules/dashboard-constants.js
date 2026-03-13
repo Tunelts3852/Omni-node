@@ -49,5 +49,6 @@ export const DEFAULT_MOBILE_PANES = {
   chat: "thread",
   coding: "thread",
   routine: "overview",
+  logic: "canvas",
   settings: "auth"
 };

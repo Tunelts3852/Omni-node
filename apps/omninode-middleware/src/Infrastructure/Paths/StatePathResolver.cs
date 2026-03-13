@@ -19,6 +19,8 @@ public interface IStatePathResolver
     string GetTaskGraphsIndexPath();
     string GetTaskRuntimeRoot();
     string GetTaskRuntimePath(string graphId, string taskId);
+    string GetLogicRuntimeRoot();
+    string GetLogicRuntimePath(string routineId, string runId);
     string GetNotebooksRoot();
     string GetNotebookProjectRoot(string projectKey);
     string GetRefactorPreviewRoot();
@@ -125,6 +127,17 @@ public sealed class DefaultStatePathResolver : IStatePathResolver
     public string GetTaskRuntimePath(string graphId, string taskId)
     {
         return Path.Combine(GetTaskRuntimeRoot(), graphId.Trim(), taskId.Trim());
+    }
+
+    public string GetLogicRuntimeRoot()
+    {
+        var workspaceContainerRoot = ResolveWorkspaceContainerRoot();
+        return Path.Combine(workspaceContainerRoot, ".runtime", "logic");
+    }
+
+    public string GetLogicRuntimePath(string routineId, string runId)
+    {
+        return Path.Combine(GetLogicRuntimeRoot(), routineId.Trim(), runId.Trim());
     }
 
     public string GetNotebooksRoot()

@@ -58,6 +58,7 @@ export function renderGlobalNav(props) {
       e("div", { className: "nav-title" }, "메뉴"),
       e("button", { className: `nav-btn ${rootTab === "chat" ? "active" : ""}`, onClick: () => setRootTab("chat") }, "대화"),
       e("button", { className: `nav-btn ${rootTab === "routine" ? "active" : ""}`, onClick: () => setRootTab("routine") }, "루틴"),
+      e("button", { className: `nav-btn ${rootTab === "logic" ? "active" : ""}`, onClick: () => setRootTab("logic") }, "로직"),
       e("button", { className: `nav-btn ${rootTab === "coding" ? "active" : ""}`, onClick: () => setRootTab("coding") }, "코딩"),
       e("button", { className: `nav-btn ${rootTab === "settings" ? "active" : ""}`, onClick: () => setRootTab("settings") }, "설정")
     ),

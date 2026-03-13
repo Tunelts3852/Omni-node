@@ -550,6 +550,7 @@ internal sealed class RoutineDefinition
     public string PlannerModel { get; set; } = string.Empty;
     public string CoderModel { get; set; } = string.Empty;
     public bool NotifyTelegram { get; set; } = true;
+    public LogicGraphDefinition? LogicGraph { get; set; }
     public string? CronDescription { get; set; }
     public string CronSessionTarget { get; set; } = "main";
     public string CronWakeMode { get; set; } = "next-heartbeat";

@@ -51,6 +51,7 @@ public sealed partial class WebSocketGateway
     private readonly IMemoryApplicationService _memoryService;
     private readonly IToolApplicationService _toolService;
     private readonly IRoutineApplicationService _routineService;
+    private readonly ILogicApplicationService _logicService;
     private readonly IPlanningApplicationService _planService;
     private readonly IRefactorApplicationService _refactorService;
     private readonly IContextApplicationService _contextService;
@@ -68,6 +69,7 @@ public sealed partial class WebSocketGateway
     private readonly WsConversationMemoryDispatcher _conversationMemoryDispatcher;
     private readonly WsToolCommandDispatcher _toolCommandDispatcher;
     private readonly WsRoutineCommandDispatcher _routineCommandDispatcher;
+    private readonly WsLogicCommandDispatcher _logicCommandDispatcher;
     private readonly WsDoctorCommandDispatcher _doctorCommandDispatcher;
     private readonly WsPlanningCommandDispatcher _planningCommandDispatcher;
     private readonly WsTaskCommandDispatcher _taskCommandDispatcher;
@@ -119,6 +121,7 @@ public sealed partial class WebSocketGateway
         IMemoryApplicationService memoryService,
         IToolApplicationService toolService,
         IRoutineApplicationService routineService,
+        ILogicApplicationService logicService,
         IDoctorApplicationService doctorService,
         IPlanningApplicationService planService,
         ITaskGraphApplicationService taskGraphService,
@@ -143,6 +146,7 @@ public sealed partial class WebSocketGateway
         _memoryService = memoryService;
         _toolService = toolService;
         _routineService = routineService;
+        _logicService = logicService;
         _planService = planService;
         _refactorService = refactorService;
         _contextService = contextService;
@@ -208,6 +212,14 @@ public sealed partial class WebSocketGateway
             SendRoutineActionResultAsync,
             SendRoutineProgressAsync,
             SendRoutineRunDetailAsync
+        );
+        _logicCommandDispatcher = new WsLogicCommandDispatcher(
+            logicService,
+            SendLogicGraphListResultAsync,
+            SendLogicGraphActionResultAsync,
+            SendLogicPathBrowseResultAsync,
+            SendLogicRunActionResultAsync,
+            SendLogicRunEventAsync
         );
         _doctorCommandDispatcher = new WsDoctorCommandDispatcher(
             doctorService,
@@ -2574,6 +2586,117 @@ public sealed partial class WebSocketGateway
         }
     }
 
+    private Task SendLogicGraphListResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        LogicGraphListResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"logic_graph_list_result\","
+            + $"\"items\":{LogicGraphJson.Serialize(result.Items)}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendLogicGraphActionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        LogicGraphActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"logic_graph_result\","
+            + $"\"ok\":{(result.Ok ? "true" : "false")},"
+            + $"\"message\":\"{EscapeJson(result.Message)}\","
+            + $"\"summary\":{(result.Summary == null ? "null" : LogicGraphJson.Serialize(result.Summary))},"
+            + $"\"graph\":{(result.Graph == null ? "null" : LogicGraphJson.Serialize(result.Graph))}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendLogicPathBrowseResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        LogicPathBrowseResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"logic_path_list_result\","
+            + $"\"ok\":{(result.Ok ? "true" : "false")},"
+            + $"\"message\":\"{EscapeJson(result.Message)}\","
+            + $"\"scope\":\"{EscapeJson(result.Scope)}\","
+            + $"\"rootKey\":\"{EscapeJson(result.RootKey)}\","
+            + $"\"rootLabel\":\"{EscapeJson(result.RootLabel)}\","
+            + $"\"displayPath\":\"{EscapeJson(result.DisplayPath)}\","
+            + $"\"browsePath\":\"{EscapeJson(result.BrowsePath)}\","
+            + $"\"parentBrowsePath\":{ToJsonStringOrNull(result.ParentBrowsePath)},"
+            + $"\"directorySelectPath\":{ToJsonStringOrNull(result.DirectorySelectPath)},"
+            + $"\"roots\":{LogicGraphJson.Serialize(result.Roots)},"
+            + $"\"items\":{LogicGraphJson.Serialize(result.Items)}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendLogicRunActionResultAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        LogicRunActionResult result,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"logic_graph_run_result\","
+            + $"\"ok\":{(result.Ok ? "true" : "false")},"
+            + $"\"message\":\"{EscapeJson(result.Message)}\","
+            + $"\"runId\":{ToJsonStringOrNull(result.RunId)},"
+            + $"\"snapshot\":{(result.Snapshot == null ? "null" : LogicGraphJson.Serialize(result.Snapshot))}"
+            + "}",
+            cancellationToken
+        );
+    }
+
+    private Task SendLogicRunEventAsync(
+        WebSocket socket,
+        SemaphoreSlim sendLock,
+        LogicRunEvent result,
+        CancellationToken cancellationToken
+    )
+    {
+        return SendTextAsync(
+            socket,
+            sendLock,
+            "{"
+            + "\"type\":\"logic_graph_run_event\","
+            + $"\"runId\":\"{EscapeJson(result.RunId)}\","
+            + $"\"graphId\":\"{EscapeJson(result.GraphId)}\","
+            + $"\"kind\":\"{EscapeJson(result.Kind)}\","
+            + $"\"message\":\"{EscapeJson(result.Message)}\","
+            + $"\"nodeId\":{ToJsonStringOrNull(result.NodeId)},"
+            + $"\"snapshot\":{LogicGraphJson.Serialize(result.Snapshot)}"
+            + "}",
+            cancellationToken
+        );
+    }
+
     private async Task SendChatResultAsync(
         WebSocket socket,
         SemaphoreSlim sendLock,
@@ -3247,6 +3370,8 @@ public sealed partial class WebSocketGateway
             string? kind = null;
             string? planId = null;
             string? graphId = null;
+            string? logicGraphJson = null;
+            string? logicRunId = null;
             string? taskId = null;
             string? previewId = null;
             string? language = null;
@@ -3588,6 +3713,26 @@ public sealed partial class WebSocketGateway
             if (doc.RootElement.TryGetProperty("graphId", out var graphIdElement))
             {
                 graphId = graphIdElement.GetString();
+            }
+
+            if (doc.RootElement.TryGetProperty("logicGraph", out var logicGraphElement))
+            {
+                logicGraphJson = logicGraphElement.ValueKind == JsonValueKind.String
+                    ? logicGraphElement.GetString()
+                    : logicGraphElement.GetRawText();
+            }
+
+            if (string.IsNullOrWhiteSpace(logicGraphJson)
+                && doc.RootElement.TryGetProperty("logicGraphJson", out var logicGraphJsonElement))
+            {
+                logicGraphJson = logicGraphJsonElement.ValueKind == JsonValueKind.String
+                    ? logicGraphJsonElement.GetString()
+                    : logicGraphJsonElement.GetRawText();
+            }
+
+            if (doc.RootElement.TryGetProperty("runId", out var runIdElement))
+            {
+                logicRunId = runIdElement.GetString();
             }
 
             if (doc.RootElement.TryGetProperty("taskId", out var taskIdElement))
@@ -4324,6 +4469,8 @@ public sealed partial class WebSocketGateway
                 Kind = kind,
                 PlanId = planId,
                 GraphId = graphId,
+                LogicGraphJson = logicGraphJson,
+                LogicRunId = logicRunId,
                 TaskId = taskId,
                 PreviewId = previewId,
                 Language = language,

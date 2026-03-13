@@ -281,6 +281,11 @@ public sealed partial class CommandService
             return ("browser_agent", urls);
         }
 
+        if (resolvedExecutionMode == LogicGraphExecutionMode)
+        {
+            return (LogicGraphExecutionMode, Array.Empty<string>());
+        }
+
         if (resolvedExecutionMode == "url")
         {
             return ("gemini-url-single", urls);
@@ -386,6 +391,7 @@ public sealed partial class CommandService
             "url" => "url",
             "script" => "script",
             "browser_agent" => "browser_agent",
+            LogicGraphExecutionMode => LogicGraphExecutionMode,
             _ => string.Empty
         };
     }

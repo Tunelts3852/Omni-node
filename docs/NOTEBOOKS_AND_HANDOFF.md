@@ -1,6 +1,6 @@
 # Omni-node Notebooks And Handoff
 
-업데이트 기준: 2026-03-10
+업데이트 기준: 2026-03-12
 
 이 문서는 현재 코드 기준의 notebook / handoff 기능 저장 위치, 사용 흐름, 템플릿을 정리합니다.
 
@@ -9,7 +9,7 @@
 지금 구현된 범위는 아래와 같습니다.
 
 - 프로젝트별 `learnings.md`, `decisions.md`, `verification.md`, `handoff.md` 영속 저장
-- 대시보드 Settings 탭의 `Notebook / Handoff` 패널
+- 대시보드 설정 탭의 `Notebook / Handoff` 패널
 - 웹 슬래시 명령과 텔레그램 명령
 - WebSocket `notebook_get`, `notebook_append`, `handoff_create`
 - doctor / plan / task graph / refactor 결과를 notebook으로 빠르게 옮기는 보조 버튼

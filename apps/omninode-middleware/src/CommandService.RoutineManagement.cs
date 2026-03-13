@@ -433,6 +433,7 @@ public sealed partial class CommandService
         return NormalizeRoutineExecutionMode(executionMode) switch
         {
             "browser_agent" => "browser_agent",
+            LogicGraphExecutionMode => LogicGraphExecutionMode,
             "url" => "url",
             "web" => "web",
             _ => "script"
